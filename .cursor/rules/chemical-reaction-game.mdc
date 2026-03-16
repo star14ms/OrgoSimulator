@@ -1,0 +1,88 @@
+---
+description: Domain model and mechanics for the chemical reaction educational game
+globs: Assets/Scripts/**/*.cs
+alwaysApply: false
+---
+
+# Chemical Reaction Educational Game
+
+Educational game visualizing chemical reactions with electron movement. Main species: **Atom**, **Electron**, **Electron Orbital**.
+
+## Domain Model
+
+- **Atom**: Core entity; can possess up to 4 electron orbitals (bonds). Has a radius used for bonding checks. When created, spawns four electron orbitals placed at north, south, east, and west around the atom; orbitals are anchored to the atom. Has a **charge** (int): positive when electrons are removed, negative when electrons are added.
+- **Electron**: Individual particle; stays in the orbital, occupying half the orbital space. No orbiting; positioned statically via `ElectronFunction` (slotIndex, halfSpaceOffset). Two electrons: one in each half.
+- **Electron Orbital**: Holds up to 2 electrons; can bond to an atom. Placed at cardinal positions (north, south, east, west) around the atom. Rotated to face outward from the atom based on relative position (`Mathf.Atan2(dir.y, dir.x)`). Uses `ElectronOrbitalFunction`; spawns `ElectronFunction` children from prefab based on `ElectronCount`.
+
+## Atom Creation
+
+When an atom is created, it receives an **atomic number**. Spawn four electron orbitals and place them around the atom at cardinal positions (north, south, east, west). Orbitals are anchored to the atom. Rotate each orbital based on its direction from the atom so it faces outward. Add a **label at the center of the atom** displaying the element symbol (e.g. H, C, O) based on atomic number.
+
+**Valence electrons** depend on the elemental group (1–18). Use `valenceElectrons = Mathf.Max(0, valence - charge)` so initial charge affects electron count. Distribute valence electrons across orbitals (max 2 per orbital):
+
+| Group | Valence |
+|-------|---------|
+| 1 | 1 |
+| 2 | 2 |
+| 13 | 3 |
+| 14 | 4 |
+| 15 | 5 |
+| 16 | 6 |
+| 17 | 7 |
+| 18 | 8 |
+
+## Constraints
+
+- Max 4 orbitals per atom
+- Max 2 electrons per orbital
+- Orbital positions: north, south, east, west (fixed slots)
+
+## Interaction Mechanics
+
+- **Drag**: User drags electron clouds (orbitals) and electrons. No bond break—orbitals stay bonded. While dragging, position follows the mouse. On release, returns to original position. Same behavior for electrons within orbitals.
+- **Purpose**: Simulates chemical reactions through drag-and-drop bonding.
+- **Mouse influence**: Atoms and electron orbitals near the cursor are affected by the player's mouse movement—automated movement (e.g., repulsion, attraction, or displacement) based on cursor position/velocity.
+
+## Charge Indicator
+
+- **Atom charge**: Each atom tracks `charge` (int). Positive = cation (lost electrons); negative = anion (gained electrons).
+- **Charge label**: Child of ElementLabel (`ElementLabel/ChargeLabel`). Displays `"X+"` for positive, `"X-"` for negative (use `Mathf.Abs(charge)` for the number). Hidden when `charge == 0`.
+- **Updates**: `OnElectronRemoved()` → `charge++`; `OnElectronAdded()` → `charge--`. Both call `RefreshChargeLabel()`.
+- **Layout**: Charge label positioned via `chargeLabelOffset` (fraction of elementLabelSize). Smaller font than element symbol.
+
+## Releasing and Accepting Electrons
+
+- **Release from orbital**: When user drags an electron and releases, if `!orbital.ContainsPoint(transform.position)` the electron has left the orbital. Call `orbital.RemoveElectron(this)` to detach it and update the bonded atom's charge.
+- **Accept into orbital**: After release, `TryAcceptIntoOrbital()` searches all orbitals for one where `CanAcceptElectron()` (electronCount < 2) and `ContainsPoint(transform.position)`. If found, call `orb.AcceptElectron(this)`.
+- **AcceptElectron**: Destroys the dragged electron, increments `electronCount`, calls `SyncElectronObjects()` to spawn new electron(s), then `bondedAtom.OnElectronAdded()` and `SetupIgnoreCollisions()`.
+- **RemoveElectron**: Decrements `electronCount`, reparents electron to world (null parent), calls `bondedAtom.OnElectronRemoved()`.
+- **During drag**: Orbital sets `SetPointerBlocked(true)` and `SetPhysicsEnabled(false)`; electron sets `SetIgnoreCollisionsWithAllOrbitals(true)` so it can pass through other orbitals for drop detection.
+
+```mermaid
+flowchart LR
+    Orbital[Orbital/Electron] -->|"User drags"| Dragging[Position follows mouse]
+    Dragging -->|"User releases"| Return[Returns to original position]
+```
+
+## Scripts and Setup
+
+| Script | Role |
+|--------|------|
+| `AtomFunction` | Atom; `atomicNumber`, `bondRadius`, `charge`, `orbitalPrefab`. On Start, derives group from periodic table (1–118), maps to valence, creates 4 orbitals at N/S/E/W with valence electrons. Rotates each orbital via `Quaternion.Euler(0, 0, Atan2(dir.y, dir.x) * Rad2Deg)`. Creates ElementLabel with element symbol and ChargeLabel (child). `OnElectronRemoved()` / `OnElectronAdded()` update charge and `RefreshChargeLabel()`. Lanthanides (57–71) and actinides (89–103) = group 3. |
+| `ElectronOrbitalFunction` | Orbital; `electronCount`, `electronPrefab`. Spawns `ElectronFunction` children via `SyncElectronObjects()`. `SetBondedAtom()` for init. `RemoveElectron(e)` detaches electron, decrements count, notifies atom. `AcceptElectron(e)` destroys e, increments count, syncs objects, notifies atom. `CanAcceptElectron()` when electronCount < 2. `ContainsPoint(worldPos)` for drop detection. Drag: no bond break; on release, returns to original position. |
+| `ElectronFunction` | Electron; static position along orbital width. `SetSlotIndex(i)`, `SetOrbitalWidth(w)`. Draggable: on release outside orbital, `RemoveElectron` then `TryAcceptIntoOrbital()`; inside orbital returns to original position. Requires Collider for mouse input. |
+| `ButtonCreateAtom` | UI button; `atomPrefab`, `viewportMargin`. Creates an atom at a random position with a random atomic number (1–118). Logs atom creation; diagnostic logs for missing prefab/camera. Add listener in Start via `TryGetComponent<Button>`. |
+
+**Mouse influence**: Implement automated movement for atoms and orbitals within a radius of the cursor; their position/velocity responds to player mouse movement (e.g., repulsion from cursor, or subtle drift toward/away from mouse).
+
+**Prefabs**: Atom prefab needs `orbitalPrefab` (ElectronOrbitalFunction). Orbital needs `electronPrefab` (ElectronFunction). ButtonCreateAtom needs `atomPrefab` assigned. Requires `Collider` on orbitals and electrons for mouse input.
+
+**Orbital rotation**: Rotate orbitals by `angle = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg`; apply `Quaternion.Euler(0, 0, angle)` so each orbital faces outward from the atom. Apply in `CreateOrbitalsWithValence`.
+
+**Atom label**: When an atom is created, add a TextMeshPro label at the atom center (localPosition 0,0,0) displaying the element symbol. Use a static lookup for symbols 1–118 (H, He, Li, Be, B, C, N, O, F, Ne, …).
+
+---
+
+## Rule Maintenance
+
+**When introducing a new feature**: Add corresponding instructions to this rule file. Document the feature's purpose, behavior, relevant APIs/properties, and any constraints. Update the Scripts table if new scripts or responsibilities are added. This keeps the rule in sync with the codebase and helps AI assistants and developers understand the system.
