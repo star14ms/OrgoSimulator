@@ -39,7 +39,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (chargeLabel == null) return;
         var tmp = chargeLabel.GetComponent<TMP_Text>();
         if (tmp == null) return;
-        tmp.text = charge > 0 ? charge + "+" : charge < 0 ? Mathf.Abs(charge) + "-" : "";
+        int abs = Mathf.Abs(charge);
+        tmp.text = charge > 0 ? (abs == 1 ? "+" : charge + "+") : charge < 0 ? (abs == 1 ? "-" : abs + "-") : "";
         chargeLabel.gameObject.SetActive(charge != 0);
     }
 
@@ -146,6 +147,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         int valence = GetValenceFromGroup(GetGroupFromAtomicNumber(atomicNumber));
         int valenceElectrons = Mathf.Max(0, valence - charge);
+        if (atomicNumber == 2) valenceElectrons = 2; // He: only 1s²
         CreateOrbitalsWithValence(valenceElectrons);
         CreateElementLabel();
     }
@@ -233,10 +235,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     void CreateOrbitalsWithValence(int valence)
     {
         if (orbitalPrefab == null) return;
+        int orbitalCount = (atomicNumber == 1 || atomicNumber == 2) ? 1 : 4; // H, He: s orbital only
         Vector3[] dirs = { Vector3.up, Vector3.down, Vector3.right, Vector3.left };
         float offset = bondRadius * 0.6f;
         int electronsRemaining = valence;
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < orbitalCount; i++)
         {
             var orbital = Instantiate(orbitalPrefab, transform);
             Vector3 dir = dirs[i];
