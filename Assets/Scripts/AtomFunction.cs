@@ -396,7 +396,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         RefreshChargeLabel();
     }
 
-    static string GetElementSymbol(int z)
+    public static string GetElementSymbol(int z)
     {
         if (z <= 0 || z > ElementSymbols.Length) return "?";
         return ElementSymbols[z - 1];
