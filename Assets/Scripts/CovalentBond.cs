@@ -300,10 +300,12 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         int piAfterA = atomA != null ? atomA.GetPiBondCount() : 0;
         int piAfterB = atomB != null ? atomB.GetPiBondCount() : 0;
-        if (atomA != null && piAfterA != piBeforeA)
-            atomA.RedistributeOrbitals(piBondAngleFromA);
-        if (atomB != null && piAfterB != piBeforeB)
-            atomB.RedistributeOrbitals(piBondAngleFromB);
+        // Redistribute when pi count changed OR when atom has pi bonds and got a new lone orbital
+        // (e.g. breaking sigma from double-bonded atom: pi count unchanged but orbital needs 120° placement)
+        if (atomA != null && (piAfterA != piBeforeA || (piAfterA > 0 && piAfterA == piBeforeA)))
+            atomA.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null);
+        if (atomB != null && (piAfterB != piBeforeB || (piAfterB > 0 && piAfterB == piBeforeB)))
+            atomB.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null);
 
         orbital = null;
         Destroy(gameObject);
