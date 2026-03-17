@@ -311,14 +311,19 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         int piBeforeTarget = targetAtom.GetPiBondCount();
 
         bool alreadyBonded = sourceAtom.GetBondsTo(targetAtom) >= 1;
-        if (!alreadyBonded && sourceAtom.CovalentBonds.Count > 0 && IsSourceFlippedSideFilled(sourceAtom, targetAtom, targetOrbital))
+        bool sourceAlreadyAligned = IsSourceOrbitalAlreadyAlignedWithTarget(sourceAtom, targetOrbital);
+        bool cannotRearrangeSource = !sourceAlreadyAligned && (sourceAtom.GetPiBondCount() > 0 || IsSourceFlippedSideFilled(sourceAtom, targetAtom, targetOrbital));
+        if (!alreadyBonded && sourceAtom.CovalentBonds.Count > 0 && cannotRearrangeSource)
         {
+            // Flip: move target to source when source's opposite side is filled.
             var sourceOrbitalOriginalTip = sourceAtom.transform.TransformPoint(originalLocalPosition);
-            if (targetAtom.CovalentBonds.Count > 0 && IsSourceFlippedSideFilled(targetAtom, sourceAtom, this, sourceOrbitalOriginalTip))
+            bool targetAlreadyAligned = IsOrbitalAlignedWithTargetPoint(targetOrbital, sourceOrbitalOriginalTip);
+            bool cannotRearrangeTarget = !targetAlreadyAligned && (targetAtom.GetPiBondCount() > 0 || IsSourceFlippedSideFilled(targetAtom, sourceAtom, this, sourceOrbitalOriginalTip));
+            if (targetAtom.CovalentBonds.Count > 0 && cannotRearrangeTarget)
             {
-                return false;
+                return false; // Target would also flip; would need to rearrange target but cannot (pi bonds)
             }
-            RearrangeOrbitalToFaceTarget(targetAtom, this);
+            RearrangeOrbitalToFaceTarget(targetAtom, this, sourceOrbitalOriginalTip);
             AlignSourceAtomNextToTarget(targetAtom, sourceAtom, this, sourceOrbitalOriginalTip);
             int mergedElectrons = targetOrbital.electronCount + this.ElectronCount;
             this.ElectronCount = mergedElectrons;
@@ -380,16 +385,47 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             targetAtom.RedistributeOrbitals();
     }
 
-    void RearrangeOrbitalToFaceTarget(AtomFunction sourceAtom, ElectronOrbitalFunction targetOrbital)
+    bool IsSourceOrbitalAlreadyAlignedWithTarget(AtomFunction sourceAtom, ElectronOrbitalFunction targetOrbital)
     {
-        // Use world-space angles so we compare consistently across different atoms
         float targetAngleWorld = OrbitalAngleUtility.GetOrbitalAngleWorld(targetOrbital.transform);
-        float oppositeAngleWorld = OrbitalAngleUtility.NormalizeAngle(targetAngleWorld + 180f); // direction source -> target
+        float oppositeAngleWorld = OrbitalAngleUtility.NormalizeAngle(targetAngleWorld + 180f);
         float draggedAngleWorld = OrbitalAngleUtility.LocalRotationToAngleWorld(sourceAtom.transform, originalLocalRotation);
-
         const float tolerance = 45f;
-        if (Mathf.Abs(OrbitalAngleUtility.NormalizeAngle(draggedAngleWorld - oppositeAngleWorld)) < tolerance)
-            return;
+        return Mathf.Abs(OrbitalAngleUtility.NormalizeAngle(draggedAngleWorld - oppositeAngleWorld)) < tolerance;
+    }
+
+    static bool IsOrbitalAlignedWithTargetPoint(ElectronOrbitalFunction orbital, Vector3 targetPoint)
+    {
+        var atomPos = orbital.transform.parent != null ? orbital.transform.parent.position : orbital.transform.position;
+        var dirToTarget = (targetPoint - atomPos).normalized;
+        float targetAngleWorld = OrbitalAngleUtility.DirectionToAngleWorld(dirToTarget);
+        float orbitalAngleWorld = OrbitalAngleUtility.GetOrbitalAngleWorld(orbital.transform);
+        const float tolerance = 45f;
+        return Mathf.Abs(OrbitalAngleUtility.NormalizeAngle(orbitalAngleWorld - targetAngleWorld)) < tolerance;
+    }
+
+    void RearrangeOrbitalToFaceTarget(AtomFunction sourceAtom, ElectronOrbitalFunction targetOrbital, Vector3? targetPointOverride = null)
+    {
+        float oppositeAngleWorld;
+        if (targetPointOverride.HasValue)
+        {
+            var dirFromSourceToTarget = (targetPointOverride.Value - sourceAtom.transform.position).normalized;
+            oppositeAngleWorld = OrbitalAngleUtility.DirectionToAngleWorld(dirFromSourceToTarget);
+            foreach (var orb in sourceAtom.GetComponentsInChildren<ElectronOrbitalFunction>())
+            {
+                if (orb != this && orb.Bond == null && IsOrbitalAlignedWithTargetPoint(orb, targetPointOverride.Value))
+                    return;
+            }
+        }
+        else
+        {
+            float targetAngleWorld = OrbitalAngleUtility.GetOrbitalAngleWorld(targetOrbital.transform);
+            oppositeAngleWorld = OrbitalAngleUtility.NormalizeAngle(targetAngleWorld + 180f);
+            float draggedAngleWorld = OrbitalAngleUtility.LocalRotationToAngleWorld(sourceAtom.transform, originalLocalRotation);
+            const float tolerance = 45f;
+            if (Mathf.Abs(OrbitalAngleUtility.NormalizeAngle(draggedAngleWorld - oppositeAngleWorld)) < tolerance)
+                return;
+        }
 
         var sourceOrbitals = sourceAtom.GetComponentsInChildren<ElectronOrbitalFunction>();
         ElectronOrbitalFunction orbToMove = null;
@@ -407,7 +443,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
         if (orbToMove != null)
         {
-            float freedSlotAngle = NormalizeAngle(originalLocalRotation.eulerAngles.z);
+            float freedSlotAngle = targetPointOverride.HasValue
+                ? OrbitalAngleUtility.DirectionToAngleWorld((targetPointOverride.Value - sourceAtom.transform.position).normalized)
+                : NormalizeAngle(originalLocalRotation.eulerAngles.z);
             var slotPos = GetCanonicalSlotPosition(freedSlotAngle, sourceAtom.BondRadius);
             orbToMove.transform.localPosition = slotPos.position;
             orbToMove.transform.localRotation = slotPos.rotation;
