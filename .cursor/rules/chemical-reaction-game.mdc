@@ -10,7 +10,7 @@ Educational game visualizing chemical reactions with electron movement. Main spe
 
 ## Domain Model
 
-- **Atom**: Core entity; can possess up to 4 electron orbitals (bonds). Has a radius used for bonding checks. When created, spawns four electron orbitals placed at north, south, east, and west around the atom; orbitals are anchored to the atom. Has a **charge** (int): positive when electrons are removed, negative when electrons are added.
+- **Atom**: Core entity; can possess up to 4 electron orbitals (bonds). Has a radius used for bonding checks. When created, spawns four electron orbitals placed at north, south, east, and west around the atom; orbitals are anchored to the atom. Has a **charge** (int): displayed as **oxidation state** using Pauling electronegativity—bonding electrons assigned to the more electronegative atom; equal EN splits 50-50.
 - **Electron**: Individual particle; stays in the orbital, occupying half the orbital space. No orbiting; positioned statically via `ElectronFunction` (slotIndex, halfSpaceOffset). Two electrons: one in each half.
 - **Electron Orbital**: Holds up to 2 electrons; can bond to an atom. Placed at cardinal positions (north, south, east, west) around the atom. Rotated to face outward from the atom based on relative position (`Mathf.Atan2(dir.y, dir.x)`). Uses `ElectronOrbitalFunction`; spawns `ElectronFunction` children from prefab based on `ElectronCount`.
 
@@ -45,7 +45,7 @@ When an atom is created, it receives an **atomic number**. Spawn four electron o
 
 ## Charge Indicator
 
-- **Atom charge**: Each atom tracks `charge` (int). Positive = cation (lost electrons); negative = anion (gained electrons).
+- **Atom charge**: Displayed as oxidation state (int). Computed via `ComputeCharge()` using Pauling electronegativity: bonding electrons assigned to the more electronegative atom; equal EN splits 50-50. Positive = oxidation; negative = reduction.
 - **Charge label**: Child of ElementLabel (`ElementLabel/ChargeLabel`). Displays `"X+"` for positive, `"X-"` for negative (use `Mathf.Abs(charge)` for the number). Hidden when `charge == 0`.
 - **Updates**: `OnElectronRemoved()` → `charge++`; `OnElectronAdded()` → `charge--`. Both call `RefreshChargeLabel()`.
 - **Layout**: Charge label positioned via `chargeLabelOffset` (fraction of elementLabelSize). Smaller font than element symbol.

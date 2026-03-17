@@ -89,6 +89,15 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (col2D != null) col2D.enabled = !blocked;
     }
 
+    /// <summary>Show or hide the orbital and its electron visuals. Used when bond displays as a line.</summary>
+    public void SetVisualsEnabled(bool enabled)
+    {
+        var sr = GetComponent<SpriteRenderer>();
+        if (sr != null) sr.enabled = enabled;
+        foreach (var r in GetComponentsInChildren<Renderer>(true))
+            r.enabled = enabled;
+    }
+
     public void SetPhysicsEnabled(bool enabled)
     {
         void SetRb(GameObject go)
@@ -290,6 +299,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             transform.localPosition = originalLocalPosition;
             transform.localScale = originalLocalScale;
             transform.localRotation = originalLocalRotation;
+            bond.ReturnToLineView();
         }
     }
 
@@ -372,7 +382,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         var distToOrbital = toOrbital.magnitude;
         if (distToOrbital < 0.01f) return;
         var dir = toOrbital / distToOrbital;
-        sourceAtom.transform.position = targetOrbitalTip + dir * distToOrbital;
+        var newSourcePos = targetOrbitalTip + dir * distToOrbital;
+        var delta = newSourcePos - sourceAtom.transform.position;
+        foreach (var a in sourceAtom.GetConnectedMolecule())
+            a.transform.position += delta;
     }
 
     void CreateStretchVisual()

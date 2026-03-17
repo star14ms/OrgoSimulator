@@ -47,28 +47,59 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         RefreshCharge();
     }
 
+    /// <summary>Computes oxidation state using electronegativity: bonding electrons assigned to the more electronegative atom; equal EN splits 50-50.</summary>
     public int ComputeCharge()
     {
         int valence = GetValenceFromGroup(GetGroupFromAtomicNumber(atomicNumber));
         if (atomicNumber == 2) valence = 2;
 
-        int loneElectrons = 0;
+        int electronsOwned = 0;
+
         foreach (var orb in GetComponentsInChildren<ElectronOrbitalFunction>())
         {
             if (orb.transform.parent != transform) continue;
             if (orb.Bond == null)
-                loneElectrons += orb.ElectronCount;
+                electronsOwned += orb.ElectronCount;
         }
 
-        int sharedElectrons = 0;
+        float myEN = GetElectronegativity(atomicNumber);
         foreach (var b in covalentBonds)
         {
-            if (b != null && b.Orbital != null)
-                sharedElectrons += b.ElectronCount;
+            if (b == null || b.Orbital == null) continue;
+            var other = b.AtomA == this ? b.AtomB : b.AtomA;
+            if (other == null) continue;
+            float otherEN = GetElectronegativity(other.AtomicNumber);
+            int bondElectrons = b.ElectronCount;
+            if (myEN > otherEN)
+                electronsOwned += bondElectrons;
+            else if (myEN < otherEN)
+                electronsOwned += 0;
+            else
+                electronsOwned += bondElectrons / 2;
         }
 
-        return valence - (loneElectrons + sharedElectrons);
+        return valence - electronsOwned;
     }
+
+    public static float GetElectronegativity(int z)
+    {
+        if (z <= 0 || z > ElectronegativityPauling.Length) return 2f;
+        return ElectronegativityPauling[z - 1];
+    }
+
+    static readonly float[] ElectronegativityPauling =
+    {
+        2.20f, 2.0f, 0.98f, 1.57f, 2.04f, 2.55f, 3.04f, 3.44f, 3.98f, 2.0f,
+        0.93f, 1.31f, 1.61f, 1.90f, 2.19f, 2.58f, 3.16f, 2.0f,
+        0.82f, 1.00f, 1.36f, 1.54f, 1.63f, 1.66f, 1.55f, 1.83f, 1.88f, 1.91f, 1.90f, 1.65f, 1.81f, 2.01f, 2.18f, 2.55f, 2.96f, 3.00f,
+        0.82f, 0.95f, 1.22f, 1.33f, 1.60f, 2.16f, 1.90f, 2.20f, 2.28f, 2.20f, 1.93f, 1.69f, 1.78f, 1.96f, 2.05f, 2.10f, 2.66f, 2.60f,
+        0.79f, 0.89f,
+        1.10f, 1.12f, 1.13f, 1.14f, 1.15f, 1.17f, 1.15f, 1.20f, 1.15f, 1.22f, 1.23f, 1.24f, 1.25f, 1.15f, 1.27f,
+        1.30f, 1.50f, 2.36f, 1.90f, 2.20f, 2.20f, 2.28f, 2.54f, 2.00f, 1.62f, 2.33f, 2.02f, 2.00f, 2.20f, 2.20f,
+        0.70f, 0.90f,
+        1.10f, 1.30f, 1.50f, 1.38f, 1.36f, 1.28f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f,
+        1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f, 1.30f
+    };
 
     public void RefreshCharge()
     {
@@ -314,7 +345,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
     }
 
-    HashSet<AtomFunction> GetConnectedMolecule()
+    public HashSet<AtomFunction> GetConnectedMolecule()
     {
         var set = new HashSet<AtomFunction>();
         var queue = new Queue<AtomFunction>();
