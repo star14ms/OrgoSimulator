@@ -8,6 +8,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     [SerializeField] float electronSpacing = 0.5f; // Distance between electrons (larger = more spread)
     [SerializeField] Sprite stretchSprite; // Optional: single sprite for stretch. If null, uses procedural triangle+circle composite.
     AtomFunction bondedAtom;
+    CovalentBond bond;
     bool isBeingHeld;
     Vector3 dragOffset;
 
@@ -21,23 +22,37 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             electronCount = Mathf.Clamp(value, 0, MaxElectrons);
             int delta = electronCount - oldCount;
             SyncElectronObjects();
-            if (bondedAtom != null && delta > 0)
-                for (int i = 0; i < delta; i++)
-                    bondedAtom.OnElectronAdded();
+            if (delta != 0)
+            {
+                if (bond != null)
+                    bond.NotifyElectronCountChanged();
+                else if (bondedAtom != null)
+                {
+                    for (int i = 0; i < Mathf.Abs(delta); i++)
+                        if (delta > 0) bondedAtom.OnElectronAdded();
+                        else bondedAtom.OnElectronRemoved();
+                }
+            }
         }
     }
 
-    public bool IsBonded => bondedAtom != null && !isBeingHeld;
+    public bool IsBonded => (bondedAtom != null || bond != null) && !isBeingHeld;
     public AtomFunction BondedAtom => bondedAtom;
+    public CovalentBond Bond => bond;
 
     public void SetBondedAtom(AtomFunction atom) => bondedAtom = atom;
+
+    public void SetBond(CovalentBond b) => bond = b;
 
     public void RemoveElectron(ElectronFunction electron)
     {
         if (electron.transform.parent != transform) return;
         electronCount = Mathf.Clamp(electronCount - 1, 0, MaxElectrons);
         electron.transform.SetParent(null);
-        bondedAtom?.OnElectronRemoved();
+        if (bond != null)
+            bond.NotifyElectronCountChanged();
+        else
+            bondedAtom?.OnElectronRemoved();
     }
 
     public bool CanAcceptElectron() => electronCount < MaxElectrons;
@@ -48,8 +63,13 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         Destroy(electron.gameObject);
         electronCount++;
         SyncElectronObjects();
-        bondedAtom?.OnElectronAdded();
-        bondedAtom?.SetupIgnoreCollisions();
+        if (bond != null)
+            bond.NotifyElectronCountChanged();
+        else
+        {
+            bondedAtom?.OnElectronAdded();
+            bondedAtom?.SetupIgnoreCollisions();
+        }
         return true;
     }
 
@@ -196,12 +216,163 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     public void OnPointerUp(PointerEventData eventData)
     {
         isBeingHeld = false;
-        transform.localPosition = originalLocalPosition;
-        transform.localScale = originalLocalScale;
-        transform.localRotation = originalLocalRotation;
+        Vector3 tip = transform.position;
         if (stretchVisual != null) { Destroy(stretchVisual); stretchVisual = null; }
         if (mainSpriteRenderer != null) mainSpriteRenderer.enabled = true;
         SetPhysicsEnabled(true);
+
+        if (bond != null)
+        {
+            TryBreakBond(tip);
+            return;
+        }
+
+        var sourceAtom = bondedAtom ?? transform.parent?.GetComponent<AtomFunction>();
+        var targetAtom = AtomFunction.FindBondPartner(sourceAtom, tip, this);
+        if (targetAtom != null && FormCovalentBond(sourceAtom, targetAtom, tip))
+            return;
+
+        var swapTarget = TryFindSwapTarget(sourceAtom, tip);
+        if (swapTarget != null)
+        {
+            SwapPositionsWith(swapTarget);
+            return;
+        }
+
+        transform.localPosition = originalLocalPosition;
+        transform.localScale = originalLocalScale;
+        transform.localRotation = originalLocalRotation;
+    }
+
+    ElectronOrbitalFunction TryFindSwapTarget(AtomFunction atom, Vector3 tip)
+    {
+        if (atom == null || bond != null) return null;
+        var orbitals = atom.GetComponentsInChildren<ElectronOrbitalFunction>();
+        foreach (var orb in orbitals)
+        {
+            if (orb != this && orb.Bond == null && orb.ContainsPoint(tip))
+                return orb;
+        }
+        return null;
+    }
+
+    void SwapPositionsWith(ElectronOrbitalFunction other)
+    {
+        var pos = transform.localPosition;
+        var rot = transform.localRotation;
+        transform.localPosition = other.transform.localPosition;
+        transform.localRotation = other.transform.localRotation;
+        other.transform.localPosition = pos;
+        other.transform.localRotation = rot;
+    }
+
+    void TryBreakBond(Vector3 tip)
+    {
+        if (bond == null) return;
+        var a = bond.AtomA;
+        var b = bond.AtomB;
+        if (a == null || b == null) return;
+        float rA = a.BondRadius * 1.2f;
+        float rB = b.BondRadius * 1.2f;
+        float da = Vector3.Distance(tip, a.transform.position);
+        float db = Vector3.Distance(tip, b.transform.position);
+        AtomFunction returnTo = null;
+        if (da <= rA && db <= rB)
+            returnTo = da <= db ? a : b;
+        else if (da <= rA)
+            returnTo = a;
+        else if (db <= rB)
+            returnTo = b;
+        if (returnTo != null)
+            bond.BreakBond(returnTo);
+        else
+        {
+            transform.localPosition = originalLocalPosition;
+            transform.localScale = originalLocalScale;
+            transform.localRotation = originalLocalRotation;
+        }
+    }
+
+    bool FormCovalentBond(AtomFunction sourceAtom, AtomFunction targetAtom, Vector3 dropPosition)
+    {
+        if (sourceAtom == null || targetAtom == null || sourceAtom == targetAtom) return false;
+        var targetOrbital = targetAtom.GetAvailableLoneOrbitalForBond(this, electronCount, dropPosition);
+        if (targetOrbital == null) return false;
+
+        RearrangeOrbitalToFaceTarget(sourceAtom, targetOrbital);
+        AlignSourceAtomNextToTarget(sourceAtom, targetAtom, targetOrbital);
+
+        int mergedElectrons = electronCount + targetOrbital.ElectronCount;
+        targetOrbital.ElectronCount = mergedElectrons;
+
+        sourceAtom.UnbondOrbital(this);
+        targetAtom.UnbondOrbital(targetOrbital);
+
+        CovalentBond.Create(sourceAtom, targetAtom, targetOrbital);
+        transform.SetParent(null);
+        sourceAtom.RefreshCharge();
+        targetAtom.RefreshCharge();
+        Destroy(gameObject);
+        return true;
+    }
+
+    void RearrangeOrbitalToFaceTarget(AtomFunction sourceAtom, ElectronOrbitalFunction targetOrbital)
+    {
+        float targetAngle = NormalizeAngle(targetOrbital.transform.localEulerAngles.z);
+        float oppositeAngle = NormalizeAngle(targetAngle + 180f);
+        float draggedAngle = NormalizeAngle(originalLocalRotation.eulerAngles.z);
+        if (Mathf.Abs(NormalizeAngle(draggedAngle - oppositeAngle)) < 45f)
+            return;
+        var sourceOrbitals = sourceAtom.GetComponentsInChildren<ElectronOrbitalFunction>();
+        ElectronOrbitalFunction orbToMove = null;
+        float bestDelta = 360f;
+        foreach (var orb in sourceOrbitals)
+        {
+            if (orb == this || orb.Bond != null) continue;
+            float orbAngle = NormalizeAngle(orb.transform.localEulerAngles.z);
+            float delta = Mathf.Abs(NormalizeAngle(orbAngle - oppositeAngle));
+            if (delta < bestDelta)
+            {
+                bestDelta = delta;
+                orbToMove = orb;
+            }
+        }
+        if (orbToMove != null)
+        {
+            float freedSlotAngle = NormalizeAngle(originalLocalRotation.eulerAngles.z);
+            var slotPos = GetCanonicalSlotPosition(freedSlotAngle, sourceAtom.BondRadius);
+            orbToMove.transform.localPosition = slotPos.position;
+            orbToMove.transform.localRotation = slotPos.rotation;
+        }
+    }
+
+    public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPosition(float angleDeg, float bondRadius)
+    {
+        float angle = NormalizeAngle(angleDeg);
+        float rad = angle * Mathf.Deg2Rad;
+        float offset = bondRadius * 0.6f;
+        var dir = new Vector3(Mathf.Cos(rad), Mathf.Sin(rad), 0f);
+        var pos = dir * offset;
+        var rot = Quaternion.Euler(0, 0, angle);
+        return (pos, rot);
+    }
+
+    public static float NormalizeAngle(float deg)
+    {
+        while (deg > 180f) deg -= 360f;
+        while (deg < -180f) deg += 360f;
+        return deg;
+    }
+
+    void AlignSourceAtomNextToTarget(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital)
+    {
+        var targetPos = targetAtom.transform.position;
+        var targetOrbitalTip = targetOrbital.transform.position;
+        var toOrbital = targetOrbitalTip - targetPos;
+        var distToOrbital = toOrbital.magnitude;
+        if (distToOrbital < 0.01f) return;
+        var dir = toOrbital / distToOrbital;
+        sourceAtom.transform.position = targetOrbitalTip + dir * distToOrbital;
     }
 
     void CreateStretchVisual()

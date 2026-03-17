@@ -10,26 +10,69 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     [SerializeField] int charge;
     [SerializeField] ElectronOrbitalFunction orbitalPrefab;
     readonly List<ElectronOrbitalFunction> bondedOrbitals = new List<ElectronOrbitalFunction>();
+    readonly List<CovalentBond> covalentBonds = new List<CovalentBond>();
 
     bool isBeingHeld;
     Vector3 dragOffset;
+    HashSet<AtomFunction> moleculeAtoms;
 
     public float BondRadius => bondRadius;
+    public ElectronOrbitalFunction OrbitalPrefab => orbitalPrefab;
     public int BondedOrbitalCount => bondedOrbitals.Count;
     public int AtomicNumber { get => atomicNumber; set => atomicNumber = Mathf.Clamp(value, 1, 118); }
     public int Charge { get => charge; set { charge = value; RefreshChargeLabel(); } }
 
     public bool CanAcceptOrbital() => bondedOrbitals.Count < 4;
 
+    public void RegisterBond(CovalentBond bond)
+    {
+        if (bond != null && !covalentBonds.Contains(bond))
+            covalentBonds.Add(bond);
+    }
+
+    public void UnregisterBond(CovalentBond bond)
+    {
+        covalentBonds.Remove(bond);
+    }
+
+    public IReadOnlyList<CovalentBond> CovalentBonds => covalentBonds;
+
     public void OnElectronRemoved()
     {
-        charge++;
-        RefreshChargeLabel();
+        RefreshCharge();
     }
 
     public void OnElectronAdded()
     {
-        charge--;
+        RefreshCharge();
+    }
+
+    public int ComputeCharge()
+    {
+        int valence = GetValenceFromGroup(GetGroupFromAtomicNumber(atomicNumber));
+        if (atomicNumber == 2) valence = 2;
+
+        int loneElectrons = 0;
+        foreach (var orb in GetComponentsInChildren<ElectronOrbitalFunction>())
+        {
+            if (orb.transform.parent != transform) continue;
+            if (orb.Bond == null)
+                loneElectrons += orb.ElectronCount;
+        }
+
+        int sharedElectrons = 0;
+        foreach (var b in covalentBonds)
+        {
+            if (b != null && b.Orbital != null)
+                sharedElectrons += b.ElectronCount;
+        }
+
+        return valence - (loneElectrons + sharedElectrons);
+    }
+
+    public void RefreshCharge()
+    {
+        charge = ComputeCharge();
         RefreshChargeLabel();
     }
 
@@ -55,16 +98,132 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         bondedOrbitals.Remove(orbital);
     }
 
+    public (Vector3 position, Quaternion rotation) GetSlotForNewOrbital(Vector3 preferredDirectionWorld, ElectronOrbitalFunction excludeOrbital = null)
+    {
+        Vector3 localDir = transform.InverseTransformDirection(preferredDirectionWorld);
+        localDir.z = 0;
+        if (localDir.sqrMagnitude < 0.01f) localDir = Vector3.right;
+        localDir.Normalize();
+        float preferredAngle = Mathf.Atan2(localDir.y, localDir.x) * Mathf.Rad2Deg;
+
+        float[] slotAngles = { 90f, -90f, 0f, 180f };
+        const float slotTolerance = 50f;
+
+        float bestAngle = preferredAngle;
+        float bestDelta = 360f;
+        foreach (float slotAngle in slotAngles)
+        {
+            bool occupied = false;
+            foreach (var orb in bondedOrbitals)
+            {
+                if (orb == excludeOrbital || orb == null) continue;
+                float orbAngle = ElectronOrbitalFunction.NormalizeAngle(orb.transform.localEulerAngles.z);
+                float delta = Mathf.Abs(ElectronOrbitalFunction.NormalizeAngle(orbAngle - slotAngle));
+                if (delta < slotTolerance || delta > 360f - slotTolerance)
+                {
+                    occupied = true;
+                    break;
+                }
+            }
+            if (!occupied)
+            {
+                float delta = Mathf.Abs(ElectronOrbitalFunction.NormalizeAngle(slotAngle - preferredAngle));
+                if (delta > 180f) delta = 360f - delta;
+                if (delta < bestDelta)
+                {
+                    bestDelta = delta;
+                    bestAngle = slotAngle;
+                }
+            }
+        }
+        return ElectronOrbitalFunction.GetCanonicalSlotPosition(bestAngle, bondRadius);
+    }
+
+    public ElectronOrbitalFunction GetEmptyLoneOrbital()
+    {
+        foreach (var orb in bondedOrbitals)
+            if (orb != null && orb.Bond == null && orb.ElectronCount == 0)
+                return orb;
+        return null;
+    }
+
+    public ElectronOrbitalFunction GetAvailableLoneOrbitalForBond(ElectronOrbitalFunction excludeOrbital, int sourceElectronCount, Vector3 hitPosition)
+    {
+        foreach (var orb in bondedOrbitals)
+        {
+            if (orb == null || orb.Bond != null || orb == excludeOrbital) continue;
+            if (orb.ElectronCount + sourceElectronCount != ElectronOrbitalFunction.MaxElectrons) continue;
+            if (orb.ContainsPoint(hitPosition))
+                return orb;
+        }
+        return null;
+    }
+
+    public bool HasEmptyLoneOrbital() => GetEmptyLoneOrbital() != null;
+
+    public bool HasAvailableLoneOrbitalForBond(ElectronOrbitalFunction excludeOrbital, int sourceElectronCount)
+    {
+        foreach (var orb in bondedOrbitals)
+        {
+            if (orb == null || orb.Bond != null || orb == excludeOrbital) continue;
+            if (orb.ElectronCount + sourceElectronCount == ElectronOrbitalFunction.MaxElectrons)
+                return true;
+        }
+        return false;
+    }
+
+    public static AtomFunction FindBondPartner(AtomFunction sourceAtom, Vector3 tipPosition, ElectronOrbitalFunction sourceOrbital)
+    {
+        if (sourceAtom == null) return null;
+        float radius = sourceAtom.BondRadius * 1.5f;
+        var atoms = Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
+        foreach (var a in atoms)
+        {
+            if (a == sourceAtom) continue;
+            if (!a.HasAvailableLoneOrbitalForBond(sourceOrbital, sourceOrbital.ElectronCount)) continue;
+            if (Vector3.Distance(a.transform.position, tipPosition) > radius) continue;
+            return a;
+        }
+        return null;
+    }
+
     public void SetupIgnoreCollisions()
     {
-        var orbitals = GetComponentsInChildren<ElectronOrbitalFunction>();
+        SetupGlobalIgnoreCollisions();
+    }
+
+    public static void SetupGlobalIgnoreCollisions()
+    {
+        var atoms = Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
+        var orbitals = new List<ElectronOrbitalFunction>();
         var allElectrons = new List<ElectronFunction>();
+        var atomColliders = new List<(Collider2D c2d, Collider c3d)>();
+
+        foreach (var a in atoms)
+        {
+            var a2d = a.GetComponent<Collider2D>();
+            var a3d = a.GetComponent<Collider>();
+            if (a2d != null || a3d != null) atomColliders.Add((a2d, a3d));
+            orbitals.AddRange(a.GetComponentsInChildren<ElectronOrbitalFunction>());
+            foreach (var b in a.CovalentBonds)
+                if (b?.Orbital != null && !orbitals.Contains(b.Orbital))
+                    orbitals.Add(b.Orbital);
+        }
         foreach (var orb in orbitals)
             allElectrons.AddRange(orb.GetComponentsInChildren<ElectronFunction>());
 
-        for (int i = 0; i < orbitals.Length; i++)
+        for (int i = 0; i < atomColliders.Count; i++)
+            for (int j = i + 1; j < atomColliders.Count; j++)
+                IgnoreCollisionPair(atomColliders[i], atomColliders[j]);
+        foreach (var ac in atomColliders)
+            foreach (var orb in orbitals)
+                IgnoreCollision(ac, orb.GetComponent<Collider2D>(), orb.GetComponent<Collider>());
+        foreach (var ac in atomColliders)
+            foreach (var e in allElectrons)
+                IgnoreCollision(ac, e.GetComponent<Collider2D>(), e.GetComponent<Collider>());
+        for (int i = 0; i < orbitals.Count; i++)
         {
-            for (int j = i + 1; j < orbitals.Length; j++)
+            for (int j = i + 1; j < orbitals.Count; j++)
                 IgnoreCollision(orbitals[i], orbitals[j]);
             foreach (var e in allElectrons)
                 IgnoreCollision(orbitals[i], e);
@@ -72,6 +231,18 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         for (int i = 0; i < allElectrons.Count; i++)
             for (int j = i + 1; j < allElectrons.Count; j++)
                 IgnoreCollision(allElectrons[i], allElectrons[j]);
+    }
+
+    static void IgnoreCollisionPair((Collider2D c2d, Collider c3d) a, (Collider2D c2d, Collider c3d) b)
+    {
+        if (a.c2d != null && b.c2d != null) Physics2D.IgnoreCollision(a.c2d, b.c2d);
+        if (a.c3d != null && b.c3d != null) Physics.IgnoreCollision(a.c3d, b.c3d);
+    }
+
+    static void IgnoreCollision((Collider2D c2d, Collider c3d) a, Collider2D b2d, Collider b3d)
+    {
+        if (a.c2d != null && b2d != null) Physics2D.IgnoreCollision(a.c2d, b2d);
+        if (a.c3d != null && b3d != null) Physics.IgnoreCollision(a.c3d, b3d);
     }
 
     static void IgnoreCollision(ElectronOrbitalFunction a, ElectronOrbitalFunction b)
@@ -124,12 +295,43 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         isBeingHeld = true;
         dragOffset = transform.position - ScreenToWorld(eventData.position);
+        moleculeAtoms = GetConnectedMolecule();
     }
 
     public void OnDrag(PointerEventData eventData)
     {
-        if (isBeingHeld)
-            transform.position = ScreenToWorld(eventData.position) + dragOffset;
+        if (!isBeingHeld) return;
+        var newPos = ScreenToWorld(eventData.position) + dragOffset;
+        var delta = newPos - transform.position;
+        transform.position = newPos;
+        if (moleculeAtoms != null)
+        {
+            foreach (var a in moleculeAtoms)
+            {
+                if (a != this)
+                    a.transform.position += delta;
+            }
+        }
+    }
+
+    HashSet<AtomFunction> GetConnectedMolecule()
+    {
+        var set = new HashSet<AtomFunction>();
+        var queue = new Queue<AtomFunction>();
+        queue.Enqueue(this);
+        set.Add(this);
+        while (queue.Count > 0)
+        {
+            var a = queue.Dequeue();
+            foreach (var b in a.CovalentBonds)
+            {
+                if (b == null) continue;
+                var other = b.AtomA == a ? b.AtomB : b.AtomA;
+                if (other != null && set.Add(other))
+                    queue.Enqueue(other);
+            }
+        }
+        return set;
     }
 
     public void OnPointerUp(PointerEventData eventData)
@@ -150,6 +352,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (atomicNumber == 2) valenceElectrons = 2; // He: only 1s²
         CreateOrbitalsWithValence(valenceElectrons);
         CreateElementLabel();
+        RefreshCharge();
     }
 
     [SerializeField] Vector2 chargeLabelOffset = new Vector2(0.33f, 0.5f); // Fraction of elementLabelSize (0.5 = right/top edge)
