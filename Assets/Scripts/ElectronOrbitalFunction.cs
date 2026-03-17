@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 using UnityEngine.EventSystems;
 
@@ -120,7 +121,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     const float MinStretchLength = 0.5f;
     const float OffsetScale = 1.14f;
     [SerializeField] float apexPadding = 0.2f;
-    float lastDebugLogTime;
     static Sprite cachedTriangleSprite;
     static Sprite cachedCircleSprite;
     static Material cachedTriangleClipMaterial;
@@ -267,12 +267,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
     void SwapPositionsWith(ElectronOrbitalFunction other)
     {
-        var pos = transform.localPosition;
-        var rot = transform.localRotation;
         transform.localPosition = other.transform.localPosition;
         transform.localRotation = other.transform.localRotation;
-        other.transform.localPosition = pos;
-        other.transform.localRotation = rot;
+        other.transform.localPosition = originalLocalPosition;
+        other.transform.localRotation = originalLocalRotation;
     }
 
     void TryBreakBond(Vector3 tip)
@@ -309,20 +307,46 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         var targetOrbital = targetAtom.GetAvailableLoneOrbitalForBond(this, electronCount, dropPosition);
         if (targetOrbital == null) return false;
 
-        RearrangeOrbitalToFaceTarget(sourceAtom, targetOrbital);
-        AlignSourceAtomNextToTarget(sourceAtom, targetAtom, targetOrbital);
+        if (sourceAtom.CovalentBonds.Count > 0 && IsSourceFlippedSideFilled(sourceAtom, targetAtom, targetOrbital))
+        {
+            var sourceOrbitalOriginalTip = sourceAtom.transform.TransformPoint(originalLocalPosition);
+            if (targetAtom.CovalentBonds.Count > 0 && IsSourceFlippedSideFilled(targetAtom, sourceAtom, this, sourceOrbitalOriginalTip))
+            {
+                return false;
+            }
+            RearrangeOrbitalToFaceTarget(targetAtom, this);
+            AlignSourceAtomNextToTarget(targetAtom, sourceAtom, this, sourceOrbitalOriginalTip);
+            int mergedElectrons = targetOrbital.electronCount + this.ElectronCount;
+            this.ElectronCount = mergedElectrons;
 
-        int mergedElectrons = electronCount + targetOrbital.ElectronCount;
-        targetOrbital.ElectronCount = mergedElectrons;
+            sourceAtom.UnbondOrbital(this);
+            targetAtom.UnbondOrbital(targetOrbital);
 
-        sourceAtom.UnbondOrbital(this);
-        targetAtom.UnbondOrbital(targetOrbital);
+            transform.localPosition = originalLocalPosition;
+            transform.localRotation = originalLocalRotation;
 
-        CovalentBond.Create(sourceAtom, targetAtom, targetOrbital);
-        transform.SetParent(null);
-        sourceAtom.RefreshCharge();
-        targetAtom.RefreshCharge();
-        Destroy(gameObject);
+            CovalentBond.Create(targetAtom, sourceAtom, this);
+            targetAtom.transform.SetParent(null);
+            sourceAtom.RefreshCharge();
+            targetAtom.RefreshCharge();
+            Destroy(targetOrbital.gameObject);
+        }
+        else
+        {
+            RearrangeOrbitalToFaceTarget(sourceAtom, targetOrbital);
+            AlignSourceAtomNextToTarget(sourceAtom, targetAtom, targetOrbital);
+            int mergedElectrons = electronCount + targetOrbital.ElectronCount;
+            targetOrbital.ElectronCount = mergedElectrons;
+
+            sourceAtom.UnbondOrbital(this);
+            targetAtom.UnbondOrbital(targetOrbital);
+
+            CovalentBond.Create(sourceAtom, targetAtom, targetOrbital);
+            transform.SetParent(null);
+            sourceAtom.RefreshCharge();
+            targetAtom.RefreshCharge();
+            Destroy(gameObject);
+        }
         return true;
     }
 
@@ -374,10 +398,38 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         return deg;
     }
 
-    void AlignSourceAtomNextToTarget(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital)
+    bool IsSourceFlippedSideFilled(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3? orbitalTipOverride = null)
     {
         var targetPos = targetAtom.transform.position;
-        var targetOrbitalTip = targetOrbital.transform.position;
+        var orbitalTip = orbitalTipOverride ?? targetOrbital.transform.position;
+        var targetOrbitalDir = (orbitalTip - targetPos).normalized;
+        float targetOrbitalAngle = Mathf.Atan2(targetOrbitalDir.y, targetOrbitalDir.x) * Mathf.Rad2Deg;
+        float flippedAngle = NormalizeAngle(targetOrbitalAngle + 180f);
+        const float toleranceDeg = 45f;
+        var sourcePos = sourceAtom.transform.position;
+
+        foreach (var b in sourceAtom.CovalentBonds)
+        {
+            if (b == null) continue;
+            var other = b.AtomA == sourceAtom ? b.AtomB : b.AtomA;
+            if (other == null) continue;
+            var dirToOther = (other.transform.position - sourcePos).normalized;
+            float bondAngleDeg = Mathf.Atan2(dirToOther.y, dirToOther.x) * Mathf.Rad2Deg;
+            float bondAngleNorm = NormalizeAngle(bondAngleDeg);
+            float delta = NormalizeAngle(bondAngleNorm - flippedAngle);
+            float absDelta = Mathf.Abs(delta);
+            bool isFlippedSide = absDelta < toleranceDeg;
+
+            if (isFlippedSide)
+                return true;
+        }
+        return false;
+    }
+
+    void AlignSourceAtomNextToTarget(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3? targetOrbitalTipOverride = null)
+    {
+        var targetPos = targetAtom.transform.position;
+        var targetOrbitalTip = targetOrbitalTipOverride ?? targetOrbital.transform.position;
         var toOrbital = targetOrbitalTip - targetPos;
         var distToOrbital = toOrbital.magnitude;
         if (distToOrbital < 0.01f) return;
@@ -385,6 +437,21 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         var newSourcePos = targetOrbitalTip + dir * distToOrbital;
         var delta = newSourcePos - sourceAtom.transform.position;
         foreach (var a in sourceAtom.GetConnectedMolecule())
+            a.transform.position += delta;
+    }
+
+    void AlignTargetAtomNextToSource(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital)
+    {
+        var targetPos = targetAtom.transform.position;
+        var targetOrbitalTip = targetOrbital.transform.position;
+        var toOrbital = targetOrbitalTip - targetPos;
+        var distToOrbital = toOrbital.magnitude;
+        if (distToOrbital < 0.01f) return;
+        var dir = toOrbital / distToOrbital;
+        var sourceOrbitalTip = transform.position;
+        var newTargetPos = sourceOrbitalTip - dir * distToOrbital;
+        var delta = newTargetPos - targetAtom.transform.position;
+        foreach (var a in targetAtom.GetConnectedMolecule())
             a.transform.position += delta;
     }
 
@@ -495,14 +562,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 circle.localPosition = new Vector3(0f, triHeightScale, 0f);
                 circle.localRotation = Quaternion.identity;
                 circle.localScale = new Vector3(circleScale * OffsetScale, circleScale * OffsetScale, 1f);
-            }
-            if (tri != null && circle != null && Time.time - lastDebugLogTime > 0.5f)
-            {
-                lastDebugLogTime = Time.time;
-                var circleSr = circle.GetComponent<SpriteRenderer>();
-                float orbitalCircleDiameter = circleSr != null ? circleSr.bounds.size.x : 0f;
-                float clipCircleDiameter = 2f * circleScale;
-                Debug.Log($"[Orbital] Orbital circle diameter: {orbitalCircleDiameter:F3}, Clip circle diameter: {clipCircleDiameter:F3} (should match)");
             }
         }
     }

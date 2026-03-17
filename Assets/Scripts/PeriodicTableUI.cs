@@ -12,10 +12,10 @@ public class PeriodicTableUI : MonoBehaviour
 
     public void SetAtomPrefab(GameObject prefab) => atomPrefab = prefab;
     public void SetViewportMargin(float margin) => viewportMargin = margin;
-    [SerializeField] float cellSize = 32f;
-    [SerializeField] float spacing = 4f;
-    [SerializeField] float blockPadding = 8f;
-    [SerializeField] int fontSize = 12;
+    [SerializeField] float cellSize = 40f;
+    [SerializeField] float spacing = 5f;
+    [SerializeField] float blockPadding = 10f;
+    [SerializeField] int fontSize = 20;
 
     GameObject panel;
     GameObject content;
@@ -59,8 +59,8 @@ public class PeriodicTableUI : MonoBehaviour
         var scrollGo = new GameObject("ScrollView");
         scrollGo.transform.SetParent(panel.transform, false);
         var scrollRect = scrollGo.AddComponent<RectTransform>();
-        scrollRect.anchorMin = new Vector2(0.1f, 0.1f);
-        scrollRect.anchorMax = new Vector2(0.9f, 0.9f);
+        scrollRect.anchorMin = new Vector2(0.05f, 0.05f);
+        scrollRect.anchorMax = new Vector2(0.95f, 0.95f);
         scrollRect.offsetMin = Vector2.zero;
         scrollRect.offsetMax = Vector2.zero;
 
@@ -108,23 +108,6 @@ public class PeriodicTableUI : MonoBehaviour
         {
             cell.transform.SetParent(content.transform, false);
         }
-
-        var closeBtn = new GameObject("CloseButton");
-        closeBtn.transform.SetParent(panel.transform, false);
-        var closeRect = closeBtn.AddComponent<RectTransform>();
-        closeRect.anchorMin = new Vector2(0.92f, 0.92f);
-        closeRect.anchorMax = new Vector2(0.98f, 0.98f);
-        closeRect.offsetMin = Vector2.zero;
-        closeRect.offsetMax = Vector2.zero;
-        var closeImage = closeBtn.AddComponent<Image>();
-        closeImage.color = new Color(0.3f, 0.3f, 0.3f, 0.9f);
-        var closeButton = closeBtn.AddComponent<Button>();
-        closeButton.onClick.AddListener(Hide);
-        var closeTmp = closeBtn.AddComponent<TextMeshProUGUI>();
-        closeTmp.text = "×";
-        closeTmp.fontSize = 24;
-        closeTmp.alignment = TextAlignmentOptions.Center;
-        closeTmp.raycastTarget = false;
     }
 
     GameObject[] BuildPeriodicTableGrid()

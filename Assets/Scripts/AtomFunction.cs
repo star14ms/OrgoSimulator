@@ -145,8 +145,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         foreach (float slotAngle in slotAngles)
         {
             bool occupied = false;
-            foreach (var orb in bondedOrbitals)
+            foreach (var orb in GetComponentsInChildren<ElectronOrbitalFunction>())
             {
+                if (orb.transform.parent != transform) continue;
                 if (orb == excludeOrbital || orb == null) continue;
                 float orbAngle = ElectronOrbitalFunction.NormalizeAngle(orb.transform.localEulerAngles.z);
                 float delta = Mathf.Abs(ElectronOrbitalFunction.NormalizeAngle(orbAngle - slotAngle));

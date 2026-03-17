@@ -105,7 +105,9 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         lineVisual.transform.localRotation = Quaternion.identity;
         lineVisual.transform.localScale = new Vector3(0.25f, Mathf.Max(0.1f, distance * 0.5f), 1f);
 
-        lineCollider.size = new Vector2(0.5f, distance);
+        float lineWidth = 0.5f * 0.25f;
+        float lineHeight = Mathf.Max(0.1f, distance * 0.5f);
+        lineCollider.size = new Vector2(lineWidth, lineHeight);
         lineCollider.offset = Vector2.zero;
     }
 
@@ -123,10 +125,29 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public void OnPointerDown(PointerEventData eventData)
     {
         if (orbitalVisible) return;
+        if (atomA == null || atomB == null) return;
+        var clickWorld = ScreenToWorld(eventData.position);
+        if (DistanceToLineSegment(clickWorld, atomA.transform.position, atomB.transform.position) > 0.25f)
+            return;
         orbitalVisible = true;
         forwardedPressToOrbital = false;
         storedPressData = eventData;
         ApplyDisplayMode();
+    }
+
+    static Vector3 ScreenToWorld(Vector2 screenPos)
+    {
+        var v = new Vector3(screenPos.x, screenPos.y, -Camera.main.transform.position.z);
+        return Camera.main.ScreenToWorldPoint(v);
+    }
+
+    static float DistanceToLineSegment(Vector3 p, Vector3 a, Vector3 b)
+    {
+        var ab = b - a;
+        var ap = p - a;
+        var t = Mathf.Clamp01(Vector3.Dot(ap, ab) / (ab.sqrMagnitude + 0.0001f));
+        var nearest = a + t * ab;
+        return Vector3.Distance(p, nearest);
     }
 
     public void OnDrag(PointerEventData eventData)
@@ -179,21 +200,22 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         orbital.SetBondedAtom(returnOrbitalTo);
         orbital.SetPointerBlocked(false);
         orbital.SetVisualsEnabled(true);
-        orbital.transform.SetParent(returnOrbitalTo.transform);
         var dirToOther = (otherAtom.transform.position - returnOrbitalTo.transform.position).normalized;
         if (dirToOther.sqrMagnitude < 0.01f) dirToOther = Vector3.right;
-        var slotA = returnOrbitalTo.GetSlotForNewOrbital(dirToOther, null);
+        var slotA = returnOrbitalTo.GetSlotForNewOrbital(dirToOther, orbital);
+        orbital.transform.SetParent(returnOrbitalTo.transform);
         orbital.transform.localPosition = slotA.position;
         orbital.transform.localRotation = slotA.rotation;
         orbital.transform.localScale = Vector3.one * 0.6f;
         orbital.ElectronCount = totalElectrons;
         returnOrbitalTo.BondOrbital(orbital);
 
-        var newOrbital = Instantiate(prefab, otherAtom.transform);
+        var newOrbital = Instantiate(prefab);
         newOrbital.transform.localScale = Vector3.one * 0.6f;
         var dirToReturn = (returnOrbitalTo.transform.position - otherAtom.transform.position).normalized;
         if (dirToReturn.sqrMagnitude < 0.01f) dirToReturn = Vector3.left;
-        var slotB = otherAtom.GetSlotForNewOrbital(dirToReturn, null);
+        var slotB = otherAtom.GetSlotForNewOrbital(dirToReturn, newOrbital);
+        newOrbital.transform.SetParent(otherAtom.transform);
         newOrbital.transform.localPosition = slotB.position;
         newOrbital.transform.localRotation = slotB.rotation;
         newOrbital.ElectronCount = 0;
