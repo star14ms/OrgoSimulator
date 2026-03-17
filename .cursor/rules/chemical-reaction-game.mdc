@@ -10,9 +10,9 @@ Educational game visualizing chemical reactions with electron movement. Main spe
 
 ## Domain Model
 
-- **Atom**: Core entity; can possess up to 4 electron orbitals (bonds). Has a radius used for bonding checks. When created, spawns four electron orbitals placed at north, south, east, and west around the atom; orbitals are anchored to the atom. Has a **charge** (int): displayed as **oxidation state** using Pauling electronegativity—bonding electrons assigned to the more electronegative atom; equal EN splits 50-50.
+- **Atom**: Core entity; can possess 1–4 electron orbitals (1 for H/He; 4 for others). Has a radius used for bonding checks. When created, spawns orbitals at cardinal positions (up, down, right, left). Orbitals are anchored to the atom. Has a **charge** (int): displayed as **oxidation state** using Pauling electronegativity—bonding electrons assigned to the more electronegative atom; equal EN splits 50-50.
 - **Electron**: Individual particle; stays in the orbital, occupying half the orbital space. No orbiting; positioned statically via `ElectronFunction` (slotIndex, halfSpaceOffset). Two electrons: one in each half.
-- **Electron Orbital**: Holds up to 2 electrons; can bond to an atom. Placed at cardinal positions (north, south, east, west) around the atom. Rotated to face outward from the atom based on relative position (`Mathf.Atan2(dir.y, dir.x)`). Uses `ElectronOrbitalFunction`; spawns `ElectronFunction` children from prefab based on `ElectronCount`.
+- **Electron Orbital**: Holds up to 2 electrons; can bond to an atom. Placed at dynamic slot positions (360°/n) around the atom. Rotated to face outward from the atom based on relative position (`Mathf.Atan2(dir.y, dir.x)`). Uses `ElectronOrbitalFunction`; spawns `ElectronFunction` children from prefab based on `ElectronCount`.
 
 ## Atom Creation
 
@@ -33,15 +33,61 @@ When an atom is created, it receives an **atomic number**. Spawn four electron o
 
 ## Constraints
 
-- Max 4 orbitals per atom
+- Max 4 orbitals per atom (1 for H/He)
 - Max 2 electrons per orbital
-- Orbital positions: north, south, east, west (fixed slots)
+- Orbital positions: dynamic slots via `GetSlotAnglesForCount(n)` (4 slots: 0°, 90°, 180°, 270°)
 
 ## Interaction Mechanics
 
 - **Drag**: User drags electron clouds (orbitals) and electrons. No bond break—orbitals stay bonded. While dragging an orbital, the main sprite is hidden and a **stretch sprite** is shown instead—a separate GameObject that extends from the atom (anchor) to the cursor. The orbital transform moves with the cursor (no scaling); electrons keep their size. On release, stretch visual is destroyed and the main sprite returns. Assign `stretchSprite` for a single custom sprite; if null, a composite of procedural **triangle** + **circle** is built. Triangle base = circle diameter; apex has `apexPadding` from atom center; circle center = triangle base. Triangle uses `OrgoSimulator/TriangleClipCircle` shader to hide the part inside the circle. `stretchVisualScale`, `circleRadius`, `apexPadding` are tunable.
 - **Purpose**: Simulates chemical reactions through drag-and-drop bonding.
 - **Mouse influence**: Atoms and electron orbitals near the cursor are affected by the player's mouse movement—automated movement (e.g., repulsion, attraction, or displacement) based on cursor position/velocity.
+- **Electrons in bonded orbitals**: Electrons in orbitals that are part of a covalent bond (`orbital.Bond != null`) cannot be dragged. `ElectronFunction.OnPointerDown` returns early when the parent orbital has a bond.
+
+## Pi Bond Support Summary
+
+- **Double/triple bonds**: Multiple `CovalentBond` instances between the same atom pair; first = sigma, additional = pi.
+- **Formation**: When `GetBondsTo(targetAtom) >= 1`, skip `RearrangeOrbitalToFaceTarget` and `AlignSourceAtomNextToTarget`; merge electrons and create bond.
+- **Visual**: Sigma centered; pi lines offset perpendicular (0.2 spacing). Canonical atom order for consistent offset.
+- **Colliders**: Each bond has its own line+collider; collider on `lineVisual` so it follows the line. `BondLineColliderForwarder` forwards clicks to parent.
+- **OrbitalAngleUtility**: World-space angles for sigma bond flip/rearrange logic (avoids wrong-side-emptied bug).
+- **RedistributeOrbitals**: Called after bond formation/breakage when pi bond count changes. Redistributes non-pi orbital angles to minimize total angular displacement.
+- **Bond orbital position**: Orbital is reparented to the bond and positioned at the bond (along the line), rotated to point along the bond direction—not where the target orbital was.
+
+## Covalent Bond Display (Pi Bonds: Double, Triple)
+
+- **Architecture**: Each bond (sigma, pi) is a separate `CovalentBond` GameObject. Each has its own line visual and collider—no shared collider moved between positions.
+- **Single bond**: One black line at center between atoms.
+- **Double bond**: Two lines—sigma (index 0) centered; pi (index 1) offset perpendicular to bond. Offset uses canonical atom order (smaller InstanceID first) so direction is consistent for any bond angle.
+- **Triple bond**: Three lines—sigma centered; pi bonds at ±`piOffset` (0.2) perpendicular to bond.
+- **Offset direction**: Perpendicular to bond (works for any bond angle). `GetLineOffset(bondIndex, bondCount)` returns 0 for sigma, alternating ± for pi.
+- **Line + collider**: Each bond's `lineVisual` has `SpriteRenderer` and `BoxCollider2D`. Collider size = sprite base (0.5 × 1) so it scales with the line. `BondLineColliderForwarder` forwards pointer events to parent `CovalentBond`.
+- **On press**: Click a bond line to show its orbital; drag to break. Release without breaking returns to line view.
+- **Bond orbital**: Reparented to the bond; positioned at the bond (center + perpendicular × offset), rotated to point along the bond direction—not where the target orbital was. `SetPointerBlocked(true)` and `SetVisualsEnabled(false)` when line view; orbital shown only while pressing the line.
+
+## Bond Formation and Flip Logic
+
+- **Sigma bond (first)**: When `!alreadyBonded`, run flip logic and `RearrangeOrbitalToFaceTarget` / `AlignSourceAtomNextToTarget` before creating bond.
+- **Pi bond (second, third)**: When `alreadyBonded` (`GetBondsTo(targetAtom) >= 1`), skip rearrange/align; merge electrons, unbond both orbitals, create bond, destroy source orbital. No flip or orbital swap.
+- **Source molecule movement**: For sigma bonds, the source atom and its connected molecule move to align with the target orbital.
+- **Flip when opposite side filled**: If the source atom's side opposite to the target orbital is already filled (tolerance 45°), flip: move the target atom to the source instead. Uses `OrbitalAngleUtility` for world-space angle comparison.
+- **Original position**: Use `originalLocalPosition` / `originalLocalRotation` for flip checks and alignment (not dragged position). Reset source orbital to original slot before creating bond in flip case.
+- **Both sides filled**: If both atoms would flip, return false—no bond formed.
+- **Orbital swap**: Dragging one orbital onto another on the same atom swaps their positions. `SwapPositionsWith` uses `originalLocalPosition` and `originalLocalRotation`.
+
+## Orbital Slot Management
+
+- **GetSlotForNewOrbital**: Uses `GetSlotAnglesForCount(GetOrbitalSlotCount())` for slot angles; slot tolerance = 360°/(2×slotCount). Supports `excludeOrbital` to avoid overlap. Returns canonical slot position for preferred direction.
+- **GetOrbitalSlotCount**: Returns 4 for non-H/He, 1 for H/He (fixed; not reduced by pi bonds).
+- **RedistributeOrbitals**: Called after bond formation (`FormCovalentBond`) and `BreakBond` when pi bond count changes. Uses `RedistributeOrbitals(float? piBondAngleOverride)`; override passed when pi count drops to 0 (e.g. breaking a double bond). Redistributes lone orbitals to new angles that minimize total angular change.
+- **Pi bonds**: Multiple bonds between the same atom pair; first = sigma, additional = pi. Each bond is a separate `CovalentBond` instance with its own orbital.
+- **BreakBond**: Passes broken orbital as `excludeOrbital` when computing new slot. `SetPointerBlocked(false)` and `SetVisualsEnabled(true)` before reparenting.
+
+## OrbitalAngleUtility
+
+- **Purpose**: Consistent world-space angle convention (0° = right) for comparing orbital directions across different atoms. Avoids local-space mismatches that caused wrong-side-emptied bugs.
+- **Methods**: `DirectionToAngleWorld(Vector3)`, `GetOrbitalAngleWorld(Transform)`, `LocalRotationToAngleWorld(Transform, Quaternion)`, `NormalizeAngle(float)`.
+- **Used in**: `RearrangeOrbitalToFaceTarget`, `IsSourceFlippedSideFilled` in `ElectronOrbitalFunction`.
 
 ## Charge Indicator
 
@@ -52,6 +98,7 @@ When an atom is created, it receives an **atomic number**. Spawn four electron o
 
 ## Releasing and Accepting Electrons
 
+- **Bonded orbitals**: Electrons in orbitals with `orbital.Bond != null` cannot be dragged; `OnPointerDown` returns early.
 - **Release from orbital**: When user drags an electron and releases, if `!orbital.ContainsPoint(transform.position)` the electron has left the orbital. Call `orbital.RemoveElectron(this)` to detach it and update the bonded atom's charge.
 - **Accept into orbital**: After release, `TryAcceptIntoOrbital()` searches all orbitals for one where `CanAcceptElectron()` (electronCount < 2) and `ContainsPoint(transform.position)`. If found, call `orb.AcceptElectron(this)`.
 - **AcceptElectron**: Destroys the dragged electron, increments `electronCount`, calls `SyncElectronObjects()` to spawn new electron(s), then `bondedAtom.OnElectronAdded()` and `SetupIgnoreCollisions()`.
@@ -68,10 +115,14 @@ flowchart LR
 
 | Script | Role |
 |--------|------|
-| `AtomFunction` | Atom; `atomicNumber`, `bondRadius`, `charge`, `orbitalPrefab`. On Start, derives group from periodic table (1–118), maps to valence, creates 4 orbitals at N/S/E/W with valence electrons. Rotates each orbital via `Quaternion.Euler(0, 0, Atan2(dir.y, dir.x) * Rad2Deg)`. Creates ElementLabel with element symbol and ChargeLabel (child). `OnElectronRemoved()` / `OnElectronAdded()` update charge and `RefreshChargeLabel()`. Lanthanides (57–71) and actinides (89–103) = group 3. |
-| `ElectronOrbitalFunction` | Orbital; `electronCount`, `electronPrefab`, `stretchSprite` (optional). Spawns `ElectronFunction` children via `SyncElectronObjects()`. `SetBondedAtom()` for init. `RemoveElectron(e)` detaches electron, decrements count, notifies atom. `AcceptElectron(e)` destroys e, increments count, syncs objects, notifies atom. `CanAcceptElectron()` when electronCount < 2. `ContainsPoint(worldPos)` for drop detection. **Drag**: main sprite hidden; stretch visual = triangle (apex at atom) + circle (at tip, electrons inside); angle from atom center to cursor; orbital moves with cursor; on release, stretch destroyed, main sprite restored. |
-| `ElectronFunction` | Electron; static position along orbital width. `SetSlotIndex(i)`, `SetOrbitalWidth(w)`. Draggable: on release outside orbital, `RemoveElectron` then `TryAcceptIntoOrbital()`; inside orbital returns to original position. Requires Collider for mouse input. |
-| `ButtonCreateAtom` | UI button; `atomPrefab`, `viewportMargin`. Creates an atom at a random position with a random atomic number (1–118). Logs atom creation; diagnostic logs for missing prefab/camera. Add listener in Start via `TryGetComponent<Button>`. |
+| `AtomFunction` | Atom; `atomicNumber`, `bondRadius`, `charge`, `orbitalPrefab`. On Start, derives group from periodic table (1–118), maps to valence, creates orbitals at cardinal positions. `GetBondsTo(other)`, `GetPiBondCount()`, `GetOrbitalSlotCount()` (returns 4 for non-H/He). `CanAcceptOrbital`, `GetSlotForNewOrbital(preferredDirection, excludeOrbital)`. `RedistributeOrbitals(float? piBondAngleOverride)` called after bond formation/breakage when pi count changes. `GetConnectedMolecule()` for bond formation alignment. Lanthanides (57–71) and actinides (89–103) = group 3. |
+| `ElectronOrbitalFunction` | Orbital; `electronCount`, `electronPrefab`, `stretchSprite` (optional). `Bond` property when part of covalent bond. Spawns `ElectronFunction` children via `SyncElectronObjects()`. **Bond formation**: sigma bonds use flip logic and `RearrangeOrbitalToFaceTarget` (with `OrbitalAngleUtility` for world-space angles); pi bonds (`alreadyBonded`) skip rearrange/align and just form the bond. Calls `RedistributeOrbitals` on both atoms when pi count changes. `SwapPositionsWith` for same-atom orbital swap. |
+| `ElectronFunction` | Electron; static position along orbital width. `SetSlotIndex(i)`, `SetOrbitalWidth(w)`. Draggable only when `orbital.Bond == null`; on release outside orbital, `RemoveElectron` then `TryAcceptIntoOrbital()`; inside orbital returns to original position. Requires Collider for mouse input. |
+| `CovalentBond` | Bond between two atoms; owns shared orbital. Orbital reparented to bond; positioned at bond (center + perpendicular × offset), rotated to point along bond direction. Each bond has its own `lineVisual` (SpriteRenderer + BoxCollider2D) and `BondLineColliderForwarder`. Sigma (index 0) centered; pi bonds offset perpendicular via `GetLineOffset()`. Canonical atom order (smaller InstanceID first) for consistent offset direction. Collider size = sprite base (0.5×1) to scale with line. `BreakBond(returnOrbitalTo)` reparents orbital back to atom, creates new lone orbital on other atom; calls `RedistributeOrbitals` on both atoms when pi count changes. |
+| `OrbitalAngleUtility` | Static utility for world-space angle convention (0° = right). `DirectionToAngleWorld`, `GetOrbitalAngleWorld`, `LocalRotationToAngleWorld`, `NormalizeAngle`. Used in `RearrangeOrbitalToFaceTarget` and `IsSourceFlippedSideFilled`. |
+| `BondLineColliderForwarder` | Forwards `IPointerDownHandler`/`IDragHandler`/`IPointerUpHandler` from lineVisual (child) to parent `CovalentBond`. |
+| `PeriodicTableUI` | Periodic table panel; `cellSize`, `spacing`, `blockPadding`, `fontSize`. Shows 118 elements; click backdrop to close. Scroll area 0.05–0.95. |
+| `ButtonCreateAtom` | UI button; `atomPrefab`, `viewportMargin`. Opens periodic table; creates atom at random position with selected atomic number. Add listener in Start via `TryGetComponent<Button>`. |
 
 **Mouse influence**: Implement automated movement for atoms and orbitals within a radius of the cursor; their position/velocity responds to player mouse movement (e.g., repulsion from cursor, or subtle drift toward/away from mouse).
 

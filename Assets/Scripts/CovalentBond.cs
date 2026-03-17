@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 
@@ -26,6 +27,30 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public int ElectronCount => orbital != null ? orbital.ElectronCount : 0;
 
+    int GetBondIndex()
+    {
+        if (atomA == null || atomB == null) return 0;
+        var bondsBetween = new List<CovalentBond>();
+        foreach (var b in atomA.CovalentBonds)
+        {
+            if (b == null) continue;
+            var other = b.AtomA == atomA ? b.AtomB : b.AtomA;
+            if (other == atomB) bondsBetween.Add(b);
+        }
+        for (int i = 0; i < bondsBetween.Count; i++)
+            if (bondsBetween[i] == this) return i;
+        return 0;
+    }
+
+    /// <summary>Sigma bond (index 0) centered; pi bonds (index 1,2...) offset left/right.</summary>
+    static float GetLineOffset(int bondIndex, int bondCount)
+    {
+        if (bondCount <= 1) return 0f;
+        if (bondIndex == 0) return 0f; // sigma bond centered
+        const float piOffset = 0.2f; // spacing between lines
+        return (bondIndex % 2 == 1 ? -1f : 1f) * ((bondIndex + 1) / 2) * piOffset; // pi: -0.2, +0.2, -0.4, +0.4...
+    }
+
     public static CovalentBond Create(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction sharedOrbital)
     {
         if (sourceAtom == null || targetAtom == null || sharedOrbital == null) return null;
@@ -48,6 +73,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         orbital.SetBond(this);
         orbital.SetBondedAtom(null);
+        orbital.transform.SetParent(transform);
 
         atomA.SetupIgnoreCollisions();
         atomB.SetupIgnoreCollisions();
@@ -68,8 +94,9 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         lineRenderer.sortingOrder = 0;
         lineRenderer.sortingLayerID = 0;
 
-        lineCollider = gameObject.AddComponent<BoxCollider2D>();
+        lineCollider = lineVisual.AddComponent<BoxCollider2D>();
         lineCollider.isTrigger = true;
+        lineVisual.AddComponent<BondLineColliderForwarder>();
     }
 
     static Sprite GetOrCreateLineSprite()
@@ -93,7 +120,10 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var posA = atomA.transform.position;
         var posB = atomB.transform.position;
         var center = (posA + posB) * 0.5f;
-        var delta = posB - posA;
+        // Canonical direction: same for all bonds between this pair (avoids sign flip when atomA/atomB order differs)
+        var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
+        var second = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomB : atomA;
+        var delta = second.transform.position - first.transform.position;
         var distance = delta.magnitude;
         if (distance < 0.001f) return;
 
@@ -101,14 +131,28 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var angle = Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg - 90f;
         transform.rotation = Quaternion.Euler(0, 0, angle);
 
-        lineVisual.transform.localPosition = Vector3.zero;
+        int bondIndex = GetBondIndex();
+        int bondCount = atomA.GetBondsTo(atomB);
+        float offset = GetLineOffset(bondIndex, bondCount);
+        var perpendicular = Vector3.Cross(Vector3.forward, delta / distance).normalized;
+        // Each bond has its own lineVisual + collider; position this bond's line at its offset (not shared)
+        lineVisual.transform.position = center + perpendicular * offset;
         lineVisual.transform.localRotation = Quaternion.identity;
-        lineVisual.transform.localScale = new Vector3(0.25f, Mathf.Max(0.1f, distance * 0.5f), 1f);
+        float lineLength = Mathf.Max(0.1f, distance * 0.5f);
+        lineVisual.transform.localScale = new Vector3(0.25f, lineLength, 1f);
 
-        float lineWidth = 0.5f * 0.25f;
-        float lineHeight = Mathf.Max(0.1f, distance * 0.5f);
-        lineCollider.size = new Vector2(lineWidth, lineHeight);
+        // Collider size = sprite base size (0.5 x 1) so it scales with the transform and matches the line
+        lineCollider.size = new Vector2(0.5f, 1f);
         lineCollider.offset = Vector2.zero;
+
+        // Position bond orbital at the bond (not where the target orbital was); point along bond direction
+        // Skip when orbitalVisible (user is dragging) so orbital and its electrons move together
+        if (orbital != null && !orbitalVisible)
+        {
+            orbital.transform.localPosition = new Vector3(offset, 0f, 0f);
+            orbital.transform.localRotation = Quaternion.Euler(0f, 0f, 90f); // orbital points along bond (local Y)
+            orbital.transform.localScale = Vector3.one * 0.6f;
+        }
     }
 
     void ApplyDisplayMode()
@@ -127,7 +171,20 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (orbitalVisible) return;
         if (atomA == null || atomB == null) return;
         var clickWorld = ScreenToWorld(eventData.position);
-        if (DistanceToLineSegment(clickWorld, atomA.transform.position, atomB.transform.position) > 0.25f)
+        var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
+        var second = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomB : atomA;
+        var delta = second.transform.position - first.transform.position;
+        var distance = delta.magnitude;
+        if (distance < 0.001f) return;
+        var dir = delta / distance;
+        var right = Vector3.Cross(Vector3.forward, dir).normalized;
+        int bondIndex = GetBondIndex();
+        int bondCount = atomA.GetBondsTo(atomB);
+        float offset = GetLineOffset(bondIndex, bondCount);
+        var lineCenter = (atomA.transform.position + atomB.transform.position) * 0.5f + right * offset;
+        var lineStart = lineCenter - dir * (distance * 0.5f);
+        var lineEnd = lineCenter + dir * (distance * 0.5f);
+        if (DistanceToLineSegment(clickWorld, lineStart, lineEnd) > 0.25f)
             return;
         orbitalVisible = true;
         forwardedPressToOrbital = false;
@@ -188,6 +245,20 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         if (orbital == null) return;
 
+        int piBeforeA = atomA != null ? atomA.GetPiBondCount() : 0;
+        int piBeforeB = atomB != null ? atomB.GetPiBondCount() : 0;
+        float? piBondAngleFromA = null;
+        float? piBondAngleFromB = null;
+        if (atomA != null && atomB != null)
+        {
+            var dirAtoB = (atomB.transform.position - atomA.transform.position).normalized;
+            var dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
+            if (dirAtoB.sqrMagnitude >= 0.01f)
+                piBondAngleFromA = OrbitalAngleUtility.DirectionToAngleWorld(dirAtoB);
+            if (dirBtoA.sqrMagnitude >= 0.01f)
+                piBondAngleFromB = OrbitalAngleUtility.DirectionToAngleWorld(dirBtoA);
+        }
+
         atomA?.UnregisterBond(this);
         atomB?.UnregisterBond(this);
 
@@ -226,6 +297,13 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomB?.RefreshCharge();
         atomA?.SetupIgnoreCollisions();
         atomB?.SetupIgnoreCollisions();
+
+        int piAfterA = atomA != null ? atomA.GetPiBondCount() : 0;
+        int piAfterB = atomB != null ? atomB.GetPiBondCount() : 0;
+        if (atomA != null && piAfterA != piBeforeA)
+            atomA.RedistributeOrbitals(piBondAngleFromA);
+        if (atomB != null && piAfterB != piBeforeB)
+            atomB.RedistributeOrbitals(piBondAngleFromB);
 
         orbital = null;
         Destroy(gameObject);

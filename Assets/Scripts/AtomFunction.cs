@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.EventSystems;
 using System.Collections.Generic;
+using System.Linq;
 using TMPro;
 
 public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IPointerUpHandler
@@ -22,7 +23,54 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public int AtomicNumber { get => atomicNumber; set => atomicNumber = Mathf.Clamp(value, 1, 118); }
     public int Charge { get => charge; set { charge = value; RefreshChargeLabel(); } }
 
-    public bool CanAcceptOrbital() => bondedOrbitals.Count < 4;
+    public bool CanAcceptOrbital() => bondedOrbitals.Count < GetOrbitalSlotCount();
+
+    public int GetBondsTo(AtomFunction other)
+    {
+        if (other == null) return 0;
+        int count = 0;
+        foreach (var b in covalentBonds)
+        {
+            if (b == null) continue;
+            var o = b.AtomA == this ? b.AtomB : b.AtomA;
+            if (o == other) count++;
+        }
+        return count;
+    }
+
+    public int GetPiBondCount()
+    {
+        var counted = new HashSet<(int, int)>();
+        int pi = 0;
+        foreach (var b in covalentBonds)
+        {
+            if (b?.AtomA == null || b?.AtomB == null) continue;
+            var other = b.AtomA == this ? b.AtomB : b.AtomA;
+            int idA = GetInstanceID();
+            int idB = other.GetInstanceID();
+            var pair = (Mathf.Min(idA, idB), Mathf.Max(idA, idB));
+            if (counted.Contains(pair)) continue;
+            counted.Add(pair);
+            pi += Mathf.Max(0, GetBondsTo(other) - 1);
+        }
+        return pi;
+    }
+
+    public int GetOrbitalSlotCount()
+    {
+        if (atomicNumber == 1 || atomicNumber == 2) return 1;
+        return 4;
+    }
+
+    public static float[] GetSlotAnglesForCount(int n)
+    {
+        if (n <= 0) return System.Array.Empty<float>();
+        if (n == 1) return new[] { 0f };
+        var angles = new float[n];
+        for (int i = 0; i < n; i++)
+            angles[i] = 360f * i / n;
+        return angles;
+    }
 
     public void RegisterBond(CovalentBond bond)
     {
@@ -129,6 +177,208 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         bondedOrbitals.Remove(orbital);
     }
 
+    /// <summary>Redistributes non-pi orbital angles when pi bond count has changed. Call after bond formation/breakage. piBondAngleOverride used when pi count dropped to 0 (e.g. after breaking a double bond).</summary>
+    public void RedistributeOrbitals(float? piBondAngleOverride = null)
+    {
+        int slotCount = GetOrbitalSlotCount();
+        if (slotCount <= 1) return;
+
+        float tolerance = 360f / (2f * slotCount);
+
+        // Step 1: Collect unique orbital angles (lone orbitals + bonds)
+        var oldAngles = CollectUniqueOrbitalAngles(tolerance);
+        if (oldAngles.Count == 0) return;
+
+        // Step 2: Identify pi bond angle
+        float? piBondAngle = piBondAngleOverride;
+        if (!piBondAngle.HasValue)
+        {
+            foreach (var b in covalentBonds)
+            {
+                if (b?.AtomA == null || b?.AtomB == null) continue;
+                var other = b.AtomA == this ? b.AtomB : b.AtomA;
+                if (GetBondsTo(other) <= 1) continue;
+                var dir = (other.transform.position - transform.position).normalized;
+                piBondAngle = OrbitalAngleUtility.DirectionToAngleWorld(dir);
+                break;
+            }
+        }
+        if (!piBondAngle.HasValue) return;
+
+        float piNorm = NormalizeAngleTo360(piBondAngle.Value);
+
+        // Step 3: Build new angle list starting from pi bond angle
+        int n = oldAngles.Count;
+        float step = 360f / n;
+        var newAngles = new List<float>();
+        for (int i = 0; i < n; i++)
+        {
+            float a = piNorm + i * step;
+            newAngles.Add(NormalizeAngleTo360(a));
+        }
+
+        // Step 4: Remove pi bond angle from both lists
+        int piIdxOld = FindClosestAngleIndex(oldAngles, piNorm, tolerance);
+        int piIdxNew = FindClosestAngleIndex(newAngles, piNorm, tolerance);
+        var oldNonPi = oldAngles.Where((_, i) => i != piIdxOld).ToList();
+        var newNonPi = newAngles.Where((_, i) => i != piIdxNew).ToList();
+
+        if (oldNonPi.Count == 0) return;
+
+        // Step 5: Optimal one-to-one matching (min total angular change)
+        var bestMapping = FindBestAngleMapping(oldNonPi, newNonPi);
+        if (bestMapping == null) return;
+
+        // Step 6: Apply updates to lone orbitals (one orbital per mapping pair to avoid overlap)
+        var loneOrbitals = bondedOrbitals.Where(orb => orb != null && orb.Bond == null).ToList();
+        var moved = new HashSet<ElectronOrbitalFunction>();
+        foreach (var (oldAngle, newAngle) in bestMapping)
+        {
+            var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPosition(newAngle, bondRadius);
+            foreach (var orb in loneOrbitals)
+            {
+                if (moved.Contains(orb)) continue;
+                float orbAngle = OrbitalAngleUtility.GetOrbitalAngleWorld(orb.transform);
+                if (AnglesWithinTolerance(orbAngle, oldAngle, tolerance))
+                {
+                    orb.transform.localPosition = pos;
+                    orb.transform.localRotation = rot;
+                    moved.Add(orb);
+                    break; // One orbital per new slot to avoid overlap
+                }
+            }
+        }
+    }
+
+    static float NormalizeAngleTo360(float deg)
+    {
+        while (deg >= 360f) deg -= 360f;
+        while (deg < 0f) deg += 360f;
+        return deg;
+    }
+
+    static float AngularDifference(float a, float b)
+    {
+        float delta = Mathf.Abs(OrbitalAngleUtility.NormalizeAngle(a - b));
+        return delta > 180f ? 360f - delta : delta;
+    }
+
+    static bool AnglesWithinTolerance(float a, float b, float tol)
+    {
+        return AngularDifference(a, b) <= tol;
+    }
+
+    List<float> CollectUniqueOrbitalAngles(float tolerance)
+    {
+        // Collect bond angles (merge multiple bonds to same atom - double/triple = 1 angle)
+        var bondAngles = new List<float>();
+        foreach (var b in covalentBonds)
+        {
+            if (b?.AtomA == null || b?.AtomB == null) continue;
+            var other = b.AtomA == this ? b.AtomB : b.AtomA;
+            var dir = (other.transform.position - transform.position).normalized;
+            bondAngles.Add(OrbitalAngleUtility.DirectionToAngleWorld(dir));
+        }
+        var mergedBondAngles = MergeAnglesWithinTolerance(bondAngles, tolerance);
+
+        // Collect lone orbital angles - each lone orbital gets its own slot (no merging)
+        // so orbitals placed at bond dir by BreakBond are correctly redistributed to non-bond slots
+        var loneAngles = new List<float>();
+        foreach (var orb in bondedOrbitals)
+        {
+            if (orb == null || orb.Bond != null || orb.transform.parent != transform) continue;
+            loneAngles.Add(OrbitalAngleUtility.GetOrbitalAngleWorld(orb.transform));
+        }
+
+        // Combine: bond angles + lone angles. Do NOT merge - each lone orbital needs a slot
+        var result = new List<float>(mergedBondAngles);
+        result.AddRange(loneAngles);
+        return result;
+    }
+
+    static List<float> MergeAnglesWithinTolerance(List<float> angles, float tolerance)
+    {
+        if (angles.Count == 0) return new List<float>();
+        var result = new List<float>();
+        var used = new bool[angles.Count];
+        for (int i = 0; i < angles.Count; i++)
+        {
+            if (used[i]) continue;
+            float representative = NormalizeAngleTo360(angles[i]);
+            used[i] = true;
+            for (int j = i + 1; j < angles.Count; j++)
+            {
+                if (used[j]) continue;
+                float aj = NormalizeAngleTo360(angles[j]);
+                if (AngularDifference(representative, aj) <= tolerance)
+                    used[j] = true;
+            }
+            result.Add(representative);
+        }
+        return result;
+    }
+
+    static int FindClosestAngleIndex(List<float> angles, float target, float tolerance)
+    {
+        float targetNorm = NormalizeAngleTo360(target);
+        int best = 0;
+        float bestDelta = 360f;
+        for (int i = 0; i < angles.Count; i++)
+        {
+            float d = AngularDifference(NormalizeAngleTo360(angles[i]), targetNorm);
+            if (d < bestDelta)
+            {
+                bestDelta = d;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    static List<(float oldAngle, float newAngle)> FindBestAngleMapping(List<float> oldAngles, List<float> newAngles)
+    {
+        if (oldAngles.Count != newAngles.Count || oldAngles.Count == 0) return null;
+        var indices = Enumerable.Range(0, newAngles.Count).ToArray();
+        List<(float, float)> bestMapping = null;
+        float bestTotal = float.MaxValue;
+
+        foreach (var perm in Permutations(indices))
+        {
+            float total = 0f;
+            for (int i = 0; i < oldAngles.Count; i++)
+                total += AngularDifference(oldAngles[i], newAngles[perm[i]]);
+            if (total < bestTotal)
+            {
+                bestTotal = total;
+                bestMapping = new List<(float, float)>();
+                for (int i = 0; i < oldAngles.Count; i++)
+                    bestMapping.Add((oldAngles[i], newAngles[perm[i]]));
+            }
+        }
+        return bestMapping;
+    }
+
+    static IEnumerable<int[]> Permutations(int[] arr)
+    {
+        if (arr.Length == 0) { yield return arr; yield break; }
+        var a = (int[])arr.Clone();
+        yield return a;
+        while (NextPermutation(a))
+            yield return (int[])a.Clone();
+    }
+
+    static bool NextPermutation(int[] a)
+    {
+        int i = a.Length - 2;
+        while (i >= 0 && a[i] >= a[i + 1]) i--;
+        if (i < 0) return false;
+        int j = a.Length - 1;
+        while (a[j] <= a[i]) j--;
+        (a[i], a[j]) = (a[j], a[i]);
+        System.Array.Reverse(a, i + 1, a.Length - i - 1);
+        return true;
+    }
+
     public (Vector3 position, Quaternion rotation) GetSlotForNewOrbital(Vector3 preferredDirectionWorld, ElectronOrbitalFunction excludeOrbital = null)
     {
         Vector3 localDir = transform.InverseTransformDirection(preferredDirectionWorld);
@@ -137,8 +387,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         localDir.Normalize();
         float preferredAngle = Mathf.Atan2(localDir.y, localDir.x) * Mathf.Rad2Deg;
 
-        float[] slotAngles = { 90f, -90f, 0f, 180f };
-        const float slotTolerance = 50f;
+        int slotCount = GetOrbitalSlotCount();
+        float[] slotAngles = GetSlotAnglesForCount(slotCount);
+        float slotTolerance = 360f / (2f * Mathf.Max(1, slotCount));
 
         float bestAngle = preferredAngle;
         float bestDelta = 360f;

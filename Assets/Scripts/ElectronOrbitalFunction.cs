@@ -307,7 +307,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         var targetOrbital = targetAtom.GetAvailableLoneOrbitalForBond(this, electronCount, dropPosition);
         if (targetOrbital == null) return false;
 
-        if (sourceAtom.CovalentBonds.Count > 0 && IsSourceFlippedSideFilled(sourceAtom, targetAtom, targetOrbital))
+        int piBeforeSource = sourceAtom.GetPiBondCount();
+        int piBeforeTarget = targetAtom.GetPiBondCount();
+
+        bool alreadyBonded = sourceAtom.GetBondsTo(targetAtom) >= 1;
+        if (!alreadyBonded && sourceAtom.CovalentBonds.Count > 0 && IsSourceFlippedSideFilled(sourceAtom, targetAtom, targetOrbital))
         {
             var sourceOrbitalOriginalTip = sourceAtom.transform.TransformPoint(originalLocalPosition);
             if (targetAtom.CovalentBonds.Count > 0 && IsSourceFlippedSideFilled(targetAtom, sourceAtom, this, sourceOrbitalOriginalTip))
@@ -329,9 +333,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             targetAtom.transform.SetParent(null);
             sourceAtom.RefreshCharge();
             targetAtom.RefreshCharge();
+            TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
             Destroy(targetOrbital.gameObject);
         }
-        else
+        else if (!alreadyBonded)
         {
             RearrangeOrbitalToFaceTarget(sourceAtom, targetOrbital);
             AlignSourceAtomNextToTarget(sourceAtom, targetAtom, targetOrbital);
@@ -345,26 +350,55 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             transform.SetParent(null);
             sourceAtom.RefreshCharge();
             targetAtom.RefreshCharge();
+            TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
+            Destroy(gameObject);
+        }
+        else
+        {
+            // Pi bond: already bonded, skip rearrange/align, just form the bond
+            int mergedElectrons = electronCount + targetOrbital.ElectronCount;
+            targetOrbital.ElectronCount = mergedElectrons;
+
+            sourceAtom.UnbondOrbital(this);
+            targetAtom.UnbondOrbital(targetOrbital);
+
+            CovalentBond.Create(sourceAtom, targetAtom, targetOrbital);
+            transform.SetParent(null);
+            sourceAtom.RefreshCharge();
+            targetAtom.RefreshCharge();
+            TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
             Destroy(gameObject);
         }
         return true;
     }
 
+    static void TryRedistributeOrbitalsAfterBondChange(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget)
+    {
+        if (sourceAtom != null && sourceAtom.GetPiBondCount() != piBeforeSource)
+            sourceAtom.RedistributeOrbitals();
+        if (targetAtom != null && targetAtom.GetPiBondCount() != piBeforeTarget)
+            targetAtom.RedistributeOrbitals();
+    }
+
     void RearrangeOrbitalToFaceTarget(AtomFunction sourceAtom, ElectronOrbitalFunction targetOrbital)
     {
-        float targetAngle = NormalizeAngle(targetOrbital.transform.localEulerAngles.z);
-        float oppositeAngle = NormalizeAngle(targetAngle + 180f);
-        float draggedAngle = NormalizeAngle(originalLocalRotation.eulerAngles.z);
-        if (Mathf.Abs(NormalizeAngle(draggedAngle - oppositeAngle)) < 45f)
+        // Use world-space angles so we compare consistently across different atoms
+        float targetAngleWorld = OrbitalAngleUtility.GetOrbitalAngleWorld(targetOrbital.transform);
+        float oppositeAngleWorld = OrbitalAngleUtility.NormalizeAngle(targetAngleWorld + 180f); // direction source -> target
+        float draggedAngleWorld = OrbitalAngleUtility.LocalRotationToAngleWorld(sourceAtom.transform, originalLocalRotation);
+
+        const float tolerance = 45f;
+        if (Mathf.Abs(OrbitalAngleUtility.NormalizeAngle(draggedAngleWorld - oppositeAngleWorld)) < tolerance)
             return;
+
         var sourceOrbitals = sourceAtom.GetComponentsInChildren<ElectronOrbitalFunction>();
         ElectronOrbitalFunction orbToMove = null;
         float bestDelta = 360f;
         foreach (var orb in sourceOrbitals)
         {
             if (orb == this || orb.Bond != null) continue;
-            float orbAngle = NormalizeAngle(orb.transform.localEulerAngles.z);
-            float delta = Mathf.Abs(NormalizeAngle(orbAngle - oppositeAngle));
+            float orbAngleWorld = OrbitalAngleUtility.GetOrbitalAngleWorld(orb.transform);
+            float delta = Mathf.Abs(OrbitalAngleUtility.NormalizeAngle(orbAngleWorld - oppositeAngleWorld));
             if (delta < bestDelta)
             {
                 bestDelta = delta;
@@ -403,8 +437,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         var targetPos = targetAtom.transform.position;
         var orbitalTip = orbitalTipOverride ?? targetOrbital.transform.position;
         var targetOrbitalDir = (orbitalTip - targetPos).normalized;
-        float targetOrbitalAngle = Mathf.Atan2(targetOrbitalDir.y, targetOrbitalDir.x) * Mathf.Rad2Deg;
-        float flippedAngle = NormalizeAngle(targetOrbitalAngle + 180f);
+        float targetOrbitalAngle = OrbitalAngleUtility.DirectionToAngleWorld(targetOrbitalDir);
+        float flippedAngle = OrbitalAngleUtility.NormalizeAngle(targetOrbitalAngle + 180f);
         const float toleranceDeg = 45f;
         var sourcePos = sourceAtom.transform.position;
 
@@ -414,8 +448,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             var other = b.AtomA == sourceAtom ? b.AtomB : b.AtomA;
             if (other == null) continue;
             var dirToOther = (other.transform.position - sourcePos).normalized;
-            float bondAngleDeg = Mathf.Atan2(dirToOther.y, dirToOther.x) * Mathf.Rad2Deg;
-            float bondAngleNorm = NormalizeAngle(bondAngleDeg);
+            float bondAngleDeg = OrbitalAngleUtility.DirectionToAngleWorld(dirToOther);
+            float bondAngleNorm = OrbitalAngleUtility.NormalizeAngle(bondAngleDeg);
             float delta = NormalizeAngle(bondAngleNorm - flippedAngle);
             float absDelta = Mathf.Abs(delta);
             bool isFlippedSide = absDelta < toleranceDeg;
