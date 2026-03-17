@@ -42,10 +42,12 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
 
     public void OnPointerDown(PointerEventData eventData)
     {
+        var orbital = GetComponentInParent<ElectronOrbitalFunction>();
+        if (orbital != null && orbital.Bond != null) return;
+
         isBeingHeld = true;
         originalLocalPosition = transform.localPosition;
         dragOffset = transform.position - ScreenToWorld(eventData.position);
-        var orbital = GetComponentInParent<ElectronOrbitalFunction>();
         orbital?.SetPointerBlocked(true);
         orbital?.SetPhysicsEnabled(false);
         SetPhysicsEnabled(false);
