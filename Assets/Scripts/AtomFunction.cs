@@ -250,6 +250,79 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
     }
 
+    /// <summary>Returns (orbital, targetLocalPos, targetLocalRot) for orbitals that would move during RedistributeOrbitals. Empty if pi count unchanged.</summary>
+    public List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> GetRedistributeTargets(int piBefore)
+    {
+        var result = new List<(ElectronOrbitalFunction, Vector3, Quaternion)>();
+        if (GetPiBondCount() == piBefore) return result;
+
+        int slotCount = GetOrbitalSlotCount();
+        if (slotCount <= 1) return result;
+
+        float tolerance = 360f / (2f * slotCount);
+        var oldAngles = CollectUniqueOrbitalAngles(tolerance);
+        if (oldAngles.Count == 0) return result;
+
+        float? piBondAngle = null;
+        foreach (var b in covalentBonds)
+        {
+            if (b?.AtomA == null || b?.AtomB == null) continue;
+            var other = b.AtomA == this ? b.AtomB : b.AtomA;
+            if (GetBondsTo(other) <= 1) continue;
+            var dir = (other.transform.position - transform.position).normalized;
+            piBondAngle = OrbitalAngleUtility.DirectionToAngleWorld(dir);
+            break;
+        }
+        if (!piBondAngle.HasValue) return result;
+
+        float piNorm = NormalizeAngleTo360(piBondAngle.Value);
+        int n = oldAngles.Count;
+        float step = 360f / n;
+        var newAngles = new List<float>();
+        for (int i = 0; i < n; i++)
+            newAngles.Add(NormalizeAngleTo360(piNorm + i * step));
+
+        int piIdxOld = FindClosestAngleIndex(oldAngles, piNorm, tolerance);
+        int piIdxNew = FindClosestAngleIndex(newAngles, piNorm, tolerance);
+        var oldNonPi = oldAngles.Where((_, i) => i != piIdxOld).ToList();
+        var newNonPi = newAngles.Where((_, i) => i != piIdxNew).ToList();
+        if (oldNonPi.Count == 0) return result;
+
+        var bestMapping = FindBestAngleMapping(oldNonPi, newNonPi);
+        if (bestMapping == null) return result;
+
+        var loneOrbitals = bondedOrbitals.Where(orb => orb != null && orb.Bond == null).ToList();
+        var moved = new HashSet<ElectronOrbitalFunction>();
+        foreach (var (oldAngle, newAngle) in bestMapping)
+        {
+            var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPosition(newAngle, bondRadius);
+            foreach (var orb in loneOrbitals)
+            {
+                if (moved.Contains(orb)) continue;
+                float orbAngle = OrbitalAngleUtility.GetOrbitalAngleWorld(orb.transform);
+                if (AnglesWithinTolerance(orbAngle, oldAngle, tolerance))
+                {
+                    result.Add((orb, pos, rot));
+                    moved.Add(orb);
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    public void ApplyRedistributeTargets(List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> targets)
+    {
+        foreach (var (orb, pos, rot) in targets)
+        {
+            if (orb != null && orb.transform.parent == transform)
+            {
+                orb.transform.localPosition = pos;
+                orb.transform.localRotation = rot;
+            }
+        }
+    }
+
     static float NormalizeAngleTo360(float deg)
     {
         while (deg >= 360f) deg -= 360f;

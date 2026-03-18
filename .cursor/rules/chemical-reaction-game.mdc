@@ -65,6 +65,31 @@ When an atom is created, it receives an **atomic number**. Spawn four electron o
 - **On press**: Click a bond line to show its orbital; drag to break. Release without breaking returns to line view.
 - **Bond orbital**: Reparented to the bond; positioned at the bond (center + perpendicular × offset), rotated to point along the bond direction—not where the target orbital was. `SetPointerBlocked(true)` and `SetVisualsEnabled(false)` when line view; orbital shown only while pressing the line.
 
+## Bond Formation Animation (Steps 1–3)
+
+- **Step 1 (align molecule)**: Animate atoms to target positions. Skip when all atoms already within 0.05 of target (`atomsAlreadyAligned`).
+- **Step 2 (rearrange + redistribute + orbital to bond)**: Animate surviving orbital to bond center; optionally rearrange/redistribute other orbitals. Skip when no rearrange/redistribute needed and orbital already at bond position.
+- **Step 3 (orbital-to-line)**: Shrink orbital, grow line, fade target orbital (sigma) or source orbital (pi).
+- **Electron overlap avoidance**: Between steps 2 and 3, ensure two electrons don't overlap—rotate one orbital 180° when needed.
+
+### Sigma Bond Orbital Flip
+
+- When source orbital direction is opposite to bond (`|sourceDiff| > 90°`), set `bond.orbitalRotationFlipped = true` so the bond orbital uses `worldRot * 180°`.
+- `CovalentBond.orbitalRotationFlipped` is applied in `GetOrbitalTargetWorldState` and `LateUpdate` for orbital positioning.
+
+### Pi Bond Orbital Flip
+
+- Both source and target orbitals animate to the same bond center; one must be rotated 180° so electrons align in a row.
+- Flip decision: `flipTarget = |sourceDiff| < |targetDiff|` (source closer to bond → flip target; target closer → flip source).
+- When `flipTarget`: set `bond.orbitalRotationFlipped`, animate target to flipped rotation, source to opposite.
+- When `!flipTarget`: animate source to `bondRot * 180`, target to `bondRot`.
+
+### Bond Orbital Stretch (Drag)
+
+- **Bond orbitals**: No apex padding; triangle tip can reach origin. No minimum stretch length (`minLength = 0`). No early return when distance < 0.01.
+- **Lone orbitals**: Use `apexPadding` and `MinStretchLength` to avoid overlapping nucleus.
+- Clip radius uses `Mathf.Max(..., 0.001f)` to avoid division by zero when stretch collapses.
+
 ## Bond Formation and Flip Logic
 
 - **Sigma bond (first)**: When `!alreadyBonded`, run flip logic and `RearrangeOrbitalToFaceTarget` / `AlignSourceAtomNextToTarget` before creating bond.
@@ -120,7 +145,7 @@ flowchart LR
 | `AtomFunction` | Atom; `atomicNumber`, `bondRadius`, `charge`, `orbitalPrefab`. On Start, derives group from periodic table (1–118), maps to valence, creates orbitals at cardinal positions. `GetBondsTo(other)`, `GetPiBondCount()`, `GetOrbitalSlotCount()` (returns 4 for non-H/He). `CanAcceptOrbital`, `GetSlotForNewOrbital(preferredDirection, excludeOrbital)`. `RedistributeOrbitals(float? piBondAngleOverride)` called after bond formation/breakage when pi count changes. `GetConnectedMolecule()` for bond formation alignment. Lanthanides (57–71) and actinides (89–103) = group 3. |
 | `ElectronOrbitalFunction` | Orbital; `electronCount`, `electronPrefab`, `stretchSprite` (optional). `Bond` property when part of covalent bond. Spawns `ElectronFunction` children via `SyncElectronObjects()`. **Bond formation**: sigma bonds use flip logic and `RearrangeOrbitalToFaceTarget` (with `OrbitalAngleUtility` for world-space angles); pi bonds (`alreadyBonded`) skip rearrange/align and just form the bond. Flip uses `IsSourceOrbitalAlreadyAlignedWithTarget`, `IsOrbitalAlignedWithTargetPoint`, and `sourceOrbitalOriginalTip` for target alignment. `RearrangeOrbitalToFaceTarget` accepts optional `targetPointOverride` for flip case. Calls `RedistributeOrbitals` on both atoms when pi count changes. `SwapPositionsWith` for same-atom orbital swap. |
 | `ElectronFunction` | Electron; static position along orbital width. `SetSlotIndex(i)`, `SetOrbitalWidth(w)`. Draggable only when `orbital.Bond == null`; on release outside orbital, `RemoveElectron` then `TryAcceptIntoOrbital()`; inside orbital returns to original position. Requires Collider for mouse input. |
-| `CovalentBond` | Bond between two atoms; owns shared orbital. Orbital reparented to bond; positioned at bond (center + perpendicular × offset), rotated to point along bond direction. Each bond has its own `lineVisual` (SpriteRenderer + BoxCollider2D) and `BondLineColliderForwarder`. Sigma (index 0) centered; pi bonds offset perpendicular via `GetLineOffset()`. Canonical atom order (smaller InstanceID first) for consistent offset direction. Collider size = sprite base (0.5×1) to scale with line. `BreakBond(returnOrbitalTo)` reparents orbital back to atom, creates new lone orbital on other atom; calls `RedistributeOrbitals` on both atoms when pi count changes. |
+| `CovalentBond` | Bond between two atoms; owns shared orbital. Orbital reparented to bond; positioned at bond (center + perpendicular × offset), rotated to point along bond direction. `orbitalRotationFlipped` when true applies 180° to orbital rotation (sigma/pi electron overlap avoidance). Each bond has its own `lineVisual` (SpriteRenderer + BoxCollider2D) and `BondLineColliderForwarder`. Sigma (index 0) centered; pi bonds offset perpendicular via `GetLineOffset()`. Canonical atom order (smaller InstanceID first) for consistent offset direction. Collider size = sprite base (0.5×1) to scale with line. `BreakBond(returnOrbitalTo)` reparents orbital back to atom, creates new lone orbital on other atom; calls `RedistributeOrbitals` on both atoms when pi count changes. |
 | `OrbitalAngleUtility` | Static utility for world-space angle convention (0° = right). `DirectionToAngleWorld`, `GetOrbitalAngleWorld`, `LocalRotationToAngleWorld`, `NormalizeAngle`. Used in `RearrangeOrbitalToFaceTarget` and `IsSourceFlippedSideFilled`. |
 | `BondLineColliderForwarder` | Forwards `IPointerDownHandler`/`IDragHandler`/`IPointerUpHandler` from lineVisual (child) to parent `CovalentBond`. |
 | `PeriodicTableUI` | Periodic table panel; `cellSize`, `spacing`, `blockPadding`, `fontSize`. Shows 118 elements; click backdrop to close. Scroll area 0.05–0.95. |

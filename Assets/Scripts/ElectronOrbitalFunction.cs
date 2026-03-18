@@ -1,4 +1,6 @@
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 
@@ -238,8 +240,23 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
         var sourceAtom = bondedAtom ?? transform.parent?.GetComponent<AtomFunction>();
         var targetAtom = AtomFunction.FindBondPartner(sourceAtom, tip, this);
-        if (targetAtom != null && FormCovalentBond(sourceAtom, targetAtom, tip))
-            return;
+        if (targetAtom != null)
+        {
+            var targetOrbital = targetAtom.GetAvailableLoneOrbitalForBond(this, electronCount, tip);
+            if (targetOrbital != null)
+            {
+                bool alreadyBonded = sourceAtom.GetBondsTo(targetAtom) >= 1;
+                if (alreadyBonded)
+                {
+                    if (FormCovalentBondPiStart(sourceAtom, targetAtom, targetOrbital))
+                        return;
+                }
+                else if (FormCovalentBondSigmaStart(sourceAtom, targetAtom, targetOrbital, tip))
+                {
+                    return;
+                }
+            }
+        }
 
         var swapTarget = TryFindSwapTarget(sourceAtom, tip);
         if (swapTarget != null)
@@ -301,80 +318,434 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
-    bool FormCovalentBond(AtomFunction sourceAtom, AtomFunction targetAtom, Vector3 dropPosition)
+    [Tooltip("Step 1: Align molecule. Duration in seconds.")]
+    [SerializeField] float bondAnimStep1Duration = 1f;
+    [Tooltip("Step 2: Rearrange + Redistribute. Duration in seconds.")]
+    [SerializeField] float bondAnimStep2Duration = 1f;
+    [Tooltip("Step 3: Orbital-to-line transition. Duration in seconds.")]
+    [SerializeField] float bondAnimStep3Duration = 1f;
+
+    /// <summary>Sigma bond: starts animated formation. Returns true if animation started.</summary>
+    bool FormCovalentBondSigmaStart(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition)
     {
-        if (sourceAtom == null || targetAtom == null || sourceAtom == targetAtom) return false;
-        var targetOrbital = targetAtom.GetAvailableLoneOrbitalForBond(this, electronCount, dropPosition);
-        if (targetOrbital == null) return false;
-
-        int piBeforeSource = sourceAtom.GetPiBondCount();
-        int piBeforeTarget = targetAtom.GetPiBondCount();
-
-        bool alreadyBonded = sourceAtom.GetBondsTo(targetAtom) >= 1;
         bool sourceAlreadyAligned = IsSourceOrbitalAlreadyAlignedWithTarget(sourceAtom, targetOrbital);
         bool cannotRearrangeSource = !sourceAlreadyAligned && (sourceAtom.GetPiBondCount() > 0 || IsSourceFlippedSideFilled(sourceAtom, targetAtom, targetOrbital));
-        if (!alreadyBonded && sourceAtom.CovalentBonds.Count > 0 && cannotRearrangeSource)
+        if (sourceAtom.CovalentBonds.Count > 0 && cannotRearrangeSource)
         {
-            // Flip: move target to source when source's opposite side is filled.
             var sourceOrbitalOriginalTip = sourceAtom.transform.TransformPoint(originalLocalPosition);
             bool targetAlreadyAligned = IsOrbitalAlignedWithTargetPoint(targetOrbital, sourceOrbitalOriginalTip);
             bool cannotRearrangeTarget = !targetAlreadyAligned && (targetAtom.GetPiBondCount() > 0 || IsSourceFlippedSideFilled(targetAtom, sourceAtom, this, sourceOrbitalOriginalTip));
             if (targetAtom.CovalentBonds.Count > 0 && cannotRearrangeTarget)
-            {
-                return false; // Target would also flip; would need to rearrange target but cannot (pi bonds)
-            }
-            RearrangeOrbitalToFaceTarget(targetAtom, this, sourceOrbitalOriginalTip);
-            AlignSourceAtomNextToTarget(targetAtom, sourceAtom, this, sourceOrbitalOriginalTip);
-            int mergedElectrons = targetOrbital.electronCount + this.ElectronCount;
-            this.ElectronCount = mergedElectrons;
-
-            sourceAtom.UnbondOrbital(this);
-            targetAtom.UnbondOrbital(targetOrbital);
-
-            transform.localPosition = originalLocalPosition;
-            transform.localRotation = originalLocalRotation;
-
-            CovalentBond.Create(targetAtom, sourceAtom, this);
-            targetAtom.transform.SetParent(null);
-            sourceAtom.RefreshCharge();
-            targetAtom.RefreshCharge();
-            TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
-            Destroy(targetOrbital.gameObject);
+                return false;
         }
-        else if (!alreadyBonded)
+        sourceAtom.StartCoroutine(FormCovalentBondSigmaCoroutine(sourceAtom, targetAtom, targetOrbital, dropPosition));
+        return true;
+    }
+
+    IEnumerator FormCovalentBondSigmaCoroutine(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition)
+    {
+        int piBeforeSource = sourceAtom.GetPiBondCount();
+        int piBeforeTarget = targetAtom.GetPiBondCount();
+        bool isFlip = sourceAtom.CovalentBonds.Count > 0 && !IsSourceOrbitalAlreadyAlignedWithTarget(sourceAtom, targetOrbital) && (sourceAtom.GetPiBondCount() > 0 || IsSourceFlippedSideFilled(sourceAtom, targetAtom, targetOrbital));
+        Vector3? targetPointOverride = isFlip ? sourceAtom.transform.TransformPoint(originalLocalPosition) : (Vector3?)null;
+
+        ElectronOrbitalFunction sourceOrbital = this;
+        AtomFunction rearrangeSource = isFlip ? targetAtom : sourceAtom;
+        ElectronOrbitalFunction rearrangeTarget = isFlip ? this : targetOrbital;
+        AtomFunction alignSource = isFlip ? targetAtom : sourceAtom;
+        var referenceAtom = isFlip ? sourceAtom : targetAtom;
+        var referenceOrbitalTip = targetPointOverride ?? targetOrbital.transform.position;
+
+        // Step 1: AlignSourceAtomNextToTarget
+        // First, snap source orbital back to its original position (before dragging), then animate molecule
+        sourceOrbital.transform.localPosition = originalLocalPosition;
+        sourceOrbital.transform.localRotation = originalLocalRotation;
+        sourceOrbital.transform.localScale = originalLocalScale;
+
+        var alignTargets = GetAlignTargetPositions(alignSource, referenceAtom, referenceOrbitalTip);
+        const float alignPosThreshold = 0.05f;
+        bool atomsAlreadyAligned = alignTargets.TrueForAll(t => Vector3.Distance(t.atom.transform.position, t.targetPos) < alignPosThreshold);
+        if (!atomsAlreadyAligned)
         {
-            RearrangeOrbitalToFaceTarget(sourceAtom, targetOrbital);
-            AlignSourceAtomNextToTarget(sourceAtom, targetAtom, targetOrbital);
-            int mergedElectrons = electronCount + targetOrbital.ElectronCount;
-            targetOrbital.ElectronCount = mergedElectrons;
+            var alignStarts = new List<(AtomFunction atom, Vector3 startPos)>();
+            foreach (var (atom, targetPos) in alignTargets)
+                alignStarts.Add((atom, atom.transform.position));
+            for (float t = 0; t < bondAnimStep1Duration; t += Time.deltaTime)
+            {
+                float s = Mathf.Clamp01(t / bondAnimStep1Duration);
+                s = s * s * (3f - 2f * s); // smoothstep
+                for (int i = 0; i < alignTargets.Count; i++)
+                {
+                    var (atom, targetPos) = alignTargets[i];
+                    var (_, startPos) = alignStarts[i];
+                    atom.transform.position = Vector3.Lerp(startPos, targetPos, s);
+                }
+                yield return null;
+            }
+        }
+        foreach (var (atom, targetPos) in alignTargets)
+            atom.transform.position = targetPos;
 
-            sourceAtom.UnbondOrbital(this);
-            targetAtom.UnbondOrbital(targetOrbital);
+        // Compute rearrange targets before bond creation (GetRearrangeTarget may use 'this')
+        var rearrangeTargetInfo = GetRearrangeTarget(rearrangeSource, rearrangeTarget, targetPointOverride);
 
-            CovalentBond.Create(sourceAtom, targetAtom, targetOrbital);
-            transform.SetParent(null);
-            sourceAtom.RefreshCharge();
-            targetAtom.RefreshCharge();
-            TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
-            Destroy(gameObject);
+        // Create bond (instant) - always keep source orbital (the one we dragged) so it stays visible through steps 2 and 3
+        sourceOrbital.transform.localPosition = originalLocalPosition;
+        sourceOrbital.transform.localRotation = originalLocalRotation;
+        var bondOrbitalStartWorldPos = sourceOrbital.transform.position;
+        var bondOrbitalStartWorldRot = sourceOrbital.transform.rotation;
+
+        int merged = sourceOrbital.ElectronCount + targetOrbital.ElectronCount;
+        sourceAtom.UnbondOrbital(sourceOrbital);
+        targetAtom.UnbondOrbital(targetOrbital);
+        var bond = CovalentBond.Create(isFlip ? targetAtom : sourceAtom, isFlip ? sourceAtom : targetAtom, sourceOrbital, animateOrbitalToBond: true);
+        if (isFlip) targetAtom.transform.SetParent(null);
+        var survivingOrbital = sourceOrbital;
+        sourceAtom.RefreshCharge();
+        targetAtom.RefreshCharge();
+
+        var bondOrbitalEnd = bond.GetOrbitalTargetWorldState();
+        float sigmaDiff = LogSigmaBondAngles(sourceAtom, bondOrbitalEnd.worldPos, bondOrbitalEnd.worldRot);
+        bool sigmaNeedsFlip = Mathf.Abs(sigmaDiff) > 90f; // Source opposite to bond → flip so electrons don't overlap
+        if (sigmaNeedsFlip)
+        {
+            bond.orbitalRotationFlipped = true;
+            bondOrbitalEnd = bond.GetOrbitalTargetWorldState(); // Re-fetch with flip applied
+        }
+
+        // Step 2: Rearrange + Redistribute + animate bonding orbital to bond position (skip if already aligned)
+        var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource);
+        var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget);
+        bool needsRearrange = rearrangeTargetInfo.HasValue;
+        bool needsRedistribute = redistA.Count > 0 || redistB.Count > 0;
+        const float alignThreshold = 0.05f;
+        bool orbitalAlreadyAtBond = Vector3.Distance(bondOrbitalStartWorldPos, bondOrbitalEnd.worldPos) < alignThreshold;
+        bool skipStep2 = !needsRearrange && !needsRedistribute && orbitalAlreadyAtBond;
+
+        var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
+        var redistBStarts = new List<(Vector3 pos, Quaternion rot)>();
+        foreach (var entry in redistA)
+            redistAStarts.Add(entry.orb != null ? (entry.orb.transform.localPosition, entry.orb.transform.localRotation) : (Vector3.zero, Quaternion.identity));
+        foreach (var entry in redistB)
+            redistBStarts.Add(entry.orb != null ? (entry.orb.transform.localPosition, entry.orb.transform.localRotation) : (Vector3.zero, Quaternion.identity));
+
+        Vector3? rearrangeStartPos = null;
+        Quaternion? rearrangeStartRot = null;
+        if (rearrangeTargetInfo.HasValue)
+        {
+            var (orbToMove, _, _) = rearrangeTargetInfo.Value;
+            rearrangeStartPos = orbToMove.transform.localPosition;
+            rearrangeStartRot = orbToMove.transform.localRotation;
+        }
+
+        if (!skipStep2)
+        for (float t = 0; t < bondAnimStep2Duration; t += Time.deltaTime)
+        {
+            float s = Mathf.Clamp01(t / bondAnimStep2Duration);
+            s = s * s * (3f - 2f * s); // smoothstep for position
+            float rotT = 1f - (1f - s) * (1f - s); // ease-out quad - rotation leads, expresses orbital rotation visibly
+
+            survivingOrbital.transform.position = Vector3.Lerp(bondOrbitalStartWorldPos, bondOrbitalEnd.worldPos, s);
+            survivingOrbital.transform.rotation = Quaternion.Slerp(bondOrbitalStartWorldRot, bondOrbitalEnd.worldRot, rotT);
+
+            if (rearrangeTargetInfo.HasValue)
+            {
+                var (orbToMove, targetPos, targetRot) = rearrangeTargetInfo.Value;
+                if (orbToMove != null && rearrangeStartPos.HasValue && rearrangeStartRot.HasValue)
+                {
+                    orbToMove.transform.localPosition = Vector3.Lerp(rearrangeStartPos.Value, targetPos, s);
+                    orbToMove.transform.localRotation = Quaternion.Slerp(rearrangeStartRot.Value, targetRot, rotT);
+                }
+            }
+            for (int i = 0; i < redistA.Count; i++)
+            {
+                var entry = redistA[i];
+                if (entry.orb != null && entry.orb.transform.parent == sourceAtom.transform)
+                {
+                    var (sp, sr) = redistAStarts[i];
+                    entry.orb.transform.localPosition = Vector3.Lerp(sp, entry.pos, s);
+                    entry.orb.transform.localRotation = Quaternion.Slerp(sr, entry.rot, rotT);
+                }
+            }
+            for (int i = 0; i < redistB.Count; i++)
+            {
+                var entry = redistB[i];
+                if (entry.orb != null && entry.orb.transform.parent == targetAtom.transform)
+                {
+                    var (sp, sr) = redistBStarts[i];
+                    entry.orb.transform.localPosition = Vector3.Lerp(sp, entry.pos, s);
+                    entry.orb.transform.localRotation = Quaternion.Slerp(sr, entry.rot, rotT);
+                }
+            }
+            yield return null;
+        }
+
+        if (rearrangeTargetInfo.HasValue)
+        {
+            var (orbToMove, targetPos, targetRot) = rearrangeTargetInfo.Value;
+            if (orbToMove != null)
+            {
+                orbToMove.transform.localPosition = targetPos;
+                orbToMove.transform.localRotation = targetRot;
+            }
+        }
+        sourceAtom.ApplyRedistributeTargets(redistA);
+        targetAtom.ApplyRedistributeTargets(redistB);
+        bond.UpdateBondTransformToCurrentAtoms(); // Bond may be stale (atoms moved in step 1)
+        bond.SnapOrbitalToBondPosition(); // Match step 3 start position (prevents teleport)
+        bond.animatingOrbitalToBondPosition = false;
+
+        // Step 3: Orbital-to-line transformation (bonding orbital shrinking, target orbital fading, line growing simultaneously)
+        if (bond != null)
+        {
+            yield return bond.AnimateOrbitalToLine(bondAnimStep3Duration, targetOrbital);
+            survivingOrbital.ElectronCount = merged; // Show merged electrons only after step 3
+        }
+        sourceAtom.RefreshCharge();
+        targetAtom.RefreshCharge();
+    }
+
+    (ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)? GetRearrangeTarget(AtomFunction sourceAtom, ElectronOrbitalFunction targetOrbital, Vector3? targetPointOverride)
+    {
+        float oppositeAngleWorld;
+        if (targetPointOverride.HasValue)
+        {
+            var dir = (targetPointOverride.Value - sourceAtom.transform.position).normalized;
+            oppositeAngleWorld = OrbitalAngleUtility.DirectionToAngleWorld(dir);
+            foreach (var orb in sourceAtom.GetComponentsInChildren<ElectronOrbitalFunction>())
+            {
+                if (orb != this && orb.Bond == null && IsOrbitalAlignedWithTargetPoint(orb, targetPointOverride.Value))
+                    return null;
+            }
         }
         else
         {
-            // Pi bond: already bonded, skip rearrange/align, just form the bond
-            int mergedElectrons = electronCount + targetOrbital.ElectronCount;
-            targetOrbital.ElectronCount = mergedElectrons;
+            float targetAngleWorld = OrbitalAngleUtility.GetOrbitalAngleWorld(targetOrbital.transform);
+            oppositeAngleWorld = OrbitalAngleUtility.NormalizeAngle(targetAngleWorld + 180f);
+            float draggedAngleWorld = OrbitalAngleUtility.LocalRotationToAngleWorld(sourceAtom.transform, originalLocalRotation);
+            if (Mathf.Abs(OrbitalAngleUtility.NormalizeAngle(draggedAngleWorld - oppositeAngleWorld)) < 45f)
+                return null;
+        }
+        var sourceOrbitals = sourceAtom.GetComponentsInChildren<ElectronOrbitalFunction>();
+        ElectronOrbitalFunction orbToMove = null;
+        float bestDelta = 360f;
+        foreach (var orb in sourceOrbitals)
+        {
+            if (orb == this || orb.Bond != null) continue;
+            float orbAngleWorld = OrbitalAngleUtility.GetOrbitalAngleWorld(orb.transform);
+            float delta = Mathf.Abs(OrbitalAngleUtility.NormalizeAngle(orbAngleWorld - oppositeAngleWorld));
+            if (delta < bestDelta) { bestDelta = delta; orbToMove = orb; }
+        }
+        if (orbToMove == null) return null;
+        float freedSlotAngle = targetPointOverride.HasValue
+            ? OrbitalAngleUtility.DirectionToAngleWorld((targetPointOverride.Value - sourceAtom.transform.position).normalized)
+            : NormalizeAngle(originalLocalRotation.eulerAngles.z);
+        var slotPos = GetCanonicalSlotPosition(freedSlotAngle, sourceAtom.BondRadius);
+        return (orbToMove, slotPos.position, slotPos.rotation);
+    }
 
-            sourceAtom.UnbondOrbital(this);
-            targetAtom.UnbondOrbital(targetOrbital);
+    List<(AtomFunction atom, Vector3 targetPos)> GetAlignTargetPositions(AtomFunction moleculeRoot, AtomFunction referenceAtom, Vector3 referenceOrbitalTip)
+    {
+        var refPos = referenceAtom.transform.position;
+        var toOrbital = referenceOrbitalTip - refPos;
+        var dist = toOrbital.magnitude;
+        if (dist < 0.01f) return new List<(AtomFunction, Vector3)>();
+        var dir = toOrbital / dist;
+        var newMoleculeRootPos = referenceOrbitalTip + dir * dist;
+        var delta = newMoleculeRootPos - moleculeRoot.transform.position;
+        var result = new List<(AtomFunction, Vector3)>();
+        foreach (var a in moleculeRoot.GetConnectedMolecule())
+            result.Add((a, a.transform.position + delta));
+        return result;
+    }
 
-            CovalentBond.Create(sourceAtom, targetAtom, targetOrbital);
-            transform.SetParent(null);
-            sourceAtom.RefreshCharge();
-            targetAtom.RefreshCharge();
-            TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
+    bool FormCovalentBondPiStart(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital)
+    {
+        targetAtom.StartCoroutine(FormCovalentBondPiCoroutine(sourceAtom, targetAtom, targetOrbital));
+        return true;
+    }
+
+    IEnumerator FormCovalentBondPiCoroutine(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital)
+    {
+        int piBeforeSource = sourceAtom.GetPiBondCount();
+        int piBeforeTarget = targetAtom.GetPiBondCount();
+        int mergedElectrons = electronCount + targetOrbital.ElectronCount;
+
+        // Snap source orbital to original position (like sigma bond) before animating to bond center
+        transform.localPosition = originalLocalPosition;
+        transform.localRotation = originalLocalRotation;
+        transform.localScale = originalLocalScale;
+
+        sourceAtom.UnbondOrbital(this);
+        targetAtom.UnbondOrbital(targetOrbital);
+
+        var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, animateOrbitalToBond: true);
+        transform.SetParent(null); // Detach source orbital but keep visible for step 2 animation (preserves world pos from snap)
+        sourceAtom.RefreshCharge();
+        targetAtom.RefreshCharge();
+
+        yield return AnimateRedistributeOrbitals(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget, this, targetOrbital, bond);
+
+        if (bond != null)
+        {
+            bond.animatingOrbitalToBondPosition = false;
+            yield return bond.AnimateOrbitalToLine(bondAnimStep3Duration, this);
+            targetOrbital.ElectronCount = mergedElectrons; // Show merged electrons only after step 3
+        }
+        else
+        {
             Destroy(gameObject);
         }
-        return true;
+        sourceAtom.RefreshCharge();
+        targetAtom.RefreshCharge();
+    }
+
+    IEnumerator AnimateRedistributeOrbitals(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget,
+        ElectronOrbitalFunction sourceOrbital, ElectronOrbitalFunction targetOrbital, CovalentBond bond)
+    {
+        var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource);
+        var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget);
+        if (redistA.Count == 0 && redistB.Count == 0)
+            TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
+
+        var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
+        var redistBStarts = new List<(Vector3 pos, Quaternion rot)>();
+        foreach (var entry in redistA)
+            redistAStarts.Add(entry.orb != null ? (entry.orb.transform.localPosition, entry.orb.transform.localRotation) : (Vector3.zero, Quaternion.identity));
+        foreach (var entry in redistB)
+            redistBStarts.Add(entry.orb != null ? (entry.orb.transform.localPosition, entry.orb.transform.localRotation) : (Vector3.zero, Quaternion.identity));
+
+        // Pi bond: animate both orbitals to bond center. Flip source or target so electrons align in a row.
+        Vector3 bondTargetPos = Vector3.zero;
+        Quaternion bondTargetRot = Quaternion.identity;
+        Quaternion sourceTargetRot = Quaternion.identity;
+        Quaternion targetTargetRot = Quaternion.identity;
+        if (bond != null)
+        {
+            var bt = bond.GetOrbitalTargetWorldState();
+            bondTargetPos = bt.Item1;
+            bondTargetRot = bt.Item2;
+            (float sourceDiff, float targetDiff) = LogPiBondAngles(sourceAtom, targetAtom, bondTargetPos, bondTargetRot, bond);
+            bool flipTarget = Mathf.Abs(sourceDiff) < Mathf.Abs(targetDiff); // Source closer to bond → flip target
+            if (flipTarget)
+            {
+                bond.orbitalRotationFlipped = true;
+                bt = bond.GetOrbitalTargetWorldState(); // Re-fetch with flip
+                bondTargetPos = bt.Item1;
+                bondTargetRot = bt.Item2; // Target (bond orbital) gets flipped rotation
+                sourceTargetRot = bondTargetRot * Quaternion.Euler(0f, 0f, 180f); // Source opposite to target
+                targetTargetRot = bondTargetRot;
+            }
+            else
+            {
+                sourceTargetRot = bondTargetRot * Quaternion.Euler(0f, 0f, 180f);
+                targetTargetRot = bondTargetRot;
+            }
+        }
+        var sourceOrbStart = sourceOrbital != null ? (sourceOrbital.transform.position, sourceOrbital.transform.rotation) : (Vector3.zero, Quaternion.identity);
+        var targetOrbStart = targetOrbital != null ? (targetOrbital.transform.position, targetOrbital.transform.rotation) : (Vector3.zero, Quaternion.identity);
+
+        for (float t = 0; t < bondAnimStep2Duration; t += Time.deltaTime)
+        {
+            float s = Mathf.Clamp01(t / bondAnimStep2Duration);
+            s = s * s * (3f - 2f * s); // smoothstep for position
+            float rotT = 1f - (1f - s) * (1f - s); // ease-out quad - rotation leads, expresses orbital rotation visibly
+
+            if (sourceOrbital != null && bond != null)
+            {
+                sourceOrbital.transform.position = Vector3.Lerp(sourceOrbStart.Item1, bondTargetPos, s);
+                sourceOrbital.transform.rotation = Quaternion.Slerp(sourceOrbStart.Item2, sourceTargetRot, rotT);
+            }
+            if (targetOrbital != null && bond != null)
+            {
+                targetOrbital.transform.position = Vector3.Lerp(targetOrbStart.Item1, bondTargetPos, s);
+                targetOrbital.transform.rotation = Quaternion.Slerp(targetOrbStart.Item2, targetTargetRot, rotT);
+            }
+
+            for (int i = 0; i < redistA.Count; i++)
+            {
+                var entry = redistA[i];
+                if (entry.orb != null && entry.orb.transform.parent == sourceAtom.transform)
+                {
+                    var (sp, sr) = redistAStarts[i];
+                    entry.orb.transform.localPosition = Vector3.Lerp(sp, entry.pos, s);
+                    entry.orb.transform.localRotation = Quaternion.Slerp(sr, entry.rot, rotT);
+                }
+            }
+            for (int i = 0; i < redistB.Count; i++)
+            {
+                var entry = redistB[i];
+                if (entry.orb != null && entry.orb.transform.parent == targetAtom.transform)
+                {
+                    var (sp, sr) = redistBStarts[i];
+                    entry.orb.transform.localPosition = Vector3.Lerp(sp, entry.pos, s);
+                    entry.orb.transform.localRotation = Quaternion.Slerp(sr, entry.rot, rotT);
+                }
+            }
+            yield return null;
+        }
+        sourceAtom.ApplyRedistributeTargets(redistA);
+        targetAtom.ApplyRedistributeTargets(redistB);
+
+        // Snap both orbitals to exact position step 3 expects (prevents teleport)
+        if (bond != null)
+        {
+            bond.UpdateBondTransformToCurrentAtoms(); // Bond may be stale
+            bond.SnapOrbitalToBondPosition();
+            if (sourceOrbital != null)
+            {
+                var bt = bond.GetOrbitalTargetWorldState();
+                sourceOrbital.transform.position = bt.Item1;
+                sourceOrbital.transform.rotation = sourceTargetRot;
+            }
+        }
+    }
+
+    static (float sourceDiff, float targetDiff) LogPiBondAngles(AtomFunction sourceAtom, AtomFunction targetAtom, Vector3 bondPos, Quaternion bondRot, CovalentBond bond)
+    {
+        var toCenterFromSource = bondPos - sourceAtom.transform.position;
+        if (toCenterFromSource.sqrMagnitude < 0.0001f) { Debug.Log("[Pi] toCenterFromSource too small"); return (0f, 0f); }
+        toCenterFromSource.Normalize();
+        toCenterFromSource.z = 0;
+        float sourceAngle = OrbitalAngleUtility.DirectionToAngleWorld(toCenterFromSource);
+        var toCenterFromTarget = bondPos - targetAtom.transform.position;
+        if (toCenterFromTarget.sqrMagnitude >= 0.0001f && bond != null)
+        {
+            toCenterFromTarget.Normalize();
+            toCenterFromTarget.z = 0;
+            float targetAngle = OrbitalAngleUtility.DirectionToAngleWorld(toCenterFromTarget);
+            var bondDir = bondRot * Vector3.right;
+            bondDir.z = 0;
+            if (bondDir.sqrMagnitude >= 0.0001f)
+            {
+                bondDir.Normalize();
+                float bondAngle = OrbitalAngleUtility.DirectionToAngleWorld(bondDir);
+                float sourceDiff = OrbitalAngleUtility.NormalizeAngle(sourceAngle - bondAngle);
+                float targetDiff = OrbitalAngleUtility.NormalizeAngle(targetAngle - bondAngle);
+                bool flipTarget = Mathf.Abs(sourceDiff) < Mathf.Abs(targetDiff);
+                Debug.Log($"[Pi] sourceAngle={sourceAngle:F1}° targetAngle={targetAngle:F1}° bondAngle={bondAngle:F1}° sourceDiff={sourceDiff:F1}° targetDiff={targetDiff:F1}° flipTarget={flipTarget}");
+                return (sourceDiff, targetDiff);
+            }
+        }
+        Debug.Log($"[Pi] sourceAngle={sourceAngle:F1}° (target/bond calc skipped)");
+        return (0f, 0f);
+    }
+
+    static float LogSigmaBondAngles(AtomFunction sourceAtom, Vector3 bondPos, Quaternion bondRot)
+    {
+        var toCenter = bondPos - sourceAtom.transform.position;
+        if (toCenter.sqrMagnitude < 0.0001f) { Debug.Log("[Sigma] toCenter too small"); return 0f; }
+        toCenter.Normalize();
+        toCenter.z = 0;
+        float sourceAngle = OrbitalAngleUtility.DirectionToAngleWorld(toCenter);
+        var bondDir = bondRot * Vector3.right;
+        bondDir.z = 0;
+        if (bondDir.sqrMagnitude < 0.0001f) { Debug.Log("[Sigma] bondDir too small"); return 0f; }
+        bondDir.Normalize();
+        float bondAngle = OrbitalAngleUtility.DirectionToAngleWorld(bondDir);
+        float diff = OrbitalAngleUtility.NormalizeAngle(sourceAngle - bondAngle);
+        Debug.Log($"[Sigma] sourceAngle={sourceAngle:F1}° bondAngle={bondAngle:F1}° diff={diff:F1}° flip={Mathf.Abs(diff) > 90f}");
+        return diff;
     }
 
     static void TryRedistributeOrbitalsAfterBondChange(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget)
@@ -585,9 +956,12 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         var anchor = GetAtomCenter();
         var dir = (tip - anchor);
         var distance = dir.magnitude;
-        if (distance < 0.01f) return;
-        dir /= distance;
-        distance = Mathf.Max(distance, MinStretchLength);
+        if (distance < 0.01f && bond == null) return;
+        if (distance < 0.01f) distance = 0f;
+        dir = distance > 0.01f ? dir / distance : Vector3.up;
+        // Bond orbitals: allow stretch to reach origin (no min length). Lone orbitals: MinStretchLength avoids overlap.
+        float minLength = (bond != null) ? 0f : MinStretchLength;
+        distance = Mathf.Max(distance, minLength);
 
         float angle = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg - 90f;
         stretchVisual.transform.rotation = Quaternion.Euler(0, 0, angle);
@@ -602,7 +976,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             stretchVisual.transform.localScale = Vector3.one;
             var tri = stretchVisual.transform.Find("Triangle");
             var circle = stretchVisual.transform.Find("Circle");
-            float padding = Mathf.Min(apexPadding, distance * 0.4f);
+            // Bond orbitals: no nucleus at center, so triangle tip can reach the origin. Lone orbitals: use apexPadding to avoid overlapping nucleus.
+            float padding = (bond != null) ? 0f : Mathf.Min(apexPadding, distance * 0.4f);
             float triLength = distance - padding;
             Vector3 triApex = anchor + padding * dir;
             Vector3 triBase = tip;
@@ -624,8 +999,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                     triSr.GetPropertyBlock(block);
                     block.SetVector(ClipCenterId, new Vector4(0f, 1f, 0f, 0f));
                     float clipRadius = circleScale;
-                    block.SetFloat(ClipRadiusXId, clipRadius / triWidthScale);
-                    block.SetFloat(ClipRadiusYId, clipRadius / triHeightScale);
+                    block.SetFloat(ClipRadiusXId, clipRadius / Mathf.Max(triWidthScale, 0.001f));
+                    block.SetFloat(ClipRadiusYId, clipRadius / Mathf.Max(triHeightScale, 0.001f));
                     triSr.SetPropertyBlock(block);
                 }
             }

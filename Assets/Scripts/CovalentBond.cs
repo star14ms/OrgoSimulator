@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -15,6 +16,9 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     bool orbitalVisible;
     bool forwardedPressToOrbital;
+    float orbitalToLineAnimProgress = -1f; // -1 = done, 0..1 = animating
+    internal bool animatingOrbitalToBondPosition; // Step 2: orbital moving from atom to bond
+    internal bool orbitalRotationFlipped; // Sigma: flip when source opposite to bond so electrons don't overlap
     PointerEventData storedPressData;
     GameObject lineVisual;
     SpriteRenderer lineRenderer;
@@ -26,6 +30,51 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public ElectronOrbitalFunction Orbital => orbital;
 
     public int ElectronCount => orbital != null ? orbital.ElectronCount : 0;
+
+    /// <summary>Updates bond transform to current atom positions. Call before SnapOrbitalToBondPosition when animatingOrbitalToBondPosition was true (bond may be stale).</summary>
+    public void UpdateBondTransformToCurrentAtoms()
+    {
+        if (atomA == null || atomB == null) return;
+        var posA = atomA.transform.position;
+        var posB = atomB.transform.position;
+        var center = (posA + posB) * 0.5f;
+        var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
+        var second = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomB : atomA;
+        var delta = second.transform.position - first.transform.position;
+        var distance = delta.magnitude;
+        if (distance < 0.001f) return;
+        transform.position = center;
+        transform.rotation = Quaternion.Euler(0, 0, Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg - 90f);
+    }
+
+    /// <summary>Snaps the bond orbital to the exact world position that matches lineVisual (center + perpendicular * offset). Call at end of step 2 to prevent teleport into step 3. Call UpdateBondTransformToCurrentAtoms first.</summary>
+    public void SnapOrbitalToBondPosition()
+    {
+        if (orbital == null || atomA == null || atomB == null) return;
+        var (worldPos, worldRot) = GetOrbitalTargetWorldState();
+        orbital.transform.position = worldPos;
+        orbital.transform.rotation = worldRot;
+    }
+
+    /// <summary>Returns the target world position and rotation for the bond orbital (for step 2 animation).</summary>
+    public (Vector3 worldPos, Quaternion worldRot) GetOrbitalTargetWorldState()
+    {
+        if (atomA == null || atomB == null) return (transform.position, transform.rotation * Quaternion.Euler(0, 0, 90f));
+        var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
+        var second = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomB : atomA;
+        var posA = atomA.transform.position;
+        var posB = atomB.transform.position;
+        var center = (posA + posB) * 0.5f;
+        var delta = second.transform.position - first.transform.position;
+        var distance = delta.magnitude;
+        if (distance < 0.001f) return (center, transform.rotation * Quaternion.Euler(0, 0, 90f));
+        var perpendicular = Vector3.Cross(Vector3.forward, delta / distance).normalized;
+        float offset = GetLineOffset(GetBondIndex(), atomA.GetBondsTo(atomB));
+        var worldPos = center + perpendicular * offset;
+        var worldRot = transform.rotation * Quaternion.Euler(0, 0, 90f);
+        if (orbitalRotationFlipped) worldRot = worldRot * Quaternion.Euler(0f, 0f, 180f);
+        return (worldPos, worldRot);
+    }
 
     int GetBondIndex()
     {
@@ -51,18 +100,18 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return (bondIndex % 2 == 1 ? -1f : 1f) * ((bondIndex + 1) / 2) * piOffset; // pi: -0.2, +0.2, -0.4, +0.4...
     }
 
-    public static CovalentBond Create(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction sharedOrbital)
+    public static CovalentBond Create(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction sharedOrbital, bool animateOrbitalToBond = false)
     {
         if (sourceAtom == null || targetAtom == null || sharedOrbital == null) return null;
         if (sourceAtom == targetAtom) return null;
 
         var bondGo = new GameObject("CovalentBond");
         var bond = bondGo.AddComponent<CovalentBond>();
-        bond.Initialize(sourceAtom, targetAtom, sharedOrbital);
+        bond.Initialize(sourceAtom, targetAtom, sharedOrbital, animateOrbitalToBond);
         return bond;
     }
 
-    void Initialize(AtomFunction a, AtomFunction b, ElectronOrbitalFunction orb)
+    void Initialize(AtomFunction a, AtomFunction b, ElectronOrbitalFunction orb, bool animateOrbitalToBond = false)
     {
         atomA = a;
         atomB = b;
@@ -73,14 +122,42 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         orbital.SetBond(this);
         orbital.SetBondedAtom(null);
+        PositionBondTransform(); // Set bond position BEFORE reparenting so orbital keeps correct world pos
         orbital.transform.SetParent(transform);
+        animatingOrbitalToBondPosition = animateOrbitalToBond;
 
         atomA.SetupIgnoreCollisions();
         atomB.SetupIgnoreCollisions();
 
         CreateLineVisual();
+        orbitalVisible = true; // Start with orbital visible for step 3 animation
+        ApplyDisplayMode();
+    }
+
+    /// <summary>Animates the bond orbital transforming into a line over the given duration. Optionally fades out another orbital (e.g. target orbital) in parallel.</summary>
+    public IEnumerator AnimateOrbitalToLine(float duration, ElectronOrbitalFunction orbitalToFadeOut = null)
+    {
+        orbitalVisible = true;
+        orbitalToLineAnimProgress = 0f;
+        ApplyDisplayMode();
+
+        var fadeOutStartScale = orbitalToFadeOut != null ? orbitalToFadeOut.transform.localScale : Vector3.one;
+
+        for (float t = 0; t < duration; t += Time.deltaTime)
+        {
+            float s = Mathf.Clamp01(t / duration);
+            s = s * s * (3f - 2f * s); // smoothstep
+            orbitalToLineAnimProgress = s;
+            if (orbitalToFadeOut != null)
+                orbitalToFadeOut.transform.localScale = Vector3.Lerp(fadeOutStartScale, Vector3.zero, s);
+            yield return null;
+        }
+
+        orbitalToLineAnimProgress = -1f;
         orbitalVisible = false;
         ApplyDisplayMode();
+        if (orbitalToFadeOut != null)
+            Destroy(orbitalToFadeOut.gameObject);
     }
 
     void CreateLineVisual()
@@ -113,6 +190,21 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return lineSprite;
     }
 
+    void PositionBondTransform()
+    {
+        if (atomA == null || atomB == null) return;
+        var posA = atomA.transform.position;
+        var posB = atomB.transform.position;
+        var center = (posA + posB) * 0.5f;
+        var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
+        var second = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomB : atomA;
+        var delta = second.transform.position - first.transform.position;
+        var distance = delta.magnitude;
+        if (distance < 0.001f) return;
+        transform.position = center;
+        transform.rotation = Quaternion.Euler(0, 0, Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg - 90f);
+    }
+
     void LateUpdate()
     {
         if (atomA == null || atomB == null) return;
@@ -120,16 +212,17 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var posA = atomA.transform.position;
         var posB = atomB.transform.position;
         var center = (posA + posB) * 0.5f;
-        // Canonical direction: same for all bonds between this pair (avoids sign flip when atomA/atomB order differs)
         var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
         var second = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomB : atomA;
         var delta = second.transform.position - first.transform.position;
         var distance = delta.magnitude;
         if (distance < 0.001f) return;
 
-        transform.position = center;
-        var angle = Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg - 90f;
-        transform.rotation = Quaternion.Euler(0, 0, angle);
+        if (!animatingOrbitalToBondPosition)
+        {
+            transform.position = center;
+            transform.rotation = Quaternion.Euler(0, 0, Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg - 90f);
+        }
 
         int bondIndex = GetBondIndex();
         int bondCount = atomA.GetBondsTo(atomB);
@@ -139,19 +232,25 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         lineVisual.transform.position = center + perpendicular * offset;
         lineVisual.transform.localRotation = Quaternion.identity;
         float lineLength = Mathf.Max(0.1f, distance * 0.5f);
-        lineVisual.transform.localScale = new Vector3(0.25f, lineLength, 1f);
+        float lineScaleMult = orbitalToLineAnimProgress < 0 ? 1f : orbitalToLineAnimProgress;
+        lineVisual.transform.localScale = new Vector3(0.25f, lineLength * lineScaleMult, 1f);
 
         // Collider size = sprite base size (0.5 x 1) so it scales with the transform and matches the line
         lineCollider.size = new Vector2(0.5f, 1f);
         lineCollider.offset = Vector2.zero;
 
-        // Position bond orbital at the bond (not where the target orbital was); point along bond direction
-        // Skip when orbitalVisible (user is dragging) so orbital and its electrons move together
-        if (orbital != null && !orbitalVisible)
+        // Position bond orbital at same world position as lineVisual (center + perpendicular * offset)
+        // Skip when user is dragging or when animating orbital to bond (step 2)
+        bool userDragging = orbitalVisible && orbitalToLineAnimProgress < 0;
+        if (orbital != null && !userDragging && !animatingOrbitalToBondPosition)
         {
-            orbital.transform.localPosition = new Vector3(offset, 0f, 0f);
-            orbital.transform.localRotation = Quaternion.Euler(0f, 0f, 90f); // orbital points along bond (local Y)
-            orbital.transform.localScale = Vector3.one * 0.6f;
+            var orbWorldPos = center + perpendicular * offset;
+            var orbRot = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
+            if (orbitalRotationFlipped) orbRot = orbRot * Quaternion.Euler(0f, 0f, 180f);
+            orbital.transform.position = orbWorldPos;
+            orbital.transform.rotation = orbRot;
+            float orbScale = orbitalToLineAnimProgress < 0 ? 0.6f : 0.6f * (1f - orbitalToLineAnimProgress);
+            orbital.transform.localScale = Vector3.one * Mathf.Max(0.01f, orbScale);
         }
     }
 
@@ -162,8 +261,10 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbital.SetVisualsEnabled(orbitalVisible);
             orbital.SetPointerBlocked(true);
         }
-        if (lineRenderer != null) lineRenderer.enabled = !orbitalVisible;
-        if (lineCollider != null) lineCollider.enabled = !orbitalVisible;
+        bool animating = orbitalToLineAnimProgress >= 0 && orbitalToLineAnimProgress < 1f;
+        bool showLine = !orbitalVisible || animating; // Show line from start of step 3 so it grows with orbital shrinking
+        if (lineRenderer != null) lineRenderer.enabled = showLine;
+        if (lineCollider != null) lineCollider.enabled = !orbitalVisible && orbitalToLineAnimProgress < 0;
     }
 
     public void OnPointerDown(PointerEventData eventData)
@@ -235,6 +336,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public void NotifyElectronCountChanged()
     {
+        ApplyDisplayMode(); // Re-apply so newly created electrons respect orbitalVisible (hidden when bond shows as line)
         atomA?.RefreshCharge();
         atomB?.RefreshCharge();
         atomA?.SetupIgnoreCollisions();
