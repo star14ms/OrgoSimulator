@@ -151,7 +151,15 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomB.SetupIgnoreCollisions();
 
         CreateLineVisual();
-        orbitalVisible = true; // Start with orbital visible for step 3 animation
+        if (animateOrbitalToBond)
+        {
+            orbitalVisible = true; // Start with orbital visible for step 3 animation
+        }
+        else
+        {
+            orbitalVisible = false;
+            orbitalToLineAnimProgress = -1f; // Skip animation; show line immediately
+        }
         ApplyDisplayMode();
     }
 

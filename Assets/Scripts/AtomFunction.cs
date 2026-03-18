@@ -103,11 +103,10 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         int electronsOwned = 0;
 
-        foreach (var orb in GetComponentsInChildren<ElectronOrbitalFunction>())
+        foreach (var orb in bondedOrbitals)
         {
-            if (orb.transform.parent != transform) continue;
-            if (orb.Bond == null)
-                electronsOwned += orb.ElectronCount;
+            if (orb == null || orb.Bond != null) continue;
+            electronsOwned += orb.ElectronCount;
         }
 
         foreach (var b in covalentBonds)
@@ -583,6 +582,25 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return null;
     }
 
+    /// <summary>Returns a lone orbital with exactly 1 electron, preferring the one closest to preferredDirection. For programmatic bonding.</summary>
+    public ElectronOrbitalFunction GetLoneOrbitalWithOneElectron(Vector3 preferredDirectionWorld)
+    {
+        ElectronOrbitalFunction best = null;
+        float bestDot = -2f;
+        Vector3 dirNorm = preferredDirectionWorld.sqrMagnitude >= 0.01f ? preferredDirectionWorld.normalized : Vector3.right;
+        foreach (var orb in bondedOrbitals)
+        {
+            if (orb == null || orb.Bond != null || orb.ElectronCount != 1) continue;
+            float dot = Vector3.Dot(orb.transform.TransformDirection(Vector3.right), dirNorm);
+            if (dot > bestDot)
+            {
+                bestDot = dot;
+                best = orb;
+            }
+        }
+        return best;
+    }
+
     public bool HasEmptyLoneOrbital() => GetEmptyLoneOrbital() != null;
 
     public bool HasAvailableLoneOrbitalForBond(ElectronOrbitalFunction excludeOrbital, int sourceElectronCount)
@@ -717,9 +735,20 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public void OnPointerDown(PointerEventData eventData)
     {
+        var editMode = FindFirstObjectByType<EditModeManager>();
+        if (editMode != null && editMode.EraserMode)
+        {
+            var molecule = GetConnectedMolecule();
+            editMode.DestroyMolecule(molecule);
+            return;
+        }
+
         isBeingHeld = true;
         dragOffset = transform.position - ScreenToWorld(eventData.position);
         moleculeAtoms = GetConnectedMolecule();
+
+        if (editMode != null && editMode.EditModeActive)
+            editMode.OnAtomClicked(this);
     }
 
     public void OnDrag(PointerEventData eventData)
@@ -760,6 +789,15 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public void OnPointerUp(PointerEventData eventData)
     {
+        if (isBeingHeld && moleculeAtoms != null)
+        {
+            var disposal = FindFirstObjectByType<DisposalZone>();
+            if (disposal != null && disposal.ContainsScreenPoint(eventData.position))
+            {
+                disposal.DestroyMolecule(moleculeAtoms);
+                moleculeAtoms = null;
+            }
+        }
         isBeingHeld = false;
     }
 
@@ -769,8 +807,15 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return Camera.main.ScreenToWorldPoint(mouse);
     }
 
+    bool initialized;
+
+    /// <summary>Call after setting AtomicNumber when bonds need to be formed immediately (e.g. MoleculeBuilder). Normally Start handles this.</summary>
+    public void ForceInitialize() => InitializeFromAtomicNumber();
+
     void InitializeFromAtomicNumber()
     {
+        if (initialized) return;
+        initialized = true;
         int valence = GetValenceFromGroup(GetGroupFromAtomicNumber(atomicNumber));
         int valenceElectrons = Mathf.Max(0, valence - charge);
         if (atomicNumber == 2) valenceElectrons = 2; // He: only 1s²
@@ -866,7 +911,22 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         int orbitalCount = (atomicNumber == 1 || atomicNumber == 2) ? 1 : 4; // H, He: s orbital only
         Vector3[] dirs = { Vector3.up, Vector3.down, Vector3.right, Vector3.left };
         float offset = bondRadius * 0.6f;
-        int electronsRemaining = valence;
+
+        // Distribute electrons: prefer 1 per orbital first (for sigma bonding), then fill to 2
+        int[] electronsPerOrbital = new int[orbitalCount];
+        int remaining = valence;
+        for (int i = 0; i < orbitalCount && remaining > 0; i++)
+        {
+            electronsPerOrbital[i] = Mathf.Min(1, remaining);
+            remaining -= electronsPerOrbital[i];
+        }
+        for (int i = 0; i < orbitalCount && remaining > 0; i++)
+        {
+            int add = Mathf.Min(ElectronOrbitalFunction.MaxElectrons - electronsPerOrbital[i], remaining);
+            electronsPerOrbital[i] += add;
+            remaining -= add;
+        }
+
         for (int i = 0; i < orbitalCount; i++)
         {
             var orbital = Instantiate(orbitalPrefab, transform);
@@ -875,10 +935,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbital.transform.localScale = Vector3.one * 0.6f;
             float angle = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg;
             orbital.transform.localRotation = Quaternion.Euler(0, 0, angle);
-            int electrons = Mathf.Min(electronsRemaining, ElectronOrbitalFunction.MaxElectrons);
-            orbital.ElectronCount = electrons;
+            orbital.ElectronCount = electronsPerOrbital[i];
             orbital.SetBondedAtom(this);
-            electronsRemaining -= electrons;
             BondOrbital(orbital);
         }
         SetupIgnoreCollisions();

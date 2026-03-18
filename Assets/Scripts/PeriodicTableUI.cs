@@ -205,6 +205,8 @@ public class PeriodicTableUI : MonoBehaviour
         return null;
     }
 
+    public static Color GetElementColorStatic(int z) => GetElementColor(z);
+
     static Color GetElementColor(int z)
     {
         if (z < 1 || z > 118) return new Color(0.9f, 0.9f, 0.9f);
@@ -316,7 +318,12 @@ public class PeriodicTableUI : MonoBehaviour
         Vector3 pos = GetRandomPositionInView();
         var atomObj = Instantiate(atomPrefab, pos, Quaternion.identity);
         if (atomObj.TryGetComponent<AtomFunction>(out var atom))
+        {
             atom.AtomicNumber = atomicNumber;
+            var editMode = FindFirstObjectByType<EditModeManager>();
+            if (editMode != null && editMode.HAutoMode)
+                editMode.SaturateWithHydrogen(atom);
+        }
     }
 
     Vector3 GetRandomPositionInView()
