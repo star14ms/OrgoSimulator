@@ -156,6 +156,26 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         chargeLabel.gameObject.SetActive(charge != 0);
     }
 
+    /// <summary>Block or unblock pointer interaction on this atom and all its orbitals and electrons. Used during bond formation.</summary>
+    public void SetInteractionBlocked(bool blocked)
+    {
+        var col = GetComponent<Collider>();
+        var col2D = GetComponent<Collider2D>();
+        if (col != null) col.enabled = !blocked;
+        if (col2D != null) col2D.enabled = !blocked;
+
+        foreach (var orb in GetComponentsInChildren<ElectronOrbitalFunction>())
+        {
+            if (orb.transform.parent != transform) continue;
+            orb.SetPointerBlocked(blocked);
+            orb.SetPhysicsEnabled(!blocked);
+            foreach (var e in orb.GetComponentsInChildren<ElectronFunction>())
+            {
+                e.SetPointerBlocked(blocked);
+            }
+        }
+    }
+
     public void BondOrbital(ElectronOrbitalFunction orbital)
     {
         if (CanAcceptOrbital() && !bondedOrbitals.Contains(orbital))

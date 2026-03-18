@@ -26,6 +26,14 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
         if (rb2D != null) rb2D.simulated = enabled;
     }
 
+    public void SetPointerBlocked(bool blocked)
+    {
+        var col = GetComponent<Collider>();
+        var col2D = GetComponent<Collider2D>();
+        if (col != null) col.enabled = !blocked;
+        if (col2D != null) col2D.enabled = !blocked;
+    }
+
     void Start()
     {
         EnsureCollider();

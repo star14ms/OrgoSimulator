@@ -111,6 +111,9 @@ MonoBehaviour:
   stretchSprite: {fileID: 0}
   apexPadding: 0.3
   orbitalColliderSize: {x: 1, y: 0.15}
+  bondAnimStep1Duration: 0.5
+  bondAnimStep2Duration: 0.5
+  bondAnimStep3Duration: 0.5
 --- !u!70 &-3635036438188872279
 CapsuleCollider2D:
   m_ObjectHideFlags: 0

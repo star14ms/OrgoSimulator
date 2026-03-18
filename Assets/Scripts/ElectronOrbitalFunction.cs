@@ -319,11 +319,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     }
 
     [Tooltip("Step 1: Align molecule. Duration in seconds.")]
-    [SerializeField] float bondAnimStep1Duration = 0.33f;
+    [SerializeField] float bondAnimStep1Duration = 1.0f;
     [Tooltip("Step 2: Rearrange + Redistribute. Duration in seconds.")]
-    [SerializeField] float bondAnimStep2Duration = 0.33f;
+    [SerializeField] float bondAnimStep2Duration = 1.0f;
     [Tooltip("Step 3: Orbital-to-line transition. Duration in seconds.")]
-    [SerializeField] float bondAnimStep3Duration = 0.33f;
+    [SerializeField] float bondAnimStep3Duration = 1.0f;
 
     /// <summary>Sigma bond: starts animated formation. Returns true if animation started.</summary>
     bool FormCovalentBondSigmaStart(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition)
@@ -344,6 +344,13 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
     IEnumerator FormCovalentBondSigmaCoroutine(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition)
     {
+        var atomsToBlock = new HashSet<AtomFunction>();
+        foreach (var a in sourceAtom.GetConnectedMolecule()) atomsToBlock.Add(a);
+        foreach (var a in targetAtom.GetConnectedMolecule()) atomsToBlock.Add(a);
+        foreach (var a in atomsToBlock) a.SetInteractionBlocked(true);
+
+        try
+        {
         int piBeforeSource = sourceAtom.GetPiBondCount();
         int piBeforeTarget = targetAtom.GetPiBondCount();
         bool isFlip = sourceAtom.CovalentBonds.Count > 0 && !IsSourceOrbitalAlreadyAlignedWithTarget(sourceAtom, targetOrbital) && (sourceAtom.GetPiBondCount() > 0 || IsSourceFlippedSideFilled(sourceAtom, targetAtom, targetOrbital));
@@ -506,6 +513,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
+        }
+        finally
+        {
+            foreach (var a in atomsToBlock) a.SetInteractionBlocked(false);
+        }
     }
 
     (ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)? GetRearrangeTarget(AtomFunction sourceAtom, ElectronOrbitalFunction targetOrbital, Vector3? targetPointOverride)
@@ -570,6 +582,13 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
     IEnumerator FormCovalentBondPiCoroutine(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital)
     {
+        var atomsToBlock = new HashSet<AtomFunction>();
+        foreach (var a in sourceAtom.GetConnectedMolecule()) atomsToBlock.Add(a);
+        foreach (var a in targetAtom.GetConnectedMolecule()) atomsToBlock.Add(a);
+        foreach (var a in atomsToBlock) a.SetInteractionBlocked(true);
+
+        try
+        {
         int piBeforeSource = sourceAtom.GetPiBondCount();
         int piBeforeTarget = targetAtom.GetPiBondCount();
         int mergedElectrons = electronCount + targetOrbital.ElectronCount;
@@ -602,6 +621,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
+        }
+        finally
+        {
+            foreach (var a in atomsToBlock) a.SetInteractionBlocked(false);
+        }
     }
 
     IEnumerator AnimateRedistributeOrbitals(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget,
