@@ -110,20 +110,10 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 electronsOwned += orb.ElectronCount;
         }
 
-        float myEN = GetElectronegativity(atomicNumber);
         foreach (var b in covalentBonds)
         {
             if (b == null || b.Orbital == null) continue;
-            var other = b.AtomA == this ? b.AtomB : b.AtomA;
-            if (other == null) continue;
-            float otherEN = GetElectronegativity(other.AtomicNumber);
-            int bondElectrons = b.ElectronCount;
-            if (myEN > otherEN)
-                electronsOwned += bondElectrons;
-            else if (myEN < otherEN)
-                electronsOwned += 0;
-            else
-                electronsOwned += bondElectrons / 2;
+            electronsOwned += b.GetElectronsOwnedBy(this);
         }
 
         return valence - electronsOwned;
@@ -715,9 +705,10 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     [SerializeField] Vector2 elementLabelSize = new Vector2(1f, 1f);
     [SerializeField] Vector2 chargeLabelSize = new Vector2(0.5f, 0.5f);
 
-    static TMP_FontAsset GetDefaultFont()
+    public static TMP_FontAsset GetDefaultFont()
     {
-        return Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+        var font = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+        return font != null ? font : TMP_Settings.defaultFontAsset;
     }
 
     void CreateElementLabel()

@@ -294,6 +294,7 @@ public class PeriodicTableUI : MonoBehaviour
         labelRect.offsetMax = Vector2.zero;
 
         var tmp = labelGo.AddComponent<TextMeshProUGUI>();
+        tmp.font = AtomFunction.GetDefaultFont();
         tmp.text = AtomFunction.GetElementSymbol(atomicNumber);
         tmp.fontSize = fontSize;
         tmp.alignment = TextAlignmentOptions.Center;

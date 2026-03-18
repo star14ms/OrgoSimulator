@@ -398,9 +398,12 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         int merged = sourceOrbital.ElectronCount + targetOrbital.ElectronCount;
         sourceAtom.UnbondOrbital(sourceOrbital);
         targetAtom.UnbondOrbital(targetOrbital);
-        var bond = CovalentBond.Create(isFlip ? targetAtom : sourceAtom, isFlip ? sourceAtom : targetAtom, sourceOrbital, animateOrbitalToBond: true);
+        var bond = CovalentBond.Create(isFlip ? targetAtom : sourceAtom, isFlip ? sourceAtom : targetAtom, sourceOrbital, sourceAtom, animateOrbitalToBond: true);
         if (isFlip) targetAtom.transform.SetParent(null);
         var survivingOrbital = sourceOrbital;
+        // Reparent target orbital to bond so it's not counted in target's lone orbitals (avoids double-count charge bug)
+        targetOrbital.transform.SetParent(bond.transform, worldPositionStays: true);
+        bond.SetOrbitalBeingFaded(targetOrbital); // Use merged count for charge during animation
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
 
@@ -579,8 +582,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         sourceAtom.UnbondOrbital(this);
         targetAtom.UnbondOrbital(targetOrbital);
 
-        var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, animateOrbitalToBond: true);
+        var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, targetAtom, animateOrbitalToBond: true);
         transform.SetParent(null); // Detach source orbital but keep visible for step 2 animation (preserves world pos from snap)
+        bond.SetOrbitalBeingFaded(this); // Use merged count for charge during animation (source orbital is being faded)
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
 

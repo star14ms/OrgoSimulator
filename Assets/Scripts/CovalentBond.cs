@@ -13,6 +13,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     [SerializeField] AtomFunction atomA;
     [SerializeField] AtomFunction atomB;
     ElectronOrbitalFunction orbital;
+    AtomFunction orbitalContributor; // Atom that contributed the orbital; used for odd-electron tie-break when EN equal
+    ElectronOrbitalFunction orbitalBeingFadedForCharge; // During bond formation: the orbital being faded; use its electrons for charge until destroyed
 
     bool orbitalVisible;
     bool forwardedPressToOrbital;
@@ -30,6 +32,24 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public ElectronOrbitalFunction Orbital => orbital;
 
     public int ElectronCount => orbital != null ? orbital.ElectronCount : 0;
+
+    /// <summary>Returns how many bond electrons count toward the given atom for charge calculation. Uses electronegativity; when equal EN and odd count, orbital contributor gets the extra electron.</summary>
+    public int GetElectronsOwnedBy(AtomFunction atom)
+    {
+        if (atom == null || atomA == null || atomB == null || atom != atomA && atom != atomB) return 0;
+        var other = atom == atomA ? atomB : atomA;
+        if (other == null) return 0;
+        int bondElectrons = ElectronCount;
+        if (orbitalBeingFadedForCharge != null)
+            bondElectrons += orbitalBeingFadedForCharge.ElectronCount;
+        float myEN = AtomFunction.GetElectronegativity(atom.AtomicNumber);
+        float otherEN = AtomFunction.GetElectronegativity(other.AtomicNumber);
+        if (myEN > otherEN) return bondElectrons;
+        if (myEN < otherEN) return 0;
+        if (bondElectrons % 2 == 0) return bondElectrons / 2;
+        if (orbitalContributor == null) return bondElectrons / 2; // Fallback when contributor unknown
+        return orbitalContributor == atom ? (bondElectrons + 1) / 2 : (bondElectrons - 1) / 2;
+    }
 
     /// <summary>Updates bond transform to current atom positions. Call before SnapOrbitalToBondPosition when animatingOrbitalToBondPosition was true (bond may be stale).</summary>
     public void UpdateBondTransformToCurrentAtoms()
@@ -100,22 +120,23 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return (bondIndex % 2 == 1 ? -1f : 1f) * ((bondIndex + 1) / 2) * piOffset; // pi: -0.2, +0.2, -0.4, +0.4...
     }
 
-    public static CovalentBond Create(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction sharedOrbital, bool animateOrbitalToBond = false)
+    public static CovalentBond Create(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction sharedOrbital, AtomFunction orbitalContributor, bool animateOrbitalToBond = false)
     {
-        if (sourceAtom == null || targetAtom == null || sharedOrbital == null) return null;
-        if (sourceAtom == targetAtom) return null;
+        if (atomA == null || atomB == null || sharedOrbital == null) return null;
+        if (atomA == atomB) return null;
 
         var bondGo = new GameObject("CovalentBond");
         var bond = bondGo.AddComponent<CovalentBond>();
-        bond.Initialize(sourceAtom, targetAtom, sharedOrbital, animateOrbitalToBond);
+        bond.Initialize(atomA, atomB, sharedOrbital, orbitalContributor, animateOrbitalToBond);
         return bond;
     }
 
-    void Initialize(AtomFunction a, AtomFunction b, ElectronOrbitalFunction orb, bool animateOrbitalToBond = false)
+    void Initialize(AtomFunction a, AtomFunction b, ElectronOrbitalFunction orb, AtomFunction contributor, bool animateOrbitalToBond = false)
     {
         atomA = a;
         atomB = b;
         orbital = orb;
+        orbitalContributor = contributor;
 
         atomA.RegisterBond(this);
         atomB.RegisterBond(this);
@@ -139,6 +160,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         orbitalVisible = true;
         orbitalToLineAnimProgress = 0f;
+        orbitalBeingFadedForCharge = orbitalToFadeOut;
         ApplyDisplayMode();
 
         var fadeOutStartScale = orbitalToFadeOut != null ? orbitalToFadeOut.transform.localScale : Vector3.one;
@@ -155,9 +177,16 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         orbitalToLineAnimProgress = -1f;
         orbitalVisible = false;
+        orbitalBeingFadedForCharge = null;
         ApplyDisplayMode();
         if (orbitalToFadeOut != null)
             Destroy(orbitalToFadeOut.gameObject);
+    }
+
+    /// <summary>Call during bond formation so charge uses merged count (bond orbital + fading orbital) until AnimateOrbitalToLine completes.</summary>
+    public void SetOrbitalBeingFaded(ElectronOrbitalFunction orb)
+    {
+        orbitalBeingFadedForCharge = orb;
     }
 
     void CreateLineVisual()
