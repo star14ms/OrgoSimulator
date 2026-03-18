@@ -167,6 +167,28 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         bondedOrbitals.Remove(orbital);
     }
 
+    /// <summary>Returns true if orbital angles are not evenly spaced (angular distance inconsistent). Used to decide when redistribution is needed after bond break.</summary>
+    public bool HasInconsistentOrbitalAngles()
+    {
+        int slotCount = GetOrbitalSlotCount();
+        if (slotCount <= 1) return false;
+
+        float tolerance = 360f / (2f * slotCount);
+        var angles = CollectUniqueOrbitalAngles(tolerance);
+        if (angles.Count <= 1) return false;
+
+        var sorted = angles.Select(NormalizeAngleTo360).OrderBy(a => a).ToList();
+        float expectedStep = 360f / sorted.Count;
+        for (int i = 0; i < sorted.Count; i++)
+        {
+            float next = i + 1 < sorted.Count ? sorted[i + 1] : sorted[0] + 360f;
+            float diff = next - sorted[i];
+            if (diff < 0) diff += 360f;
+            if (Mathf.Abs(diff - expectedStep) > tolerance) return true;
+        }
+        return false;
+    }
+
     /// <summary>Redistributes non-pi orbital angles when pi bond count has changed. Call after bond formation/breakage. piBondAngleOverride used when pi count dropped to 0 (e.g. after breaking a double bond).</summary>
     public void RedistributeOrbitals(float? piBondAngleOverride = null)
     {
@@ -179,39 +201,52 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var oldAngles = CollectUniqueOrbitalAngles(tolerance);
         if (oldAngles.Count == 0) return;
 
-        // Step 2: Identify pi bond angle
-        float? piBondAngle = piBondAngleOverride;
-        if (!piBondAngle.HasValue)
+        // Step 2: Identify origin angle. Pi bond when present; else 0° (RedistributeOrbitals is used for bond break).
+        float? piBondAngle = null;
+        foreach (var b in covalentBonds)
         {
-            foreach (var b in covalentBonds)
-            {
-                if (b?.AtomA == null || b?.AtomB == null) continue;
-                var other = b.AtomA == this ? b.AtomB : b.AtomA;
-                if (GetBondsTo(other) <= 1) continue;
-                var dir = (other.transform.position - transform.position).normalized;
-                piBondAngle = OrbitalAngleUtility.DirectionToAngleWorld(dir);
-                break;
-            }
+            if (b?.AtomA == null || b?.AtomB == null) continue;
+            var other = b.AtomA == this ? b.AtomB : b.AtomA;
+            if (GetBondsTo(other) <= 1) continue;
+            var dir = (other.transform.position - transform.position).normalized;
+            piBondAngle = OrbitalAngleUtility.DirectionToAngleWorld(dir);
+            break;
         }
-        if (!piBondAngle.HasValue) return;
+        float originAngle = piBondAngle.HasValue ? NormalizeAngleTo360(piBondAngle.Value) : 0f;
 
-        float piNorm = NormalizeAngleTo360(piBondAngle.Value);
-
-        // Step 3: Build new angle list starting from pi bond angle
+        // Step 3: Build new angle list starting from origin
         int n = oldAngles.Count;
         float step = 360f / n;
         var newAngles = new List<float>();
         for (int i = 0; i < n; i++)
         {
-            float a = piNorm + i * step;
+            float a = originAngle + i * step;
             newAngles.Add(NormalizeAngleTo360(a));
         }
 
-        // Step 4: Remove pi bond angle from both lists
-        int piIdxOld = FindClosestAngleIndex(oldAngles, piNorm, tolerance);
-        int piIdxNew = FindClosestAngleIndex(newAngles, piNorm, tolerance);
-        var oldNonPi = oldAngles.Where((_, i) => i != piIdxOld).ToList();
-        var newNonPi = newAngles.Where((_, i) => i != piIdxNew).ToList();
+        // Step 4: Remove bond slot from both lists when we have bonds (bond stays fixed). When no bonds, redistribute all.
+        List<float> oldNonPi;
+        List<float> newNonPi;
+        if (covalentBonds.Count > 0)
+        {
+            float refAngle = piBondAngle.HasValue ? originAngle : (piBondAngleOverride.HasValue ? NormalizeAngleTo360(piBondAngleOverride.Value) : 0f);
+            var b = covalentBonds.FirstOrDefault(x => x?.AtomA != null && x?.AtomB != null);
+            if (b != null && !piBondAngleOverride.HasValue)
+            {
+                var other = b.AtomA == this ? b.AtomB : b.AtomA;
+                var dir = (other.transform.position - transform.position).normalized;
+                if (dir.sqrMagnitude >= 0.01f) refAngle = NormalizeAngleTo360(OrbitalAngleUtility.DirectionToAngleWorld(dir));
+            }
+            int refIdxOld = FindClosestAngleIndex(oldAngles, refAngle, tolerance);
+            int refIdxNew = FindClosestAngleIndex(newAngles, refAngle, tolerance);
+            oldNonPi = oldAngles.Where((_, i) => i != refIdxOld).ToList();
+            newNonPi = newAngles.Where((_, i) => i != refIdxNew).ToList();
+        }
+        else
+        {
+            oldNonPi = oldAngles;
+            newNonPi = newAngles;
+        }
 
         if (oldNonPi.Count == 0) return;
 
@@ -240,11 +275,12 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
     }
 
-    /// <summary>Returns (orbital, targetLocalPos, targetLocalRot) for orbitals that would move during RedistributeOrbitals. Empty if pi count unchanged.</summary>
-    public List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> GetRedistributeTargets(int piBefore)
+    /// <summary>Returns (orbital, targetLocalPos, targetLocalRot) for orbitals that would move during RedistributeOrbitals. Empty if pi count unchanged. For sigma bonds, pass newBondPartner to redistribute when bonding to an orbital that was already rotated.</summary>
+    public List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> GetRedistributeTargets(int piBefore, AtomFunction newBondPartner = null)
     {
         var result = new List<(ElectronOrbitalFunction, Vector3, Quaternion)>();
-        if (GetPiBondCount() == piBefore) return result;
+        bool piCountChanged = GetPiBondCount() != piBefore;
+        if (!piCountChanged && newBondPartner == null) return result;
 
         int slotCount = GetOrbitalSlotCount();
         if (slotCount <= 1) return result;
@@ -263,19 +299,41 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             piBondAngle = OrbitalAngleUtility.DirectionToAngleWorld(dir);
             break;
         }
-        if (!piBondAngle.HasValue) return result;
+        if (!piBondAngle.HasValue && newBondPartner != null)
+        {
+            var dir = (newBondPartner.transform.position - transform.position).normalized;
+            if (dir.sqrMagnitude >= 0.01f) piBondAngle = OrbitalAngleUtility.DirectionToAngleWorld(dir);
+        }
+        float originAngle = piBondAngle.HasValue ? NormalizeAngleTo360(piBondAngle.Value) : 0f;
 
-        float piNorm = NormalizeAngleTo360(piBondAngle.Value);
         int n = oldAngles.Count;
         float step = 360f / n;
         var newAngles = new List<float>();
         for (int i = 0; i < n; i++)
-            newAngles.Add(NormalizeAngleTo360(piNorm + i * step));
+            newAngles.Add(NormalizeAngleTo360(originAngle + i * step));
 
-        int piIdxOld = FindClosestAngleIndex(oldAngles, piNorm, tolerance);
-        int piIdxNew = FindClosestAngleIndex(newAngles, piNorm, tolerance);
-        var oldNonPi = oldAngles.Where((_, i) => i != piIdxOld).ToList();
-        var newNonPi = newAngles.Where((_, i) => i != piIdxNew).ToList();
+        List<float> oldNonPi;
+        List<float> newNonPi;
+        if (covalentBonds.Count > 0)
+        {
+            float refAngle = originAngle;
+            var b = covalentBonds.FirstOrDefault(x => x?.AtomA != null && x?.AtomB != null);
+            if (b != null)
+            {
+                var other = b.AtomA == this ? b.AtomB : b.AtomA;
+                var dir = (other.transform.position - transform.position).normalized;
+                if (dir.sqrMagnitude >= 0.01f) refAngle = NormalizeAngleTo360(OrbitalAngleUtility.DirectionToAngleWorld(dir));
+            }
+            int refIdxOld = FindClosestAngleIndex(oldAngles, refAngle, tolerance);
+            int refIdxNew = FindClosestAngleIndex(newAngles, refAngle, tolerance);
+            oldNonPi = oldAngles.Where((_, i) => i != refIdxOld).ToList();
+            newNonPi = newAngles.Where((_, i) => i != refIdxNew).ToList();
+        }
+        else
+        {
+            oldNonPi = oldAngles;
+            newNonPi = newAngles;
+        }
         if (oldNonPi.Count == 0) return result;
 
         var bestMapping = FindBestAngleMapping(oldNonPi, newNonPi);

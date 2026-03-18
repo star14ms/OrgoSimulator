@@ -431,11 +431,12 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         int piAfterA = atomA != null ? atomA.GetPiBondCount() : 0;
         int piAfterB = atomB != null ? atomB.GetPiBondCount() : 0;
-        // Redistribute when pi count changed OR when atom has pi bonds and got a new lone orbital
-        // (e.g. breaking sigma from double-bonded atom: pi count unchanged but orbital needs 120° placement)
-        if (atomA != null && (piAfterA != piBeforeA || (piAfterA > 0 && piAfterA == piBeforeA)))
+        // Redistribute when pi count changed, when atom has pi bonds and got a new lone orbital,
+        // when breaking a sigma bond (pi before/after both 0), or when orbital angular distances are inconsistent.
+        // Important: redistribute even when pi count is unchanged, if angular distance is not consistent.
+        if (atomA != null && (piAfterA != piBeforeA || (piAfterA > 0 && piAfterA == piBeforeA) || (piAfterA == 0 && piBeforeA == 0) || atomA.HasInconsistentOrbitalAngles()))
             atomA.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null);
-        if (atomB != null && (piAfterB != piBeforeB || (piAfterB > 0 && piAfterB == piBeforeB)))
+        if (atomB != null && (piAfterB != piBeforeB || (piAfterB > 0 && piAfterB == piBeforeB) || (piAfterB == 0 && piBeforeB == 0) || atomB.HasInconsistentOrbitalAngles()))
             atomB.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null);
 
         orbital = null;

@@ -319,11 +319,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     }
 
     [Tooltip("Step 1: Align molecule. Duration in seconds.")]
-    [SerializeField] float bondAnimStep1Duration = 1f;
+    [SerializeField] float bondAnimStep1Duration = 0.33f;
     [Tooltip("Step 2: Rearrange + Redistribute. Duration in seconds.")]
-    [SerializeField] float bondAnimStep2Duration = 1f;
+    [SerializeField] float bondAnimStep2Duration = 0.33f;
     [Tooltip("Step 3: Orbital-to-line transition. Duration in seconds.")]
-    [SerializeField] float bondAnimStep3Duration = 1f;
+    [SerializeField] float bondAnimStep3Duration = 0.33f;
 
     /// <summary>Sigma bond: starts animated formation. Returns true if animation started.</summary>
     bool FormCovalentBondSigmaStart(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition)
@@ -417,8 +417,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
 
         // Step 2: Rearrange + Redistribute + animate bonding orbital to bond position (skip if already aligned)
-        var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource);
-        var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget);
+        var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom);
+        var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom);
         bool needsRearrange = rearrangeTargetInfo.HasValue;
         bool needsRedistribute = redistA.Count > 0 || redistB.Count > 0;
         const float alignThreshold = 0.05f;
@@ -607,8 +607,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     IEnumerator AnimateRedistributeOrbitals(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget,
         ElectronOrbitalFunction sourceOrbital, ElectronOrbitalFunction targetOrbital, CovalentBond bond)
     {
-        var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource);
-        var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget);
+        var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom);
+        var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom);
         if (redistA.Count == 0 && redistB.Count == 0)
             TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
 
