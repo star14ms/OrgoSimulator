@@ -85,6 +85,20 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public IReadOnlyList<CovalentBond> CovalentBonds => covalentBonds;
 
+    /// <summary>Returns the angle (degrees) to the first bond partner for use as redistribution origin. Null if no bonds.</summary>
+    public float? GetPrimaryBondDirectionAngle()
+    {
+        foreach (var b in covalentBonds)
+        {
+            if (b?.AtomA == null || b?.AtomB == null) continue;
+            var other = b.AtomA == this ? b.AtomB : b.AtomA;
+            var dir = (other.transform.position - transform.position).normalized;
+            if (dir.sqrMagnitude >= 0.01f)
+                return Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg;
+        }
+        return null;
+    }
+
     public void OnElectronRemoved()
     {
         RefreshCharge();
@@ -231,7 +245,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             piBondAngle = OrbitalAngleUtility.DirectionToAngleWorld(dir);
             break;
         }
-        float originAngle = piBondAngle.HasValue ? NormalizeAngleTo360(piBondAngle.Value) : 0f;
+        float originAngle = piBondAngle.HasValue ? NormalizeAngleTo360(piBondAngle.Value)
+            : (piBondAngleOverride.HasValue ? NormalizeAngleTo360(piBondAngleOverride.Value) : 0f);
 
         // Step 3: Build new angle list starting from origin
         int n = oldAngles.Count;
@@ -603,6 +618,107 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public bool HasEmptyLoneOrbital() => GetEmptyLoneOrbital() != null;
 
+    /// <summary>Returns lone orbitals with 1 electron, sorted by angle (0° to 360°).</summary>
+    public List<ElectronOrbitalFunction> GetLoneOrbitalsWithOneElectronSortedByAngle()
+    {
+        var list = new List<ElectronOrbitalFunction>();
+        foreach (var orb in bondedOrbitals)
+        {
+            if (orb == null || orb.Bond != null || orb.ElectronCount != 1) continue;
+            list.Add(orb);
+        }
+        list.Sort((a, b) =>
+        {
+            float aa = OrbitalAngleUtility.NormalizeAngle(OrbitalAngleUtility.GetOrbitalAngleWorld(a.transform));
+            float ab = OrbitalAngleUtility.NormalizeAngle(OrbitalAngleUtility.GetOrbitalAngleWorld(b.transform));
+            return aa.CompareTo(ab);
+        });
+        return list;
+    }
+
+    /// <summary>Orbital closest to targetAngle (0° = right). For initial selection.</summary>
+    public ElectronOrbitalFunction GetOrbitalClosestToAngle(float targetAngleDeg)
+    {
+        return GetLoneOrbitalWithOneElectron(new Vector3(Mathf.Cos(targetAngleDeg * Mathf.Deg2Rad), Mathf.Sin(targetAngleDeg * Mathf.Deg2Rad), 0));
+    }
+
+    static float AngularDistance(float a, float b)
+    {
+        float d = Mathf.Abs(OrbitalAngleUtility.NormalizeAngle(a - b));
+        return Mathf.Min(d, 360f - d);
+    }
+
+    /// <summary>Next orbital for arrow key. Arrow: right=0°, up=90°, left=180°, down=270°. Returns null if no change.</summary>
+    public ElectronOrbitalFunction GetNextOrbitalForArrow(ElectronOrbitalFunction current, float arrowAngleDeg)
+    {
+        var list = GetLoneOrbitalsWithOneElectronSortedByAngle();
+        if (list.Count == 0 || current == null) return null;
+        int idx = list.IndexOf(current);
+        if (idx < 0) return null;
+
+        float currentAngle = OrbitalAngleUtility.GetOrbitalAngleWorld(current.transform);
+        float arrowNorm = OrbitalAngleUtility.NormalizeAngle(arrowAngleDeg);
+        float currNorm = OrbitalAngleUtility.NormalizeAngle(currentAngle);
+        float diff = AngularDistance(arrowNorm, currNorm);
+
+        if (diff > 90f)
+            return GetOrbitalClosestToAngle(arrowAngleDeg);
+
+        float distCurr = AngularDistance(currNorm, arrowNorm);
+        int nextIdxCW = (idx + 1) % list.Count;
+        int nextIdxCCW = (idx - 1 + list.Count) % list.Count;
+        var nextCW = list[nextIdxCW];
+        var nextCCW = list[nextIdxCCW];
+        float distCW = AngularDistance(OrbitalAngleUtility.GetOrbitalAngleWorld(nextCW.transform), arrowNorm);
+        float distCCW = AngularDistance(OrbitalAngleUtility.GetOrbitalAngleWorld(nextCCW.transform), arrowNorm);
+        var next = distCW < distCCW ? nextCW : nextCCW;
+        float distNext = Mathf.Min(distCW, distCCW);
+        return distNext < distCurr ? next : null;
+    }
+
+    GameObject selectionHighlight;
+
+    public void SetSelectionHighlight(bool on)
+    {
+        if (on)
+        {
+            if (selectionHighlight == null)
+            {
+                selectionHighlight = new GameObject("SelectionHighlight");
+                selectionHighlight.transform.SetParent(transform);
+                selectionHighlight.transform.localPosition = Vector3.zero;
+                selectionHighlight.transform.localRotation = Quaternion.identity;
+                selectionHighlight.transform.localScale = Vector3.one * 1.4f;
+                var sr = selectionHighlight.AddComponent<SpriteRenderer>();
+                sr.sprite = CreateCircleSprite();
+                sr.color = new Color(0.3f, 0.9f, 0.4f, 0.6f);
+                sr.sortingOrder = -1;
+            }
+            if (selectionHighlight != null) selectionHighlight.SetActive(true);
+        }
+        else if (selectionHighlight != null)
+        {
+            selectionHighlight.SetActive(false);
+        }
+    }
+
+    static Sprite CreateCircleSprite()
+    {
+        int size = 32;
+        var tex = new Texture2D(size, size);
+        tex.filterMode = FilterMode.Bilinear;
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                float dx = (x - size * 0.5f) / (size * 0.5f);
+                float dy = (y - size * 0.5f) / (size * 0.5f);
+                float r = Mathf.Sqrt(dx * dx + dy * dy);
+                tex.SetPixel(x, y, r >= 0.85f && r <= 1f ? Color.white : Color.clear);
+            }
+        tex.Apply();
+        return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 32f);
+    }
+
     public bool HasAvailableLoneOrbitalForBond(ElectronOrbitalFunction excludeOrbital, int sourceElectronCount)
     {
         foreach (var orb in bondedOrbitals)
@@ -824,7 +940,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         RefreshCharge();
     }
 
-    [SerializeField] Vector2 chargeLabelOffset = new Vector2(0.33f, 0.5f); // Fraction of elementLabelSize (0.5 = right/top edge)
+    [SerializeField] Vector2 chargeLabelOffset = new Vector2(0.5f, 0.33f); // Fraction of elementLabelSize (0.5 = right/top edge)
     [SerializeField] Vector2 elementLabelSize = new Vector2(1f, 1f);
     [SerializeField] Vector2 chargeLabelSize = new Vector2(0.5f, 0.5f);
 

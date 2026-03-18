@@ -173,7 +173,6 @@ MonoBehaviour:
   atomicNumber: 1
   charge: 0
   orbitalPrefab: {fileID: 3950517915623177566, guid: 56866eb37f15e4ff28c54027cff6ee98, type: 3}
-  chargeLabelOffsetX: 0.35
-  chargeLabelOffsetY: 0.25
+  chargeLabelOffset: {x: 0.5, y: 0.33}
   elementLabelSize: {x: 1, y: 1}
   chargeLabelSize: {x: 0.5, y: 0.5}

@@ -315,12 +315,18 @@ public class PeriodicTableUI : MonoBehaviour
     {
         if (atomPrefab == null || Camera.main == null) return;
 
+        var editMode = FindFirstObjectByType<EditModeManager>();
+        if (editMode != null && editMode.EditModeActive && editMode.SelectedAtom != null)
+        {
+            if (editMode.TryAddAtomToSelected(atomicNumber))
+                return;
+        }
+
         Vector3 pos = GetRandomPositionInView();
         var atomObj = Instantiate(atomPrefab, pos, Quaternion.identity);
         if (atomObj.TryGetComponent<AtomFunction>(out var atom))
         {
             atom.AtomicNumber = atomicNumber;
-            var editMode = FindFirstObjectByType<EditModeManager>();
             if (editMode != null && editMode.HAutoMode)
                 editMode.SaturateWithHydrogen(atom);
         }

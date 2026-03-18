@@ -10,18 +10,19 @@ using System.Collections.Generic;
 public class EditModeManager : MonoBehaviour
 {
     [SerializeField] GameObject atomPrefab;
-    [SerializeField] float addAtomOffset = 2f;
 
     bool editModeActive;
     bool hAutoMode;
     bool eraserMode;
     AtomFunction selectedAtom;
+    ElectronOrbitalFunction selectedOrbital;
     HashSet<AtomFunction> selectedMolecule;
 
     public bool EditModeActive => editModeActive;
     public bool HAutoMode => hAutoMode;
     public bool EraserMode => eraserMode;
     public AtomFunction SelectedAtom => selectedAtom;
+    public ElectronOrbitalFunction SelectedOrbital => selectedOrbital;
 
     MoleculeBuilder moleculeBuilder;
 
@@ -52,12 +53,47 @@ public class EditModeManager : MonoBehaviour
     void Update()
     {
         if (Keyboard.current?.eKey.wasPressedThisFrame == true)
+        {
             editModeActive = !editModeActive;
+            if (!editModeActive) { ClearSelectionHighlights(); selectedAtom = null; selectedOrbital = null; selectedMolecule = null; }
+        }
+        if (!editModeActive && (selectedAtom != null || selectedOrbital != null))
+        {
+            ClearSelectionHighlights();
+            selectedAtom = null;
+            selectedOrbital = null;
+            selectedMolecule = null;
+        }
         if (Keyboard.current?.dKey.wasPressedThisFrame == true)
             eraserMode = !eraserMode;
+
+        if (editModeActive && selectedAtom != null)
+        {
+            var k = Keyboard.current;
+            float? arrowAngle = null;
+            if (k?.rightArrowKey.wasPressedThisFrame == true) arrowAngle = 0f;
+            else if (k?.upArrowKey.wasPressedThisFrame == true) arrowAngle = 90f;
+            else if (k?.leftArrowKey.wasPressedThisFrame == true) arrowAngle = 180f;
+            else if (k?.downArrowKey.wasPressedThisFrame == true) arrowAngle = 270f;
+
+            if (arrowAngle.HasValue && selectedOrbital != null)
+            {
+                var next = selectedAtom.GetNextOrbitalForArrow(selectedOrbital, arrowAngle.Value);
+                if (next != null)
+                {
+                    selectedOrbital.SetHighlighted(false);
+                    selectedOrbital = next;
+                    selectedOrbital.SetHighlighted(true);
+                }
+            }
+        }
     }
 
-    public void SetEditMode(bool on) => editModeActive = on;
+    public void SetEditMode(bool on)
+    {
+        editModeActive = on;
+        if (!on) { ClearSelectionHighlights(); selectedAtom = null; selectedOrbital = null; selectedMolecule = null; }
+    }
     public void SetHAutoMode(bool on) => hAutoMode = on;
     public void SetEraserMode(bool on) => eraserMode = on;
 
@@ -83,23 +119,39 @@ public class EditModeManager : MonoBehaviour
     public void OnAtomClicked(AtomFunction atom)
     {
         if (!editModeActive) return;
+        ClearSelectionHighlights();
         selectedAtom = atom;
         selectedMolecule = atom != null ? atom.GetConnectedMolecule() : null;
+        selectedOrbital = atom != null ? atom.GetOrbitalClosestToAngle(0f) : null;
+        ApplySelectionHighlights();
     }
 
     public void OnBackgroundClicked()
     {
         if (!editModeActive) return;
+        ClearSelectionHighlights();
         selectedAtom = null;
+        selectedOrbital = null;
         selectedMolecule = null;
+    }
+
+    void ClearSelectionHighlights()
+    {
+        if (selectedAtom != null) selectedAtom.SetSelectionHighlight(false);
+        if (selectedOrbital != null) selectedOrbital.SetHighlighted(false);
+    }
+
+    void ApplySelectionHighlights()
+    {
+        if (selectedAtom != null) selectedAtom.SetSelectionHighlight(true);
+        if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
     }
 
     public bool TryAddAtomToSelected(int atomicNumber)
     {
         if (selectedAtom == null || atomPrefab == null || Camera.main == null) return false;
-        if (!selectedAtom.CanAcceptOrbital()) return false;
 
-        var orb = selectedAtom.GetLoneOrbitalWithOneElectron(Vector3.right);
+        var orb = selectedOrbital ?? selectedAtom.GetOrbitalClosestToAngle(0f);
         if (orb == null) return false;
 
         Vector3 dir = orb.transform.TransformDirection(Vector3.right);
@@ -124,6 +176,10 @@ public class EditModeManager : MonoBehaviour
 
         FormSigmaBondInstant(selectedAtom, newAtom, orb, newOrb);
 
+        selectedOrbital?.SetHighlighted(false);
+        selectedOrbital = selectedAtom.GetOrbitalClosestToAngle(0f);
+        if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
+
         if (hAutoMode)
             SaturateWithHydrogen(newAtom);
 
@@ -143,7 +199,9 @@ public class EditModeManager : MonoBehaviour
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
             atomA.RedistributeOrbitals();
-            atomB.RedistributeOrbitals();
+            Vector3 dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
+            float bondAngleFromB = Mathf.Atan2(dirBtoA.y, dirBtoA.x) * Mathf.Rad2Deg;
+            atomB.RedistributeOrbitals(piBondAngleOverride: bondAngleFromB);
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }
@@ -205,7 +263,8 @@ public class EditModeManager : MonoBehaviour
         }
 
         FormSigmaBondInstant(atom, hAtom, orb, hOrb);
-        atom.RedistributeOrbitals();
+        var bondAngle = atom.GetPrimaryBondDirectionAngle();
+        atom.RedistributeOrbitals(piBondAngleOverride: bondAngle);
         AtomFunction.SetupGlobalIgnoreCollisions();
     }
 
@@ -239,7 +298,8 @@ public class EditModeManager : MonoBehaviour
             }
 
             FormSigmaBondInstant(atom, hAtom, orb, hOrb);
-            atom.RedistributeOrbitals();
+            var bondAngle = atom.GetPrimaryBondDirectionAngle();
+            atom.RedistributeOrbitals(piBondAngleOverride: bondAngle);
             AtomFunction.SetupGlobalIgnoreCollisions();
 
             orb = atom.GetLoneOrbitalWithOneElectron(Vector3.right);

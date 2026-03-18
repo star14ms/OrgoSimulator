@@ -33,9 +33,27 @@ public class MoleculeBuilder : MonoBehaviour
 
         float bondLength = GetBondLength();
         float ringRadius = GetRingRadius(ringSize, bondLength);
-        Vector3 center = GetViewportCenter();
-        var atoms = new AtomFunction[ringSize];
+        var editMode = UnityEngine.Object.FindFirstObjectByType<EditModeManager>();
+        AtomFunction anchorAtom = null;
+        ElectronOrbitalFunction anchorOrbital = null;
+        Vector3 center;
 
+        if (editMode != null && editMode.SelectedAtom != null && editMode.SelectedOrbital != null
+            && editMode.SelectedOrbital.Bond == null && editMode.SelectedOrbital.ElectronCount == 1)
+        {
+            anchorAtom = editMode.SelectedAtom;
+            anchorOrbital = editMode.SelectedOrbital;
+            Vector3 dir = anchorOrbital.transform.TransformDirection(Vector3.right);
+            float angle0 = ringSize == 4 ? 45f * Mathf.Deg2Rad : -90f * Mathf.Deg2Rad;
+            Vector3 atom0Pos = anchorAtom.transform.position + dir * bondLength;
+            center = atom0Pos - ringRadius * new Vector3(Mathf.Cos(angle0), Mathf.Sin(angle0), 0);
+        }
+        else
+        {
+            center = GetViewportCenter();
+        }
+
+        var atoms = new AtomFunction[ringSize];
         for (int i = 0; i < ringSize; i++)
         {
             float angleDeg = ringSize == 4
@@ -58,7 +76,18 @@ public class MoleculeBuilder : MonoBehaviour
             FormSigmaBondInstant(atoms[i], atoms[next]);
         }
 
-        var editMode = UnityEngine.Object.FindFirstObjectByType<EditModeManager>();
+        if (anchorAtom != null && anchorOrbital != null && atoms[0] != null)
+        {
+            Vector3 dirToAnchor = (anchorAtom.transform.position - atoms[0].transform.position).normalized;
+            var orb0 = atoms[0].GetLoneOrbitalWithOneElectron(dirToAnchor);
+            if (orb0 != null)
+                FormSigmaBondInstant(anchorAtom, atoms[0], anchorOrbital, orb0);
+        }
+
+        foreach (var a in atoms)
+            if (a != null) a.RedistributeOrbitals();
+        if (anchorAtom != null) anchorAtom.RedistributeOrbitals();
+
         if (editMode != null)
             editMode.SaturateCycloalkaneWithHydrogen(atoms, center);
 
@@ -71,9 +100,27 @@ public class MoleculeBuilder : MonoBehaviour
 
         float bondLength = GetBondLength();
         float ringRadius = GetRingRadius(6, bondLength);
-        Vector3 center = GetViewportCenter();
-        var atoms = new AtomFunction[6];
+        var editMode = UnityEngine.Object.FindFirstObjectByType<EditModeManager>();
+        AtomFunction anchorAtom = null;
+        ElectronOrbitalFunction anchorOrbital = null;
+        Vector3 center;
 
+        if (editMode != null && editMode.SelectedAtom != null && editMode.SelectedOrbital != null
+            && editMode.SelectedOrbital.Bond == null && editMode.SelectedOrbital.ElectronCount == 1)
+        {
+            anchorAtom = editMode.SelectedAtom;
+            anchorOrbital = editMode.SelectedOrbital;
+            Vector3 dir = anchorOrbital.transform.TransformDirection(Vector3.right);
+            float angle0 = -90f * Mathf.Deg2Rad; // atoms[0] at top
+            Vector3 atom0Pos = anchorAtom.transform.position + dir * bondLength;
+            center = atom0Pos - ringRadius * new Vector3(Mathf.Cos(angle0), Mathf.Sin(angle0), 0);
+        }
+        else
+        {
+            center = GetViewportCenter();
+        }
+
+        var atoms = new AtomFunction[6];
         for (int i = 0; i < 6; i++)
         {
             float angle = (60f * i - 90f) * Mathf.Deg2Rad;
@@ -93,6 +140,14 @@ public class MoleculeBuilder : MonoBehaviour
             FormSigmaBondInstant(atoms[i], atoms[next]);
         }
 
+        if (anchorAtom != null && anchorOrbital != null && atoms[0] != null)
+        {
+            Vector3 dirToAnchor = (anchorAtom.transform.position - atoms[0].transform.position).normalized;
+            var orb0 = atoms[0].GetLoneOrbitalWithOneElectron(dirToAnchor);
+            if (orb0 != null)
+                FormSigmaBondInstant(anchorAtom, atoms[0], anchorOrbital, orb0);
+        }
+
         for (int i = 0; i < 3; i++)
         {
             int a = i * 2;
@@ -100,7 +155,10 @@ public class MoleculeBuilder : MonoBehaviour
             FormPiBondInstant(atoms[a], atoms[b]);
         }
 
-        var editMode = UnityEngine.Object.FindFirstObjectByType<EditModeManager>();
+        foreach (var a in atoms)
+            if (a != null) a.RedistributeOrbitals();
+        if (anchorAtom != null) anchorAtom.RedistributeOrbitals();
+
         if (editMode != null)
         {
             foreach (var a in atoms)
@@ -119,6 +177,13 @@ public class MoleculeBuilder : MonoBehaviour
         var orbA = atomA.GetLoneOrbitalWithOneElectron(dirAtoB);
         var orbB = atomB.GetLoneOrbitalWithOneElectron(dirBtoA);
         if (orbA == null || orbB == null) return;
+
+        FormSigmaBondInstant(atomA, atomB, orbA, orbB);
+    }
+
+    void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB)
+    {
+        if (atomA == null || atomB == null || orbA == null || orbB == null) return;
 
         int merged = orbA.ElectronCount + orbB.ElectronCount;
         atomA.UnbondOrbital(orbA);

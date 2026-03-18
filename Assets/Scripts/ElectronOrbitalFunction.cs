@@ -92,6 +92,21 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (col2D != null) col2D.enabled = !blocked;
     }
 
+    /// <summary>Highlight this orbital (e.g. when selected for bonding in edit mode).</summary>
+    public void SetHighlighted(bool on)
+    {
+        var sr = GetComponent<SpriteRenderer>();
+        if (sr != null)
+        {
+            if (on && originalColor.a == 0 && originalColor.r == 0 && originalColor.g == 0) originalColor = sr.color;
+            sr.color = on ? new Color(1f, 1f, 0.6f, originalColor.a) : originalColor;
+        }
+        var baseScale = originalLocalScale.sqrMagnitude > 0.01f
+            ? originalLocalScale
+            : (on ? transform.localScale : transform.localScale / 1.2f);
+        transform.localScale = on ? baseScale * 1.2f : baseScale;
+    }
+
     /// <summary>Show or hide the orbital and its electron visuals. Used when bond displays as a line.</summary>
     public void SetVisualsEnabled(bool enabled)
     {
@@ -118,6 +133,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     Vector3 originalLocalPosition;
     Vector3 originalLocalScale;
     Quaternion originalLocalRotation;
+    Color originalColor;
     GameObject stretchVisual;
     SpriteRenderer mainSpriteRenderer;
     const float MinStretchLength = 0.5f;
@@ -423,12 +439,38 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             bondOrbitalEnd = bond.GetOrbitalTargetWorldState(); // Re-fetch with flip applied
         }
 
-        // Step 2: Rearrange + Redistribute + animate bonding orbital to bond position (skip if already aligned)
+        // Step 2: Rearrange + Redistribute + animate bonding orbital to bond position (skip if no actual movement)
         var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom);
         var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom);
-        bool needsRearrange = rearrangeTargetInfo.HasValue;
-        bool needsRedistribute = redistA.Count > 0 || redistB.Count > 0;
         const float alignThreshold = 0.05f;
+        const float posThreshold = 0.01f;
+        const float rotThreshold = 1f;
+
+        bool hasRearrangeMovement = false;
+        if (rearrangeTargetInfo.HasValue)
+        {
+            var (orbToMove, targetPos, targetRot) = rearrangeTargetInfo.Value;
+            if (orbToMove != null && (Vector3.Distance(orbToMove.transform.localPosition, targetPos) > posThreshold || Quaternion.Angle(orbToMove.transform.localRotation, targetRot) > rotThreshold))
+                hasRearrangeMovement = true;
+        }
+        bool needsRearrange = hasRearrangeMovement;
+
+        bool hasRedistributeMovement = false;
+        foreach (var entry in redistA)
+        {
+            if (entry.orb != null && entry.orb.transform.parent == sourceAtom.transform
+                && (Vector3.Distance(entry.orb.transform.localPosition, entry.pos) > posThreshold || Quaternion.Angle(entry.orb.transform.localRotation, entry.rot) > rotThreshold))
+            { hasRedistributeMovement = true; break; }
+        }
+        if (!hasRedistributeMovement)
+            foreach (var entry in redistB)
+            {
+                if (entry.orb != null && entry.orb.transform.parent == targetAtom.transform
+                    && (Vector3.Distance(entry.orb.transform.localPosition, entry.pos) > posThreshold || Quaternion.Angle(entry.orb.transform.localRotation, entry.rot) > rotThreshold))
+                { hasRedistributeMovement = true; break; }
+            }
+        bool needsRedistribute = hasRedistributeMovement;
+
         bool orbitalAlreadyAtBond = Vector3.Distance(bondOrbitalStartWorldPos, bondOrbitalEnd.worldPos) < alignThreshold;
         bool skipStep2 = !needsRearrange && !needsRedistribute && orbitalAlreadyAtBond;
 
@@ -673,6 +715,28 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         var sourceOrbStart = sourceOrbital != null ? (sourceOrbital.transform.position, sourceOrbital.transform.rotation) : (Vector3.zero, Quaternion.identity);
         var targetOrbStart = targetOrbital != null ? (targetOrbital.transform.position, targetOrbital.transform.rotation) : (Vector3.zero, Quaternion.identity);
 
+        const float piAlignThreshold = 0.05f;
+        const float piPosThreshold = 0.01f;
+        const float piRotThreshold = 1f;
+        bool sourceAtBond = sourceOrbital == null || bond == null || (Vector3.Distance(sourceOrbital.transform.position, bondTargetPos) < piAlignThreshold && Quaternion.Angle(sourceOrbital.transform.rotation, sourceTargetRot) < piRotThreshold);
+        bool targetAtBond = targetOrbital == null || bond == null || (Vector3.Distance(targetOrbital.transform.position, bondTargetPos) < piAlignThreshold && Quaternion.Angle(targetOrbital.transform.rotation, targetTargetRot) < piRotThreshold);
+        bool hasRedistMovement = false;
+        foreach (var entry in redistA)
+        {
+            if (entry.orb != null && entry.orb.transform.parent == sourceAtom.transform
+                && (Vector3.Distance(entry.orb.transform.localPosition, entry.pos) > piPosThreshold || Quaternion.Angle(entry.orb.transform.localRotation, entry.rot) > piRotThreshold))
+            { hasRedistMovement = true; break; }
+        }
+        if (!hasRedistMovement)
+            foreach (var entry in redistB)
+            {
+                if (entry.orb != null && entry.orb.transform.parent == targetAtom.transform
+                    && (Vector3.Distance(entry.orb.transform.localPosition, entry.pos) > piPosThreshold || Quaternion.Angle(entry.orb.transform.localRotation, entry.rot) > piRotThreshold))
+                { hasRedistMovement = true; break; }
+            }
+        bool skipPiStep2 = sourceAtBond && targetAtBond && !hasRedistMovement;
+
+        if (!skipPiStep2)
         for (float t = 0; t < bondAnimStep2Duration; t += Time.deltaTime)
         {
             float s = Mathf.Clamp01(t / bondAnimStep2Duration);
@@ -1049,6 +1113,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
     void Start()
     {
+        if (originalLocalScale.sqrMagnitude < 0.01f) originalLocalScale = transform.localScale;
+        var sr = GetComponent<SpriteRenderer>();
+        if (sr != null && originalColor.a < 0.01f) originalColor = sr.color;
         EnsureCollider();
         SyncElectronObjects();
         IgnoreCollisionsWithChildren();

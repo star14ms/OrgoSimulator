@@ -506,8 +506,8 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         if (editModeManager != null && editModeManager.EditModeActive && editModeManager.SelectedAtom != null)
         {
-            editModeManager.TryAddAtomToSelected(atomicNumber);
-            return;
+            if (editModeManager.TryAddAtomToSelected(atomicNumber))
+                return;
         }
         CreateAtomAtViewport(atomicNumber);
     }
