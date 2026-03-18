@@ -1,6 +1,6 @@
 ---
 name: compact
-description: Writes a summary of updates since the last /compact and proposes a commit title and message. Use when the user runs /compact or asks to compact updates.
+description: Writes a summary of updates since the last /compact, saves it to instruction/history/, and proposes a commit title and message. Use when the user runs /compact or asks to compact updates.
 ---
 
 # /compact — Update Summary and Commit Proposal
@@ -10,6 +10,7 @@ When the user invokes `/compact`, produce:
 1. **Summary** of changes since the last `/compact`
 2. **Commit title** (short, imperative, ~50 chars)
 3. **Commit message** (body with details)
+4. **History file**: write the summary to `instruction/history/YYYY-MM-DD-<slug>.md`
 
 ## Workflow
 
@@ -52,7 +53,11 @@ Produce a single response with three sections:
 ```
 ```
 
-### 4. Update marker
+### 4. Write history file
+
+Create `instruction/history/YYYY-MM-DD-<slug>.md` containing the summary (use today's date and a slug from the commit title, e.g. `2025-03-18-molecule-construction-ui.md`).
+
+### 5. Update marker
 
 After outputting, create or update `.cursor/compact-last.md`:
 
@@ -62,7 +67,7 @@ After outputting, create or update `.cursor/compact-last.md`:
 - **Ref**: <current HEAD hash after user commits, or "pending" if uncommitted>
 ```
 
-If the user has uncommitted changes, write `Ref: pending` and note that the marker will reflect the commit once they commit.
+If the user has uncommitted changes, write `Ref: pending` and note that the marker will reflect the commit hash once they commit.
 
 ## Commit title format
 
