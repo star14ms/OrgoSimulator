@@ -17,6 +17,7 @@ public class EditModeManager : MonoBehaviour
     AtomFunction selectedAtom;
     ElectronOrbitalFunction selectedOrbital;
     HashSet<AtomFunction> selectedMolecule;
+    bool orbitalExplicitlySelected;
 
     public bool EditModeActive => editModeActive;
     public bool HAutoMode => hAutoMode;
@@ -119,10 +120,13 @@ public class EditModeManager : MonoBehaviour
     public void OnAtomClicked(AtomFunction atom)
     {
         if (!editModeActive) return;
+        orbitalExplicitlySelected = false;
+        var newOrb = atom != null ? atom.GetOrbitalClosestToAngle(0f) : null;
+        if (selectedAtom == atom && selectedOrbital == newOrb) return;
         ClearSelectionHighlights();
         selectedAtom = atom;
         selectedMolecule = atom != null ? atom.GetConnectedMolecule() : null;
-        selectedOrbital = atom != null ? atom.GetOrbitalClosestToAngle(0f) : null;
+        selectedOrbital = newOrb;
         ApplySelectionHighlights();
     }
 
@@ -130,6 +134,8 @@ public class EditModeManager : MonoBehaviour
     {
         if (!editModeActive || atom == null || orb == null) return;
         if (orb.Bond != null || orb.ElectronCount != 1) return;
+        orbitalExplicitlySelected = true;
+        if (selectedAtom == atom && selectedOrbital == orb) return;
         ClearSelectionHighlights();
         selectedAtom = atom;
         selectedMolecule = atom.GetConnectedMolecule();
@@ -140,6 +146,7 @@ public class EditModeManager : MonoBehaviour
     public void OnBackgroundClicked()
     {
         if (!editModeActive) return;
+        orbitalExplicitlySelected = false;
         ClearSelectionHighlights();
         selectedAtom = null;
         selectedOrbital = null;
@@ -162,7 +169,7 @@ public class EditModeManager : MonoBehaviour
     {
         if (selectedAtom == null || atomPrefab == null || Camera.main == null) return false;
 
-        if (selectedAtom.AtomicNumber == 1)
+        if (selectedAtom.AtomicNumber == 1 && !orbitalExplicitlySelected)
             return TryReplaceHydrogenWithAtom(atomicNumber);
 
         var orb = selectedOrbital ?? selectedAtom.GetOrbitalClosestToAngle(0f);

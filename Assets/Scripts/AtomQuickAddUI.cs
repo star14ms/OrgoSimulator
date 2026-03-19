@@ -19,7 +19,9 @@ public class AtomQuickAddUI : MonoBehaviour
     EditModeManager editModeManager;
     MoleculeBuilder moleculeBuilder;
     Image eraserToggleImage;
+    Image editToggleImage;
     static readonly Color EraserActiveColor = new Color(0.5f, 0.2f, 0.2f);
+    static readonly Color EditActiveColor = new Color(0.4f, 0.7f, 1f);
 
     static readonly (int z, string label)[] Row1Elements = {
         (1, "H"), (6, "C"), (7, "N"), (8, "O"), (16, "S"), (9, "F"), (17, "Cl"), (35, "Br"), (53, "I")
@@ -39,8 +41,13 @@ public class AtomQuickAddUI : MonoBehaviour
         else if (k.sKey.wasPressedThisFrame) OnElementClicked(16);
         else if (k.iKey.wasPressedThisFrame) OnElementClicked(53);
 
-        if (eraserToggleImage != null && editModeManager != null)
-            eraserToggleImage.color = editModeManager.EraserMode ? EraserActiveColor : new Color(0.6f, 0.6f, 0.6f);
+        if (editModeManager != null)
+        {
+            if (eraserToggleImage != null)
+                eraserToggleImage.color = editModeManager.EraserMode ? EraserActiveColor : new Color(0.6f, 0.6f, 0.6f);
+            if (editToggleImage != null)
+                editToggleImage.color = editModeManager.EditModeActive ? EditActiveColor : new Color(0.6f, 0.6f, 0.6f);
+        }
     }
 
     void Start()
@@ -193,8 +200,9 @@ public class AtomQuickAddUI : MonoBehaviour
         var editToggle = CreateToggle("Edit (E)", editModeManager != null && editModeManager.EditModeActive, on =>
         {
             if (editModeManager != null) editModeManager.SetEditMode(on);
-        });
+        }, EditActiveColor);
         editToggle.transform.SetParent(panel.transform, false);
+        editToggleImage = editToggle.GetComponent<Image>();
 
         var eraserToggle = CreateToggle("Eraser (D)", editModeManager != null && editModeManager.EraserMode, on =>
         {

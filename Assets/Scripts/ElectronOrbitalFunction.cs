@@ -102,10 +102,16 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             if (on && originalColor.a == 0 && originalColor.r == 0 && originalColor.g == 0) originalColor = sr.color;
             sr.color = on ? new Color(1f, 1f, 0.6f, originalColor.a) : originalColor;
         }
-        var baseScale = originalLocalScale.sqrMagnitude > 0.01f
-            ? originalLocalScale
-            : (on ? transform.localScale : transform.localScale / 1.2f);
-        transform.localScale = on ? baseScale * 1.2f : baseScale;
+        if (on)
+        {
+            var baseScale = originalLocalScale.sqrMagnitude > 0.01f ? originalLocalScale : transform.localScale;
+            transform.localScale = baseScale * 1.2f;
+        }
+        else
+        {
+            transform.localScale = transform.localScale / 1.2f;
+            originalLocalScale = transform.localScale;
+        }
     }
 
     /// <summary>Show or hide the orbital and its electron visuals. Used when bond displays as a line.</summary>
