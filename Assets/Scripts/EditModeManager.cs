@@ -126,6 +126,17 @@ public class EditModeManager : MonoBehaviour
         ApplySelectionHighlights();
     }
 
+    public void OnOrbitalClicked(AtomFunction atom, ElectronOrbitalFunction orb)
+    {
+        if (!editModeActive || atom == null || orb == null) return;
+        if (orb.Bond != null || orb.ElectronCount != 1) return;
+        ClearSelectionHighlights();
+        selectedAtom = atom;
+        selectedMolecule = atom.GetConnectedMolecule();
+        selectedOrbital = orb;
+        ApplySelectionHighlights();
+    }
+
     public void OnBackgroundClicked()
     {
         if (!editModeActive) return;
@@ -150,6 +161,9 @@ public class EditModeManager : MonoBehaviour
     public bool TryAddAtomToSelected(int atomicNumber)
     {
         if (selectedAtom == null || atomPrefab == null || Camera.main == null) return false;
+
+        if (selectedAtom.AtomicNumber == 1)
+            return TryReplaceHydrogenWithAtom(atomicNumber);
 
         var orb = selectedOrbital ?? selectedAtom.GetOrbitalClosestToAngle(0f);
         if (orb == null) return false;
@@ -178,6 +192,64 @@ public class EditModeManager : MonoBehaviour
 
         selectedOrbital?.SetHighlighted(false);
         selectedOrbital = selectedAtom.GetOrbitalClosestToAngle(0f);
+        if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
+
+        if (hAutoMode)
+            SaturateWithHydrogen(newAtom);
+
+        AtomFunction.SetupGlobalIgnoreCollisions();
+        return true;
+    }
+
+    bool TryReplaceHydrogenWithAtom(int atomicNumber)
+    {
+        var hydrogen = selectedAtom;
+        AtomFunction parentAtom = null;
+        CovalentBond bondToBreak = null;
+        foreach (var b in hydrogen.CovalentBonds)
+        {
+            if (b == null) continue;
+            var other = b.AtomA == hydrogen ? b.AtomB : b.AtomA;
+            if (other != null) { parentAtom = other; bondToBreak = b; break; }
+        }
+        if (parentAtom == null || bondToBreak == null) return false;
+
+        Vector3 hPos = hydrogen.transform.position;
+        bondToBreak.BreakBond(parentAtom);
+        selectedAtom?.SetSelectionHighlight(false);
+        selectedOrbital?.SetHighlighted(false);
+        Destroy(hydrogen.gameObject);
+
+        var newAtomGo = Instantiate(atomPrefab, hPos, Quaternion.identity);
+        if (!newAtomGo.TryGetComponent<AtomFunction>(out var newAtom))
+        {
+            Destroy(newAtomGo);
+            return false;
+        }
+        newAtom.AtomicNumber = atomicNumber;
+        newAtom.ForceInitialize();
+
+        Vector3 dirToNewAtom = (newAtom.transform.position - parentAtom.transform.position).normalized;
+        var parentOrb = parentAtom.GetLoneOrbitalForBondFormation(dirToNewAtom);
+        if (parentOrb == null)
+        {
+            Destroy(newAtomGo);
+            return false;
+        }
+
+        Vector3 dirToParent = (parentAtom.transform.position - newAtom.transform.position).normalized;
+        var newOrb = newAtom.GetLoneOrbitalWithOneElectron(dirToParent);
+        if (newOrb == null)
+        {
+            Destroy(newAtomGo);
+            return false;
+        }
+
+        FormSigmaBondInstant(parentAtom, newAtom, parentOrb, newOrb);
+
+        selectedAtom = newAtom;
+        selectedOrbital = newAtom.GetOrbitalClosestToAngle(0f);
+        selectedAtom.SetSelectionHighlight(true);
         if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
 
         if (hAutoMode)

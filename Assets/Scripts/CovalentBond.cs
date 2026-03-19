@@ -417,7 +417,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         orbital.transform.localPosition = slotA.position;
         orbital.transform.localRotation = slotA.rotation;
         orbital.transform.localScale = Vector3.one * 0.6f;
-        orbital.ElectronCount = totalElectrons;
+        orbital.ElectronCount = totalElectrons > 0 ? totalElectrons - 1 : 0;
         returnOrbitalTo.BondOrbital(orbital);
 
         var newOrbital = Instantiate(prefab);
@@ -428,7 +428,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         newOrbital.transform.SetParent(otherAtom.transform);
         newOrbital.transform.localPosition = slotB.position;
         newOrbital.transform.localRotation = slotB.rotation;
-        newOrbital.ElectronCount = 0;
+        newOrbital.ElectronCount = totalElectrons > 0 ? 1 : 0;
         newOrbital.SetBondedAtom(otherAtom);
         otherAtom.BondOrbital(newOrbital);
 
@@ -436,6 +436,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomB?.RefreshCharge();
         atomA?.SetupIgnoreCollisions();
         atomB?.SetupIgnoreCollisions();
+        atomA?.SetInteractionBlocked(false);
+        atomB?.SetInteractionBlocked(false);
 
         int piAfterA = atomA != null ? atomA.GetPiBondCount() : 0;
         int piAfterB = atomB != null ? atomB.GetPiBondCount() : 0;

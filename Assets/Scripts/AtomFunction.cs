@@ -616,6 +616,29 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return best;
     }
 
+    /// <summary>Returns a lone orbital for bond formation. Prefers 1-electron; if only 2-electron (lone pair) available, returns it and sets to 1. Used when replacing H.</summary>
+    public ElectronOrbitalFunction GetLoneOrbitalForBondFormation(Vector3 preferredDirectionWorld)
+    {
+        var one = GetLoneOrbitalWithOneElectron(preferredDirectionWorld);
+        if (one != null) return one;
+        ElectronOrbitalFunction best = null;
+        float bestDot = -2f;
+        Vector3 dirNorm = preferredDirectionWorld.sqrMagnitude >= 0.01f ? preferredDirectionWorld.normalized : Vector3.right;
+        foreach (var orb in bondedOrbitals)
+        {
+            if (orb == null || orb.Bond != null || orb.ElectronCount != 2) continue;
+            float dot = Vector3.Dot(orb.transform.TransformDirection(Vector3.right), dirNorm);
+            if (dot > bestDot)
+            {
+                bestDot = dot;
+                best = orb;
+            }
+        }
+        if (best != null)
+            best.ElectronCount = 1;
+        return best;
+    }
+
     public bool HasEmptyLoneOrbital() => GetEmptyLoneOrbital() != null;
 
     /// <summary>Returns lone orbitals with 1 electron, sorted by angle (0° to 360°).</summary>

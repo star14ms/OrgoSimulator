@@ -14,6 +14,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     CovalentBond bond;
     bool isBeingHeld;
     Vector3 dragOffset;
+    Vector2 pointerDownPosition;
 
     public const int MaxElectrons = 2;
     public int ElectronCount
@@ -222,6 +223,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     public void OnPointerDown(PointerEventData eventData)
     {
         isBeingHeld = true;
+        pointerDownPosition = eventData.position;
         originalLocalPosition = transform.localPosition;
         originalLocalScale = transform.localScale;
         originalLocalRotation = transform.localRotation;
@@ -240,6 +242,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         UpdateStretchVisual(tip);
     }
 
+    const float ShortClickDragThresholdPx = 10f;
+
     public void OnPointerUp(PointerEventData eventData)
     {
         isBeingHeld = false;
@@ -247,6 +251,21 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (stretchVisual != null) { Destroy(stretchVisual); stretchVisual = null; }
         if (mainSpriteRenderer != null) mainSpriteRenderer.enabled = true;
         SetPhysicsEnabled(true);
+
+        var editMode = UnityEngine.Object.FindFirstObjectByType<EditModeManager>();
+        if (editMode != null && editMode.EditModeActive && bond == null && electronCount == 1
+            && (eventData.position - pointerDownPosition).sqrMagnitude < ShortClickDragThresholdPx * ShortClickDragThresholdPx)
+        {
+            var atom = bondedAtom ?? transform.parent?.GetComponent<AtomFunction>();
+            if (atom != null)
+            {
+                editMode.OnOrbitalClicked(atom, this);
+                transform.localPosition = originalLocalPosition;
+                transform.localScale = originalLocalScale;
+                transform.localRotation = originalLocalRotation;
+                return;
+            }
+        }
 
         if (bond != null)
         {
@@ -281,9 +300,64 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             return;
         }
 
-        transform.localPosition = originalLocalPosition;
+        RotateOrbitalToTip(sourceAtom, tip);
+    }
+
+    const float RotateStepDeg = 30f;
+    const float MinOrbitalSeparationDeg = 30f;
+
+    void RotateOrbitalToTip(AtomFunction atom, Vector3 tipWorld)
+    {
+        if (atom == null) return;
+        var dir = (tipWorld - atom.transform.position);
+        dir.z = 0;
+        if (dir.sqrMagnitude < 0.01f) return;
+        dir.Normalize();
+        float preferredAngle = OrbitalAngleUtility.DirectionToAngleWorld(dir);
+        float preferredNorm = NormalizeAngleTo360(preferredAngle);
+
+        float bestAngle = Mathf.Round(preferredNorm / RotateStepDeg) * RotateStepDeg;
+        bestAngle = NormalizeAngleTo360(bestAngle);
+        float bestDelta = 360f;
+
+        for (float slot = 0f; slot < 360f; slot += RotateStepDeg)
+        {
+            bool tooClose = false;
+            foreach (var orb in atom.GetComponentsInChildren<ElectronOrbitalFunction>())
+            {
+                if (orb == this || orb.transform.parent != atom.transform) continue;
+                if (orb.Bond != null) continue;
+                float orbAngle = NormalizeAngleTo360(OrbitalAngleUtility.GetOrbitalAngleWorld(orb.transform));
+                float delta = AngularDistanceDeg(slot, orbAngle);
+                if (delta < MinOrbitalSeparationDeg) { tooClose = true; break; }
+            }
+            if (tooClose) continue;
+
+            float deltaToPref = AngularDistanceDeg(slot, preferredNorm);
+            if (deltaToPref < bestDelta)
+            {
+                bestDelta = deltaToPref;
+                bestAngle = slot;
+            }
+        }
+
+        var slotPos = GetCanonicalSlotPosition(bestAngle, atom.BondRadius);
+        transform.localPosition = slotPos.position;
+        transform.localRotation = slotPos.rotation;
         transform.localScale = originalLocalScale;
-        transform.localRotation = originalLocalRotation;
+    }
+
+    static float NormalizeAngleTo360(float deg)
+    {
+        deg = deg % 360f;
+        if (deg < 0f) deg += 360f;
+        return deg;
+    }
+
+    static float AngularDistanceDeg(float a, float b)
+    {
+        float d = Mathf.Abs(NormalizeAngleTo360(a - b));
+        return Mathf.Min(d, 360f - d);
     }
 
     ElectronOrbitalFunction TryFindSwapTarget(AtomFunction atom, Vector3 tip)
