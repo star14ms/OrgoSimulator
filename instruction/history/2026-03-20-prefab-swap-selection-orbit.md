@@ -1,0 +1,9 @@
+# 2026-03-20 — 2D/3D prefab pipeline, selection/orbit UX, orbital highlight
+
+**Summary (since last /compact)**
+
+`AtomQuickAddUI` now resolves **`atomPrefab2D` / `atomPrefab3D`** from camera orthographic vs perspective, wires **`OnCameraViewModeChanged`** into **`CameraViewModeToggle`** after mode switches, and drives **`MoleculeViewPrefabSwap`** (new static helper + `.meta`, untracked until added) to rebuild atoms when the visual variant mismatches the camera. The HUD **Main 3D** toggle remains in the layout but is **disabled** and fully **invisible** (`CanvasGroup` alpha 0) unless **`enableMain3DCameraToggleButton`** is enabled.
+
+**`EditModeManager`**: deselect background reuses **`EditModeBackground`**, uses a **non-trigger** collider **always enabled** so background deselect works outside edit mode; **left/right** arrows cycle **atoms** whenever something is selected, **up/down** cycle **orbitals** only in edit mode via **`GetAllOrbitalsSortedForArrowCycling`** / **`GetAdjacentOrbitalInList`** on **`AtomFunction`**; **`RefreshSelectedMoleculeAfterBondChange`** keeps the atom list current after **`FormSigmaBondInstant`**, **`MoleculeBuilder`** presets, and sigma/pi bond coroutines in **`ElectronOrbitalFunction`**. Cycloalkane H placement uses **planar XY** VSEPR helpers in orthographic and full **3D** helpers in perspective (**`VseprLayout`** additions).
+
+**`ScrollOrbitCamera`**: on each new scroll burst, orbit pivot snaps to **`EditModeManager.SelectedAtom`** if any, else resets to the **initial** serialized focus. **`ElectronOrbitalFunction`**: edit selection highlight is **higher lobe opacity** (removes ring/glow path). **`ElectronFunction`**: 2D electrons **black** and **sort above** the orbital body. **`AtomFunction`**: orthographic **label** placement/rotation along view axis, **sprite** body radius for labels, TMP label **pivot/anchors**. Sample/Main 3D scenes touched for prefab wiring (+2 lines in diff stat).

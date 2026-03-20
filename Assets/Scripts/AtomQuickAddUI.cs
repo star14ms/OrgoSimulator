@@ -9,7 +9,14 @@ using TMPro;
 /// </summary>
 public class AtomQuickAddUI : MonoBehaviour
 {
+    [Tooltip("Legacy single prefab: used when atomPrefab2D / atomPrefab3D are not set, and as fallback for swap.")]
     [SerializeField] GameObject atomPrefab;
+    [Tooltip("Orthographic (2D) molecule: sprite atom + 2D orbital/electron chain.")]
+    [SerializeField] GameObject atomPrefab2D;
+    [Tooltip("Perspective (3D) molecule: mesh atom + 3D orbital/electron chain.")]
+    [SerializeField] GameObject atomPrefab3D;
+    [Tooltip("HUD “Main 3D” 2D/3D camera toggle. Off: control stays visible but does not respond (re-enable here when bringing the feature back).")]
+    [SerializeField] bool enableMain3DCameraToggleButton = false;
     [SerializeField] float viewportMargin = 0.1f;
     [SerializeField] float buttonSize = 36f;
     [SerializeField] float spacing = 4f;
@@ -38,7 +45,34 @@ public class AtomQuickAddUI : MonoBehaviour
         (1, "H"), (6, "C"), (7, "N"), (8, "O"), (16, "S"), (9, "F"), (17, "Cl"), (35, "Br"), (53, "I")
     };
 
-    public GameObject GetAtomPrefab() => atomPrefab;
+    public GameObject GetAtomPrefab() => ResolveAtomPrefabForCurrentView();
+
+    /// <summary>Atom prefab for the current camera mode (orthographic → 2D, perspective → 3D).</summary>
+    public GameObject ResolveAtomPrefabForCurrentView()
+    {
+        EnsurePrefabPairFromLegacy();
+        bool want3D = Camera.main != null && !Camera.main.orthographic;
+        GameObject p = want3D ? atomPrefab3D : atomPrefab2D;
+        return p != null ? p : atomPrefab;
+    }
+
+    void EnsurePrefabPairFromLegacy()
+    {
+        if (atomPrefab2D == null) atomPrefab2D = atomPrefab;
+        if (atomPrefab3D == null) atomPrefab3D = atomPrefab;
+    }
+
+    /// <summary>Updates EditMode / MoleculeBuilder / periodic table atom prefab; rebuilds scene atoms if 2D↔3D visuals mismatch.</summary>
+    public void OnCameraViewModeChanged()
+    {
+        EnsurePrefabPairFromLegacy();
+        GameObject active = ResolveAtomPrefabForCurrentView();
+        if (editModeManager != null)
+            editModeManager.SetAtomPrefab(active);
+        if (moleculeBuilder != null)
+            moleculeBuilder.SetAtomPrefab(active);
+        MoleculeViewPrefabSwap.RebuildAllAtomsIfVariantMismatch(atomPrefab2D, atomPrefab3D, atomPrefab);
+    }
 
     void RefreshHudLayoutMetrics()
     {
@@ -73,7 +107,7 @@ public class AtomQuickAddUI : MonoBehaviour
             if (editToggleImage != null)
                 editToggleImage.color = editModeManager.EditModeActive ? EditActiveColor : new Color(0.6f, 0.6f, 0.6f);
         }
-        if (view3DToggleImage != null && Camera.main != null)
+        if (view3DToggleImage != null && Camera.main != null && enableMain3DCameraToggleButton)
         {
             bool p3 = !Camera.main.orthographic;
             view3DToggleImage.color = p3 ? View3DActiveColor : new Color(0.6f, 0.6f, 0.6f);
@@ -82,19 +116,15 @@ public class AtomQuickAddUI : MonoBehaviour
 
     void Start()
     {
+        EnsurePrefabPairFromLegacy();
+
         editModeManager = FindFirstObjectByType<EditModeManager>();
         if (editModeManager == null)
-        {
             editModeManager = gameObject.AddComponent<EditModeManager>();
-            editModeManager.SetAtomPrefab(atomPrefab);
-        }
 
         moleculeBuilder = GetComponent<MoleculeBuilder>();
         if (moleculeBuilder == null)
-        {
             moleculeBuilder = gameObject.AddComponent<MoleculeBuilder>();
-            moleculeBuilder.SetAtomPrefab(atomPrefab);
-        }
 
         periodicTable = GetComponent<PeriodicTableUI>();
         if (periodicTable == null)
@@ -110,6 +140,8 @@ public class AtomQuickAddUI : MonoBehaviour
         BuildToolbar();
         BuildDisposalZone();
         HideCreateAtomButton();
+
+        OnCameraViewModeChanged();
     }
 
     void HideCreateAtomButton()
@@ -308,6 +340,16 @@ public class AtomQuickAddUI : MonoBehaviour
         }, View3DActiveColor);
         viewToggle.transform.SetParent(panel.transform, false);
         view3DToggleImage = viewToggle.GetComponent<Image>();
+        if (!enableMain3DCameraToggleButton)
+        {
+            if (viewToggle.TryGetComponent<Button>(out var viewModeBtn))
+                viewModeBtn.interactable = false;
+            var cg = viewToggle.GetComponent<CanvasGroup>();
+            if (cg == null) cg = viewToggle.AddComponent<CanvasGroup>();
+            cg.alpha = 0f;
+            cg.interactable = false;
+            cg.blocksRaycasts = false;
+        }
 
         var hAutoToggle = CreateToggle("H-auto", editModeManager != null && editModeManager.HAutoMode, on =>
         {
@@ -699,17 +741,18 @@ public class AtomQuickAddUI : MonoBehaviour
     void ShowPeriodicTable()
     {
         if (periodicTable == null) return;
-        periodicTable.SetAtomPrefab(atomPrefab);
+        periodicTable.SetAtomPrefab(GetAtomPrefab());
         periodicTable.SetViewportMargin(viewportMargin);
         periodicTable.Show();
     }
 
     public void CreateAtomAtViewport(int atomicNumber)
     {
-        if (atomPrefab == null || Camera.main == null) return;
+        GameObject prefab = GetAtomPrefab();
+        if (prefab == null || Camera.main == null) return;
 
         Vector3 pos = PlanarPointerInteraction.SnapWorldToWorkPlaneIfPresent(GetRandomPositionInView());
-        var atomObj = Instantiate(atomPrefab, pos, Quaternion.identity);
+        var atomObj = Instantiate(prefab, pos, Quaternion.identity);
         if (atomObj.TryGetComponent<AtomFunction>(out var atom))
         {
             atom.AtomicNumber = atomicNumber;

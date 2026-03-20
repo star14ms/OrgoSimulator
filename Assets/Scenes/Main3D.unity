@@ -719,6 +719,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   atomPrefab: {fileID: 990011001, guid: bbccddeeff0011223344556677889900, type: 3}
+  atomPrefab2D: {fileID: 5603993468046043822, guid: 4571b41a7b03847afaad0c62506ea02f, type: 3}
+  atomPrefab3D: {fileID: 990011001, guid: bbccddeeff0011223344556677889900, type: 3}
   viewportMargin: 0.1
   buttonSize: 36
   spacing: 4

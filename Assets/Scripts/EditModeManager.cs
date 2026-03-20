@@ -2,10 +2,12 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 using System.Collections.Generic;
+using System.Linq;
 
 /// <summary>
 /// Manages edit mode: selection (click atom to select, background to deselect), add-atom-to-selected,
 /// H-auto mode (saturate new atoms with hydrogen). Toggle edit mode with E.
+/// Left/right arrows cycle the selected atom within the molecule whenever an atom is selected; up/down orbitals only in edit mode.
 /// </summary>
 public class EditModeManager : MonoBehaviour
 {
@@ -44,17 +46,34 @@ public class EditModeManager : MonoBehaviour
         var cam = Camera.main;
         if (cam == null) return;
 
-        var go = new GameObject("EditModeBackground");
-        deselectBackgroundRoot = go;
-        go.transform.rotation = cam.transform.rotation;
-        go.transform.localScale = new Vector3(100f, 100f, 0.01f);
+        var existing = GameObject.Find("EditModeBackground");
+        GameObject go;
+        if (existing != null)
+        {
+            go = existing;
+            deselectBackgroundRoot = go;
+            deselectBackgroundCollider = go.GetComponent<BoxCollider>();
+            if (deselectBackgroundCollider == null)
+                deselectBackgroundCollider = go.AddComponent<BoxCollider>();
+        }
+        else
+        {
+            go = new GameObject("EditModeBackground");
+            deselectBackgroundRoot = go;
+            go.transform.rotation = cam.transform.rotation;
+            go.transform.localScale = new Vector3(100f, 100f, 0.01f);
+            deselectBackgroundCollider = go.AddComponent<BoxCollider>();
+            deselectBackgroundCollider.size = Vector3.one;
+        }
 
-        deselectBackgroundCollider = go.AddComponent<BoxCollider>();
-        deselectBackgroundCollider.size = Vector3.one;
-        deselectBackgroundCollider.isTrigger = true;
-        deselectBackgroundCollider.enabled = editModeActive;
+        // Non-trigger: PhysicsRaycaster often ignores triggers, so clicks would never reach the background.
+        deselectBackgroundCollider.isTrigger = false;
+        // Always on: selection works outside edit mode (E off); background must still receive pointer events to deselect.
+        deselectBackgroundCollider.enabled = true;
 
-        var handler = go.AddComponent<BackgroundClickHandler>();
+        var handler = go.GetComponent<BackgroundClickHandler>();
+        if (handler == null)
+            handler = go.AddComponent<BackgroundClickHandler>();
         handler.editModeManager = this;
 
         RepositionDeselectBackground();
@@ -67,25 +86,77 @@ public class EditModeManager : MonoBehaviour
         if (Keyboard.current?.dKey.wasPressedThisFrame == true)
             eraserMode = !eraserMode;
 
-        if (editModeActive && selectedAtom != null)
-        {
-            var k = Keyboard.current;
-            float? arrowAngle = null;
-            if (k?.rightArrowKey.wasPressedThisFrame == true) arrowAngle = 0f;
-            else if (k?.upArrowKey.wasPressedThisFrame == true) arrowAngle = 90f;
-            else if (k?.leftArrowKey.wasPressedThisFrame == true) arrowAngle = 180f;
-            else if (k?.downArrowKey.wasPressedThisFrame == true) arrowAngle = 270f;
+        if (selectedAtom == null) return;
 
-            if (arrowAngle.HasValue && selectedOrbital != null)
-            {
-                var next = selectedAtom.GetNextOrbitalForArrow(selectedOrbital, arrowAngle.Value);
-                if (next != null)
-                {
-                    selectedOrbital.SetHighlighted(false);
-                    selectedOrbital = next;
-                    selectedOrbital.SetHighlighted(true);
-                }
-            }
+        var k = Keyboard.current;
+        if (k == null) return;
+
+        if (editModeActive)
+        {
+            if (k.upArrowKey.wasPressedThisFrame)
+                CycleSelectedOrbitalInList(+1);
+            else if (k.downArrowKey.wasPressedThisFrame)
+                CycleSelectedOrbitalInList(-1);
+        }
+
+        if (k.rightArrowKey.wasPressedThisFrame)
+            CycleSelectedAtomInMolecule(+1);
+        else if (k.leftArrowKey.wasPressedThisFrame)
+            CycleSelectedAtomInMolecule(-1);
+    }
+
+    void CycleSelectedOrbitalInList(int delta)
+    {
+        if (selectedAtom == null) return;
+        var next = selectedAtom.GetAdjacentOrbitalInList(selectedOrbital, delta);
+        if (next == null || next == selectedOrbital) return;
+        if (selectedOrbital != null) selectedOrbital.SetHighlighted(false);
+        selectedOrbital = next;
+        selectedOrbital.SetHighlighted(true);
+    }
+
+    static List<AtomFunction> BuildOrderedMoleculeAtomList(HashSet<AtomFunction> mol)
+    {
+        var list = mol.Where(a => a != null).ToList();
+        list.Sort((a, b) =>
+        {
+            Vector3 pa = a.transform.position;
+            Vector3 pb = b.transform.position;
+            int c = pa.x.CompareTo(pb.x);
+            if (c != 0) return c;
+            c = pa.y.CompareTo(pb.y);
+            if (c != 0) return c;
+            c = pa.z.CompareTo(pb.z);
+            if (c != 0) return c;
+            return a.GetInstanceID().CompareTo(b.GetInstanceID());
+        });
+        return list;
+    }
+
+    void CycleSelectedAtomInMolecule(int delta)
+    {
+        if (selectedMolecule == null || selectedMolecule.Count == 0 || selectedAtom == null) return;
+        var ordered = BuildOrderedMoleculeAtomList(selectedMolecule);
+        if (ordered.Count == 0) return;
+        int idx = ordered.IndexOf(selectedAtom);
+        if (idx < 0) idx = 0;
+        int n = ordered.Count;
+        int nextIdx = ((idx + delta) % n + n) % n;
+        var nextAtom = ordered[nextIdx];
+        if (nextAtom == selectedAtom) return;
+        ClearSelectionHighlights();
+        selectedAtom = nextAtom;
+        orbitalExplicitlySelected = false;
+        if (editModeActive)
+        {
+            var orbs = selectedAtom.GetAllOrbitalsSortedForArrowCycling();
+            selectedOrbital = orbs.Count > 0 ? orbs[0] : null;
+            ApplySelectionHighlights();
+        }
+        else
+        {
+            selectedOrbital = null;
+            if (selectedAtom != null) selectedAtom.SetSelectionHighlight(true);
         }
     }
 
@@ -93,8 +164,6 @@ public class EditModeManager : MonoBehaviour
     {
         if (editModeActive == on) return;
         editModeActive = on;
-        if (deselectBackgroundCollider != null)
-            deselectBackgroundCollider.enabled = on;
         if (!on)
         {
             if (selectedOrbital != null) selectedOrbital.SetHighlighted(false);
@@ -269,6 +338,20 @@ public class EditModeManager : MonoBehaviour
         ApplySelectionHighlights();
     }
 
+    /// <summary>
+    /// Rebuilds the atom set used for left/right arrow cycling after bonds change (new atoms, H-auto, replace H, etc.).
+    /// </summary>
+    public void RefreshSelectedMoleculeAfterBondChange()
+    {
+        if (selectedAtom == null)
+        {
+            selectedMolecule = null;
+            return;
+        }
+
+        selectedMolecule = selectedAtom.GetConnectedMolecule();
+    }
+
     public bool TryAddAtomToSelected(int atomicNumber)
     {
         if (selectedAtom == null || atomPrefab == null || Camera.main == null) return false;
@@ -392,6 +475,8 @@ public class EditModeManager : MonoBehaviour
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }
+
+        RefreshSelectedMoleculeAfterBondChange();
     }
 
     static bool TryPickTwoLoneOrbitalsForDirections(AtomFunction carbon, Vector3 h1World, Vector3 h2World, out ElectronOrbitalFunction orb1, out ElectronOrbitalFunction orb2)
@@ -417,6 +502,7 @@ public class EditModeManager : MonoBehaviour
 
     /// <summary>
     /// Saturate ring carbons to sp³ single bonds: —CH₂— gets two H (109.5° pair); a carbon that already has three σ bonds (e.g. ring + substituent) gets one H.
+    /// Perspective: 3D-puckered VSEPR via <see cref="VseprLayout.TwoHydrogenDirectionsFromBonds"/>. Orthographic: planar XY via <see cref="VseprLayout.TwoHydrogenDirectionsFromBondsPlanarXY"/> (legacy 2D behavior).
     /// </summary>
     public void SaturateCycloalkaneWithHydrogen(AtomFunction[] atoms)
     {
@@ -444,7 +530,11 @@ public class EditModeManager : MonoBehaviour
 
             if (hNeeded == 2)
             {
-                VseprLayout.TwoHydrogenDirectionsFromBonds(toPrev, toNext, out Vector3 h1, out Vector3 h2);
+                Vector3 h1, h2;
+                if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+                    VseprLayout.TwoHydrogenDirectionsFromBonds(toPrev, toNext, out h1, out h2);
+                else
+                    VseprLayout.TwoHydrogenDirectionsFromBondsPlanarXY(toPrev, toNext, out h1, out h2);
                 if (!TryPickTwoLoneOrbitalsForDirections(atom, h1, h2, out var carbonOrb1, out var carbonOrb2))
                     continue;
 
@@ -492,7 +582,9 @@ public class EditModeManager : MonoBehaviour
                 }
                 if (dirs.Count < 3) continue;
 
-                Vector3 hDir = VseprLayout.OneHydrogenDirectionFromThreeBondsWorld(dirs[0], dirs[1], dirs[2]);
+                Vector3 hDir = OrbitalAngleUtility.UseFull3DOrbitalGeometry
+                    ? VseprLayout.OneHydrogenDirectionFromThreeBondsWorld(dirs[0], dirs[1], dirs[2])
+                    : VseprLayout.OneHydrogenDirectionFromThreeBondsWorldPlanarXY(dirs[0], dirs[1], dirs[2]);
                 var carbonOrb = atom.GetLoneOrbitalWithOneElectron(hDir);
                 if (carbonOrb == null) continue;
 

@@ -1109,44 +1109,42 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return list;
     }
 
+    /// <summary>Every orbital on this atom (lone and bond-associated), sorted by world pointing angle for stable keyboard order in 2D and 3D.</summary>
+    public List<ElectronOrbitalFunction> GetAllOrbitalsSortedForArrowCycling()
+    {
+        var list = new List<ElectronOrbitalFunction>();
+        foreach (var orb in bondedOrbitals)
+        {
+            if (orb != null) list.Add(orb);
+        }
+        list.Sort((a, b) =>
+        {
+            float aa = OrbitalAngleUtility.NormalizeAngle(OrbitalAngleUtility.GetOrbitalAngleWorld(a.transform));
+            float ab = OrbitalAngleUtility.NormalizeAngle(OrbitalAngleUtility.GetOrbitalAngleWorld(b.transform));
+            int cmp = aa.CompareTo(ab);
+            if (cmp != 0) return cmp;
+            return a.GetInstanceID().CompareTo(b.GetInstanceID());
+        });
+        return list;
+    }
+
+    /// <summary>Next/previous in <see cref="GetAllOrbitalsSortedForArrowCycling"/> (wraps). Delta +1 moves forward in that list.</summary>
+    public ElectronOrbitalFunction GetAdjacentOrbitalInList(ElectronOrbitalFunction current, int delta)
+    {
+        var list = GetAllOrbitalsSortedForArrowCycling();
+        if (list.Count == 0) return null;
+        if (current == null) return list[0];
+        int idx = list.IndexOf(current);
+        if (idx < 0) return list[0];
+        int n = list.Count;
+        int next = ((idx + delta) % n + n) % n;
+        return list[next];
+    }
+
     /// <summary>Orbital closest to targetAngle (0° = right). For initial selection.</summary>
     public ElectronOrbitalFunction GetOrbitalClosestToAngle(float targetAngleDeg)
     {
         return GetLoneOrbitalWithOneElectron(new Vector3(Mathf.Cos(targetAngleDeg * Mathf.Deg2Rad), Mathf.Sin(targetAngleDeg * Mathf.Deg2Rad), 0));
-    }
-
-    static float AngularDistance(float a, float b)
-    {
-        float d = Mathf.Abs(OrbitalAngleUtility.NormalizeAngle(a - b));
-        return Mathf.Min(d, 360f - d);
-    }
-
-    /// <summary>Next orbital for arrow key. Arrow: right=0°, up=90°, left=180°, down=270°. Returns null if no change.</summary>
-    public ElectronOrbitalFunction GetNextOrbitalForArrow(ElectronOrbitalFunction current, float arrowAngleDeg)
-    {
-        var list = GetLoneOrbitalsWithOneElectronSortedByAngle();
-        if (list.Count == 0 || current == null) return null;
-        int idx = list.IndexOf(current);
-        if (idx < 0) return null;
-
-        float currentAngle = OrbitalAngleUtility.GetOrbitalAngleWorld(current.transform);
-        float arrowNorm = OrbitalAngleUtility.NormalizeAngle(arrowAngleDeg);
-        float currNorm = OrbitalAngleUtility.NormalizeAngle(currentAngle);
-        float diff = AngularDistance(arrowNorm, currNorm);
-
-        if (diff > 90f)
-            return GetOrbitalClosestToAngle(arrowAngleDeg);
-
-        float distCurr = AngularDistance(currNorm, arrowNorm);
-        int nextIdxCW = (idx + 1) % list.Count;
-        int nextIdxCCW = (idx - 1 + list.Count) % list.Count;
-        var nextCW = list[nextIdxCW];
-        var nextCCW = list[nextIdxCCW];
-        float distCW = AngularDistance(OrbitalAngleUtility.GetOrbitalAngleWorld(nextCW.transform), arrowNorm);
-        float distCCW = AngularDistance(OrbitalAngleUtility.GetOrbitalAngleWorld(nextCCW.transform), arrowNorm);
-        var next = distCW < distCCW ? nextCW : nextCCW;
-        float distNext = Mathf.Min(distCW, distCCW);
-        return distNext < distCurr ? next : null;
     }
 
     GameObject selectionHighlight;
@@ -1469,6 +1467,10 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             float hm = Mathf.Abs(ls.y);
             return Mathf.Max(cap.radius * rm, cap.height * 0.5f * hm);
         }
+        var sr = GetComponent<SpriteRenderer>();
+        if (sr != null && sr.sprite != null && sr.enabled)
+            return Mathf.Max(sr.bounds.extents.x, sr.bounds.extents.y);
+
         var mr = GetComponent<MeshRenderer>();
         if (mr != null)
             return Mathf.Max(mr.bounds.extents.x, mr.bounds.extents.y, mr.bounds.extents.z);
@@ -1486,14 +1488,35 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var cam = Camera.main;
         if (cam == null) return;
         Vector3 labelAnchor = transform.position;
+        float bodyRworld = GetAtomBodyRadiusWorld();
+        float radial = bodyRworld + elementLabelBeyondBodyMargin;
+
+        if (cam.orthographic)
+        {
+            // Depth offset only along view axis (keeps label centered in XY); rotation matches perspective TMP convention.
+            float offset = Mathf.Min(radial, cam.orthographicSize * 0.35f);
+            Vector3 f = cam.transform.forward;
+            if (f.sqrMagnitude < 1e-10f) return;
+            f.Normalize();
+            float along = Vector3.Dot(cam.transform.position - labelAnchor, f);
+            float sign = Mathf.Abs(along) < 1e-4f ? -1f : Mathf.Sign(along);
+            elementLabelTransform.position = labelAnchor + f * (sign * offset);
+
+            Vector3 lookToCam = cam.transform.position - labelAnchor;
+            if (lookToCam.sqrMagnitude < 1e-10f)
+                lookToCam = -f;
+            else
+                lookToCam.Normalize();
+            elementLabelTransform.rotation = Quaternion.LookRotation(lookToCam, cam.transform.up) * Quaternion.Euler(0f, 180f, 0f);
+            return;
+        }
+
         var toCam = cam.transform.position - labelAnchor;
         if (toCam.sqrMagnitude < 1e-10f) return;
         var toCamDir = toCam.normalized;
         float camDist = toCam.magnitude;
-        float bodyRworld = GetAtomBodyRadiusWorld();
-        float radial = bodyRworld + elementLabelBeyondBodyMargin;
-        float offset = Mathf.Min(radial, camDist * 0.42f);
-        elementLabelTransform.position = labelAnchor + toCamDir * offset;
+        float offsetPersp = Mathf.Min(radial, camDist * 0.42f);
+        elementLabelTransform.position = labelAnchor + toCamDir * offsetPersp;
         // TMP world quads are authored with the visible side opposite default LookRotation(toCam).
         elementLabelTransform.rotation = Quaternion.LookRotation(toCam, cam.transform.up) * Quaternion.Euler(0f, 180f, 0f);
     }
@@ -1732,7 +1755,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         tmp.fontSize = 6f;
         tmp.alignment = TextAlignmentOptions.Center;
         if (tmp.rectTransform != null)
+        {
+            tmp.rectTransform.pivot = new Vector2(0.5f, 0.5f);
+            tmp.rectTransform.anchorMin = tmp.rectTransform.anchorMax = new Vector2(0.5f, 0.5f);
             tmp.rectTransform.sizeDelta = elementLabelSize;
+        }
         var labelFg = atomicNumber == 1
             ? Color.white
             : ContrastingLabelColor(PeriodicTableUI.GetAtomSphereColor(atomicNumber));

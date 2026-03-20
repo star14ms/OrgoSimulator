@@ -15,6 +15,9 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
     /// <summary>Slightly above black so Lit/Unlit both read on screen; pure black often vanishes.</summary>
     static readonly Color Electron3DVisualColor = new Color(0.1f, 0.1f, 0.14f, 1f);
 
+    /// <summary>2D orthographic: solid black (orbital body is translucent; electrons should read clearly).</summary>
+    public static readonly Color Electron2DVisualColor = Color.black;
+
     public void SetOrbitalWidth(float width)
     {
         orbitalWidth = width;
@@ -29,6 +32,13 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
     public int SlotIndex => slotIndex;
 
     public bool IsElectronPointerDragActive => isBeingHeld;
+
+    /// <summary>Re-apply 2D tint/sorting after orbital changes (e.g. electron count sync).</summary>
+    public void Sync2DAppearanceWithOrbital()
+    {
+        if (Use3DElectronPresentation()) return;
+        Apply2DElectronVisualIfNeeded();
+    }
 
     /// <summary>Re-apply default offset (2D) or orbital center (3D) after orbital drag ends.</summary>
     public void ApplyOrbitalSlotPosition() => UpdatePosition();
@@ -89,12 +99,24 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
         UpdatePosition();
     }
 
-    /// <summary>Orthographic mode keeps the sprite; tint to match 3D (prefab is often white).</summary>
+    /// <summary>Orthographic mode keeps the sprite; tint black and draw above the orbital body so it is not covered.</summary>
     void Apply2DElectronVisualIfNeeded()
     {
         var sr = GetComponent<SpriteRenderer>();
         if (sr == null) return;
-        sr.color = Electron3DVisualColor;
+        sr.color = Electron2DVisualColor;
+        Apply2DElectronSortingAboveOrbitalBody(sr);
+    }
+
+    void Apply2DElectronSortingAboveOrbitalBody(SpriteRenderer electronSr)
+    {
+        var orbital = GetComponentInParent<ElectronOrbitalFunction>();
+        if (orbital == null || electronSr == null) return;
+        var bodySr = orbital.GetComponent<SpriteRenderer>();
+        if (bodySr == null) return;
+        electronSr.sortingLayerID = bodySr.sortingLayerID;
+        // Body at N; electrons at N+1 (above translucent lobe).
+        electronSr.sortingOrder = bodySr.sortingOrder + 1;
     }
 
     static bool Use3DElectronPresentation() =>

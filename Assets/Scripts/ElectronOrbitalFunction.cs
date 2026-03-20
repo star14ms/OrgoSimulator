@@ -13,6 +13,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     [SerializeField] float electronSpacing = 0.5f; // Distance between electrons (larger = more spread)
     [SerializeField] Sprite stretchSprite; // Optional: single sprite for stretch. If null, uses procedural triangle+circle composite.
     [SerializeField] [Range(0.05f, 1f)] float orbitalVisualAlpha = 0.05f;
+    [Tooltip("Edit-mode selected orbital: body alpha (higher than orbitalVisualAlpha so the lobe reads brighter).")]
+    [SerializeField] [Range(0.05f, 1f)] float orbitalHighlightAlpha = 0.30f;
     [Tooltip("3D drag stretch only: scales hemisphere diameter and cone base (XZ) vs idle orbital sizing.")]
     [SerializeField] [Range(0.35f, 1f)] float dragStretch3DCrossSectionScale = 0.65f;
     [Tooltip("3D drag: offset from flat seam into the hemispherical bulk along the tip axis, as a fraction of cap radius (keeps electrons under the dome, not on the outer shell).")]
@@ -181,10 +183,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (col2D != null) col2D.enabled = !blocked;
     }
 
-    const string EditModeOrbitalGlowName = "EditModeSelectionGlow";
-    /// <summary>2D ortho: billboard ring outline, same style as <see cref="AtomFunction"/> selection.</summary>
-    GameObject orbitalSelectionHighlight2D;
-
     static void ConfigureUnlitTransparent(Material mat)
     {
         if (mat == null) return;
@@ -203,133 +201,42 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
-    /// <summary>Highlight this orbital (e.g. when selected for bonding in edit mode).</summary>
+    bool editSelectionHighlightActive;
+
+    /// <summary>Highlight this orbital in edit mode by raising body opacity (no ring overlay).</summary>
     public void SetHighlighted(bool on)
     {
-        if (Use3DOrbitalPresentation())
+        editSelectionHighlightActive = on;
+        DestroyLegacyOrbitalOutlineDecorations();
+        ApplyOrbitalEditSelectionVisual(on);
+    }
+
+    void DestroyLegacyOrbitalOutlineDecorations()
+    {
+        for (int i = transform.childCount - 1; i >= 0; i--)
         {
-            if (orbitalSelectionHighlight2D != null) orbitalSelectionHighlight2D.SetActive(false);
-            SetOrbitalHighlight3D(on);
+            var ch = transform.GetChild(i);
+            string n = ch.name;
+            if (n == "SelectionHighlight" || n == "EditModeSelectionGlow")
+                Destroy(ch.gameObject);
+        }
+    }
+
+    void ApplyOrbitalEditSelectionVisual(bool selected)
+    {
+        var sr = GetComponent<SpriteRenderer>();
+        var mr = GetComponent<MeshRenderer>();
+        if (sr == null && mr == null) return;
+        if (!selected)
+        {
+            ApplyOrbitalVisualOpacity(sr, mr);
             return;
         }
 
-        var glow3d = transform.Find(EditModeOrbitalGlowName);
-        if (glow3d != null) glow3d.gameObject.SetActive(false);
-        SetOrbitalHighlight2DRing(on);
-    }
-
-    static Sprite CreateRingOutlineSprite()
-    {
-        const int size = 32;
-        var tex = new Texture2D(size, size);
-        tex.filterMode = FilterMode.Bilinear;
-        for (int y = 0; y < size; y++)
-            for (int x = 0; x < size; x++)
-            {
-                float dx = (x - size * 0.5f) / (size * 0.5f);
-                float dy = (y - size * 0.5f) / (size * 0.5f);
-                float r = Mathf.Sqrt(dx * dx + dy * dy);
-                tex.SetPixel(x, y, r >= 0.85f && r <= 1f ? Color.white : Color.clear);
-            }
-        tex.Apply();
-        return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 32f);
-    }
-
-    void BillboardEditModeGlowTowardMainCamera(Transform ring)
-    {
-        var cam = Camera.main;
-        if (cam == null || ring == null) return;
-        Vector3 anchor = transform.position;
-        Vector3 toCam = cam.transform.position - anchor;
-        if (toCam.sqrMagnitude < 1e-10f) return;
-        ring.position = anchor;
-        ring.rotation = Quaternion.LookRotation(toCam, cam.transform.up) * Quaternion.Euler(0f, 180f, 0f);
-    }
-
-    /// <summary>Matches atom 2D selection: green ring outline, no body tint or scale change.</summary>
-    void SetOrbitalHighlight2DRing(bool on)
-    {
-        Color ringCol = new Color(0.3f, 0.9f, 0.4f, 0.6f);
-
-        if (!on)
-        {
-            if (orbitalSelectionHighlight2D != null) orbitalSelectionHighlight2D.SetActive(false);
-            return;
-        }
-
-        if (orbitalSelectionHighlight2D == null)
-        {
-            orbitalSelectionHighlight2D = new GameObject("SelectionHighlight");
-            orbitalSelectionHighlight2D.transform.SetParent(transform, false);
-            orbitalSelectionHighlight2D.transform.localPosition = Vector3.zero;
-            orbitalSelectionHighlight2D.transform.localRotation = Quaternion.identity;
-            var sr = orbitalSelectionHighlight2D.AddComponent<SpriteRenderer>();
-            sr.sprite = CreateRingOutlineSprite();
-            sr.color = ringCol;
-        }
-
-        var ringSr = orbitalSelectionHighlight2D.GetComponent<SpriteRenderer>();
-        if (ringSr != null)
-        {
-            ringSr.color = ringCol;
-
-            int order = 0;
-            var bodySr = GetComponent<SpriteRenderer>();
-            if (bodySr != null) order = bodySr.sortingOrder;
-            ringSr.sortingOrder = order + 1;
-        }
-
-        float mx = Mathf.Max(orbitalColliderSize.x, 0.05f);
-        float my = Mathf.Max(orbitalColliderSize.y, 0.05f);
-        orbitalSelectionHighlight2D.transform.localScale = new Vector3(mx * 1.4f, my * 1.4f, 1f);
-        orbitalSelectionHighlight2D.SetActive(true);
-    }
-
-    void SetOrbitalHighlight3D(bool on)
-    {
-        var tr = transform.Find(EditModeOrbitalGlowName);
-        if (!on)
-        {
-            if (tr != null) tr.gameObject.SetActive(false);
-            return;
-        }
-
-        if (tr != null && tr.GetComponent<SpriteRenderer>() == null)
-        {
-            Destroy(tr.gameObject);
-            tr = null;
-        }
-
-        GameObject go;
-        if (tr == null)
-        {
-            go = new GameObject(EditModeOrbitalGlowName);
-            go.transform.SetParent(transform, false);
-            go.transform.localPosition = Vector3.zero;
-            go.transform.localRotation = Quaternion.identity;
-            var sr = go.AddComponent<SpriteRenderer>();
-            sr.sprite = CreateRingOutlineSprite();
-            sr.color = new Color(0.25f, 0.98f, 0.42f, 0.92f);
-            sr.sortingOrder = 80;
-        }
-        else go = tr.gameObject;
-
-        var cap = GetComponent<CapsuleCollider>();
-        if (cap != null && cap.direction == 1)
-        {
-            float rxz = cap.radius * 2f * 1.16f;
-            float h = cap.height * 1.1f;
-            go.transform.localScale = new Vector3(rxz, h, 1f);
-        }
-        else
-        {
-            float u = Mathf.Max(transform.localScale.x, transform.localScale.y, transform.localScale.z);
-            float s = Mathf.Max(u * 1.18f, 0.4f);
-            go.transform.localScale = new Vector3(s, s, 1f);
-        }
-
-        go.SetActive(true);
-        BillboardEditModeGlowTowardMainCamera(go.transform);
+        float a = Mathf.Clamp01(Mathf.Max(orbitalHighlightAlpha, orbitalVisualAlpha));
+        Color c = new Color(originalColor.r, originalColor.g, originalColor.b, a);
+        if (sr != null) sr.color = c;
+        else if (mr != null) SetMaterialTint(mr.material, c);
     }
 
     /// <summary>Show or hide the orbital and its electron visuals. Used when bond displays as a line.</summary>
@@ -712,6 +619,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         Reposition3DElectronsAfterOrbitalDrag();
         if (mainSpriteRenderer != null) mainSpriteRenderer.enabled = true;
         if (mainMeshRenderer != null) mainMeshRenderer.enabled = true;
+        RefreshOrbitalBodyVisualAfterDrag();
         SetPhysicsEnabled(true);
 
         var editMode = UnityEngine.Object.FindFirstObjectByType<EditModeManager>();
@@ -1136,6 +1044,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         finally
         {
             foreach (var a in atomsToBlock) a.SetInteractionBlocked(false);
+            UnityEngine.Object.FindFirstObjectByType<EditModeManager>()?.RefreshSelectedMoleculeAfterBondChange();
         }
     }
 
@@ -1249,6 +1158,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         finally
         {
             foreach (var a in atomsToBlock) a.SetInteractionBlocked(false);
+            UnityEngine.Object.FindFirstObjectByType<EditModeManager>()?.RefreshSelectedMoleculeAfterBondChange();
         }
     }
 
@@ -1664,9 +1574,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             circle.transform.localScale = Vector3.one;
             var circleSr = circle.AddComponent<SpriteRenderer>();
             circleSr.sprite = GetOrCreateCircleSprite();
-            circleSr.color = color;
-            circleSr.sortingOrder = sortOrder;
+            // Procedural circle texture is white; use electron black (not orbital tint) so drag preview matches real electrons.
+            circleSr.color = ElectronFunction.Electron2DVisualColor;
             circleSr.sortingLayerID = sortLayer;
+            circleSr.sortingOrder = sortOrder + 1;
         }
         UpdateStretchVisual(tip);
     }
@@ -1914,6 +1825,14 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
+    void RefreshOrbitalBodyVisualAfterDrag()
+    {
+        if (editSelectionHighlightActive)
+            ApplyOrbitalEditSelectionVisual(true);
+        else
+            ApplyOrbitalVisualOpacity(GetComponent<SpriteRenderer>(), GetComponent<MeshRenderer>());
+    }
+
     void IgnoreCollisionsWithChildren()
     {
         var orbitalCol2D = GetComponent<Collider2D>();
@@ -1966,10 +1885,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     {
         if (Use3DOrbitalPresentation())
         {
-            var glowTr = transform.Find(EditModeOrbitalGlowName);
-            if (glowTr != null && glowTr.gameObject.activeSelf)
-                BillboardEditModeGlowTowardMainCamera(glowTr);
-
             if (debugDraw3DElectronDrag && isBeingHeld && stretchVisualIs3D && stretchVisual != null)
             {
                 var tip = transform.position;
@@ -2023,6 +1938,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         {
             electrons[i].SetSlotIndex(i);
             electrons[i].SetOrbitalWidth(electronSpacing);
+            electrons[i].Sync2DAppearanceWithOrbital();
         }
 
         IgnoreCollisionsWithChildren();

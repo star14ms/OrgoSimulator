@@ -9,6 +9,8 @@ using UnityEngine.UI;
 /// Uses <see cref="InputSystem.onAfterUpdate"/> so scroll is read after the Input System applies wheel deltas
 /// (early <c>Update</c> often sees zero because <c>Mouse</c> resets/applies scroll in the input update).
 /// The <see cref="MoleculeWorkPlane"/> is synced on enable and once after scroll input goes idle (not every tick).
+/// When a new scroll gesture starts (after idle), the orbit pivot snaps to <see cref="EditModeManager.SelectedAtom"/>
+/// if any; with no selection it resets to the focus point from the inspector at load. Clicking an atom alone does not move the pivot until the user scrolls.
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(Camera))]
@@ -26,6 +28,10 @@ public sealed class ScrollOrbitCamera : MonoBehaviour
     int _lastOrbitFrame = -1;
     float _orbitScrollLastActivityUnscaledTime = -1f;
     Camera _cam;
+    /// <summary><see cref="focusPoint"/> as serialized when this component awakens (orbit origin when nothing is selected).</summary>
+    Vector3 _focusPointInitial;
+
+    void Awake() => _focusPointInitial = focusPoint;
 
     void OnEnable()
     {
@@ -51,6 +57,10 @@ public sealed class ScrollOrbitCamera : MonoBehaviour
 
         if (ShouldBlockOrbitBecausePointerIsOverScrollableUi())
             return;
+
+        // New scroll burst (see LateUpdate clearing _orbitScrollLastActivityUnscaledTime after idle).
+        if (_orbitScrollLastActivityUnscaledTime < 0f)
+            ApplyOrbitFocusForNewScrollGesture();
 
         float s = scrollSensitivity;
         transform.RotateAround(focusPoint, Vector3.up, scroll.x * s);
@@ -93,5 +103,15 @@ public sealed class ScrollOrbitCamera : MonoBehaviour
         if (results.Count == 0) return false;
 
         return results[0].gameObject.GetComponentInParent<ScrollRect>() != null;
+    }
+
+    void ApplyOrbitFocusForNewScrollGesture()
+    {
+        var cam = _cam != null ? _cam : GetComponent<Camera>();
+        if (cam != null && cam.orthographic) return;
+
+        var em = Object.FindFirstObjectByType<EditModeManager>();
+        var atom = em != null ? em.SelectedAtom : null;
+        focusPoint = atom != null ? atom.transform.position : _focusPointInitial;
     }
 }

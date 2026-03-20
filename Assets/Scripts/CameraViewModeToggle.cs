@@ -112,6 +112,12 @@ public sealed class CameraViewModeToggle : MonoBehaviour
 
     static void RefreshSceneAfterCameraModeChange()
     {
+        foreach (var quickAdd in Object.FindObjectsByType<AtomQuickAddUI>(FindObjectsSortMode.None))
+        {
+            if (quickAdd != null)
+                quickAdd.OnCameraViewModeChanged();
+        }
+
         foreach (var bond in Object.FindObjectsByType<CovalentBond>(FindObjectsSortMode.None))
         {
             if (bond != null) bond.RefreshLineVisualForCameraMode();

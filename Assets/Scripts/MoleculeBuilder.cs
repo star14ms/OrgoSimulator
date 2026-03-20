@@ -223,7 +223,10 @@ public class MoleculeBuilder : MonoBehaviour
         if (anchorAtom != null) anchorAtom.RedistributeOrbitals();
 
         if (editMode != null)
+        {
             editMode.SaturateCycloalkaneWithHydrogen(atoms);
+            editMode.RefreshSelectedMoleculeAfterBondChange();
+        }
 
         AtomFunction.SetupGlobalIgnoreCollisions();
     }
@@ -302,6 +305,7 @@ public class MoleculeBuilder : MonoBehaviour
         {
             foreach (var a in atoms)
                 if (a != null) editMode.SaturateWithHydrogen(a);
+            editMode.RefreshSelectedMoleculeAfterBondChange();
         }
 
         AtomFunction.SetupGlobalIgnoreCollisions();
