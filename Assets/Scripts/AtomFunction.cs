@@ -9,6 +9,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     [SerializeField] float bondRadius = 0.8f;
     [SerializeField] int atomicNumber = 1;
     [SerializeField] int charge;
+    [SerializeField] [Range(0.05f, 1f)] float atomBodyAlpha = 0.42f;
     [SerializeField] ElectronOrbitalFunction orbitalPrefab;
     readonly List<ElectronOrbitalFunction> bondedOrbitals = new List<ElectronOrbitalFunction>();
     readonly List<CovalentBond> covalentBonds = new List<CovalentBond>();
@@ -887,7 +888,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         isBeingHeld = true;
-        dragOffset = transform.position - ScreenToWorld(eventData.position);
+        dragOffset = transform.position - PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
         moleculeAtoms = GetConnectedMolecule();
 
         if (editMode != null && editMode.EditModeActive)
@@ -897,7 +898,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public void OnDrag(PointerEventData eventData)
     {
         if (!isBeingHeld) return;
-        var newPos = ScreenToWorld(eventData.position) + dragOffset;
+        var newPos = PlanarPointerInteraction.ScreenToWorldPoint(eventData.position) + dragOffset;
         var delta = newPos - transform.position;
         transform.position = newPos;
         if (moleculeAtoms != null)
@@ -944,12 +945,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         isBeingHeld = false;
     }
 
-    static Vector3 ScreenToWorld(Vector2 screenPos)
-    {
-        var mouse = new Vector3(screenPos.x, screenPos.y, -Camera.main.transform.position.z);
-        return Camera.main.ScreenToWorldPoint(mouse);
-    }
-
     bool initialized;
 
     /// <summary>Call after setting AtomicNumber when bonds need to be formed immediately (e.g. MoleculeBuilder). Normally Start handles this.</summary>
@@ -963,8 +958,50 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         int valenceElectrons = Mathf.Max(0, valence - charge);
         if (atomicNumber == 2) valenceElectrons = 2; // He: only 1s²
         CreateOrbitalsWithValence(valenceElectrons);
+        ApplyAtomBodyTint();
         CreateElementLabel();
         RefreshCharge();
+    }
+
+    static readonly int ShaderPropBaseColor = Shader.PropertyToID("_BaseColor");
+    static readonly int ShaderPropColor = Shader.PropertyToID("_Color");
+    static readonly int ShaderPropWhite = Shader.PropertyToID("_White");
+    static readonly int ShaderPropRendererColor = Shader.PropertyToID("_RendererColor");
+
+    static void SetMaterialMainTint(Material mat, Color c)
+    {
+        if (mat == null) return;
+        if (mat.HasProperty(ShaderPropBaseColor)) mat.SetColor(ShaderPropBaseColor, c);
+        else if (mat.HasProperty(ShaderPropWhite)) mat.SetColor(ShaderPropWhite, c);
+        else if (mat.HasProperty(ShaderPropRendererColor)) mat.SetColor(ShaderPropRendererColor, c);
+        else if (mat.HasProperty(ShaderPropColor)) mat.SetColor(ShaderPropColor, c);
+    }
+
+    static Color ContrastingLabelColor(Color opaqueElementColor)
+    {
+        float lum = 0.299f * opaqueElementColor.r + 0.587f * opaqueElementColor.g + 0.114f * opaqueElementColor.b;
+        return lum > 0.55f ? new Color(0.12f, 0.12f, 0.18f, 1f) : Color.white;
+    }
+
+    void ApplyAtomBodyTint()
+    {
+        Color baseElem = PeriodicTableUI.GetAtomSphereColor(atomicNumber);
+        Color body = baseElem;
+        body.a = atomBodyAlpha;
+
+        var sr = GetComponent<SpriteRenderer>();
+        if (sr != null)
+        {
+            sr.color = body;
+            return;
+        }
+
+        var mr = GetComponent<MeshRenderer>();
+        if (mr != null)
+        {
+            var mat = mr.material;
+            SetMaterialMainTint(mat, body);
+        }
     }
 
     [SerializeField] Vector2 chargeLabelOffset = new Vector2(0.5f, 0.33f); // Fraction of elementLabelSize (0.5 = right/top edge)
@@ -991,6 +1028,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         tmp.alignment = TextAlignmentOptions.Center;
         if (tmp.rectTransform != null)
             tmp.rectTransform.sizeDelta = elementLabelSize;
+        var labelFg = ContrastingLabelColor(PeriodicTableUI.GetAtomSphereColor(atomicNumber));
+        tmp.color = labelFg;
 
         var chargeObj = new GameObject("ChargeLabel");
         chargeObj.transform.SetParent(labelObj.transform);
@@ -1006,6 +1045,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (chargeTmp.rectTransform != null)
             chargeTmp.rectTransform.sizeDelta = chargeLabelSize;
         chargeTmp.alignment = TextAlignmentOptions.BottomLeft;
+        chargeTmp.color = labelFg;
         RefreshChargeLabel();
     }
 

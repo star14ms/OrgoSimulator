@@ -25,6 +25,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     GameObject lineVisual;
     SpriteRenderer lineRenderer;
     BoxCollider2D lineCollider;
+    BoxCollider lineCollider3D;
     static Sprite lineSprite;
 
     public AtomFunction AtomA => atomA;
@@ -210,8 +211,17 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         lineRenderer.sortingOrder = 0;
         lineRenderer.sortingLayerID = 0;
 
-        lineCollider = lineVisual.AddComponent<BoxCollider2D>();
-        lineCollider.isTrigger = true;
+        bool use3DCollider = Camera.main != null && !Camera.main.orthographic;
+        if (use3DCollider)
+        {
+            lineCollider3D = lineVisual.AddComponent<BoxCollider>();
+            lineCollider3D.isTrigger = true;
+        }
+        else
+        {
+            lineCollider = lineVisual.AddComponent<BoxCollider2D>();
+            lineCollider.isTrigger = true;
+        }
         lineVisual.AddComponent<BondLineColliderForwarder>();
     }
 
@@ -275,8 +285,16 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         lineVisual.transform.localScale = new Vector3(0.25f, lineLength * lineScaleMult, 1f);
 
         // Collider size = sprite base size (0.5 x 1) so it scales with the transform and matches the line
-        lineCollider.size = new Vector2(0.5f, 1f);
-        lineCollider.offset = Vector2.zero;
+        if (lineCollider != null)
+        {
+            lineCollider.size = new Vector2(0.5f, 1f);
+            lineCollider.offset = Vector2.zero;
+        }
+        if (lineCollider3D != null)
+        {
+            lineCollider3D.size = new Vector3(0.5f, 1f, 0.2f);
+            lineCollider3D.center = Vector3.zero;
+        }
 
         // Position bond orbital at same world position as lineVisual (center + perpendicular * offset)
         // Skip when user is dragging or when animating orbital to bond (step 2)
@@ -304,13 +322,14 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         bool showLine = !orbitalVisible || animating; // Show line from start of step 3 so it grows with orbital shrinking
         if (lineRenderer != null) lineRenderer.enabled = showLine;
         if (lineCollider != null) lineCollider.enabled = !orbitalVisible && orbitalToLineAnimProgress < 0;
+        if (lineCollider3D != null) lineCollider3D.enabled = !orbitalVisible && orbitalToLineAnimProgress < 0;
     }
 
     public void OnPointerDown(PointerEventData eventData)
     {
         if (orbitalVisible) return;
         if (atomA == null || atomB == null) return;
-        var clickWorld = ScreenToWorld(eventData.position);
+        var clickWorld = PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
         var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
         var second = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomB : atomA;
         var delta = second.transform.position - first.transform.position;
@@ -330,12 +349,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         forwardedPressToOrbital = false;
         storedPressData = eventData;
         ApplyDisplayMode();
-    }
-
-    static Vector3 ScreenToWorld(Vector2 screenPos)
-    {
-        var v = new Vector3(screenPos.x, screenPos.y, -Camera.main.transform.position.z);
-        return Camera.main.ScreenToWorldPoint(v);
     }
 
     static float DistanceToLineSegment(Vector3 p, Vector3 a, Vector3 b)

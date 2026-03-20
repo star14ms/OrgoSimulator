@@ -55,7 +55,7 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
 
         isBeingHeld = true;
         originalLocalPosition = transform.localPosition;
-        dragOffset = transform.position - ScreenToWorld(eventData.position);
+        dragOffset = transform.position - PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
         orbital?.SetPointerBlocked(true);
         orbital?.SetPhysicsEnabled(false);
         SetPhysicsEnabled(false);
@@ -64,7 +64,7 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
     public void OnDrag(PointerEventData eventData)
     {
         if (isBeingHeld)
-            transform.position = ScreenToWorld(eventData.position) + dragOffset;
+            transform.position = PlanarPointerInteraction.ScreenToWorldPoint(eventData.position) + dragOffset;
     }
 
     public void OnPointerUp(PointerEventData eventData)
@@ -101,12 +101,6 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
                 return;
             }
         }
-    }
-
-    static Vector3 ScreenToWorld(Vector2 screenPos)
-    {
-        var mouse = new Vector3(screenPos.x, screenPos.y, -Camera.main.transform.position.z);
-        return Camera.main.ScreenToWorldPoint(mouse);
     }
 
     void UpdatePosition()

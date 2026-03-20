@@ -10,6 +10,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     [SerializeField] ElectronFunction electronPrefab;
     [SerializeField] float electronSpacing = 0.5f; // Distance between electrons (larger = more spread)
     [SerializeField] Sprite stretchSprite; // Optional: single sprite for stretch. If null, uses procedural triangle+circle composite.
+    [SerializeField] [Range(0.05f, 1f)] float orbitalVisualAlpha = 0.32f;
     AtomFunction bondedAtom;
     CovalentBond bond;
     bool isBeingHeld;
@@ -102,6 +103,18 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             if (on && originalColor.a == 0 && originalColor.r == 0 && originalColor.g == 0) originalColor = sr.color;
             sr.color = on ? new Color(1f, 1f, 0.6f, originalColor.a) : originalColor;
         }
+        else
+        {
+            var mr = GetComponent<MeshRenderer>();
+            if (mr != null)
+            {
+                var mat = mr.material;
+                Color baseCol = GetMaterialTint(mat);
+                if (on && originalColor.a == 0 && originalColor.r == 0 && originalColor.g == 0) originalColor = baseCol;
+                var target = on ? new Color(1f, 1f, 0.6f, originalColor.a) : originalColor;
+                SetMaterialTint(mat, target);
+            }
+        }
         if (on)
         {
             var baseScale = originalLocalScale.sqrMagnitude > 0.01f ? originalLocalScale : transform.localScale;
@@ -143,6 +156,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     Color originalColor;
     GameObject stretchVisual;
     SpriteRenderer mainSpriteRenderer;
+    MeshRenderer mainMeshRenderer;
     const float MinStretchLength = 0.5f;
     const float OffsetScale = 1.14f;
     [SerializeField] float apexPadding = 0.2f;
@@ -152,6 +166,30 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     static readonly int ClipCenterId = Shader.PropertyToID("_ClipCenter");
     static readonly int ClipRadiusXId = Shader.PropertyToID("_ClipRadiusX");
     static readonly int ClipRadiusYId = Shader.PropertyToID("_ClipRadiusY");
+    static readonly int ShaderPropBaseColor = Shader.PropertyToID("_BaseColor");
+    static readonly int ShaderPropColor = Shader.PropertyToID("_Color");
+    /// <summary>URP 2D Mesh2D-Lit-Default tint (see shader Properties — not _Color).</summary>
+    static readonly int ShaderPropWhite = Shader.PropertyToID("_White");
+    static readonly int ShaderPropRendererColor = Shader.PropertyToID("_RendererColor");
+
+    static Color GetMaterialTint(Material mat)
+    {
+        if (mat == null) return Color.white;
+        if (mat.HasProperty(ShaderPropBaseColor)) return mat.GetColor(ShaderPropBaseColor);
+        if (mat.HasProperty(ShaderPropWhite)) return mat.GetColor(ShaderPropWhite);
+        if (mat.HasProperty(ShaderPropRendererColor)) return mat.GetColor(ShaderPropRendererColor);
+        if (mat.HasProperty(ShaderPropColor)) return mat.GetColor(ShaderPropColor);
+        return Color.white;
+    }
+
+    static void SetMaterialTint(Material mat, Color c)
+    {
+        if (mat == null) return;
+        if (mat.HasProperty(ShaderPropBaseColor)) mat.SetColor(ShaderPropBaseColor, c);
+        else if (mat.HasProperty(ShaderPropWhite)) mat.SetColor(ShaderPropWhite, c);
+        else if (mat.HasProperty(ShaderPropRendererColor)) mat.SetColor(ShaderPropRendererColor, c);
+        else if (mat.HasProperty(ShaderPropColor)) mat.SetColor(ShaderPropColor, c);
+    }
 
     static Material GetOrCreateTriangleClipMaterial()
     {
@@ -233,9 +271,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         originalLocalPosition = transform.localPosition;
         originalLocalScale = transform.localScale;
         originalLocalRotation = transform.localRotation;
-        dragOffset = transform.position - ScreenToWorld(eventData.position);
+        dragOffset = transform.position - PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
         mainSpriteRenderer = GetComponent<SpriteRenderer>();
+        mainMeshRenderer = GetComponent<MeshRenderer>();
         if (mainSpriteRenderer != null) mainSpriteRenderer.enabled = false;
+        if (mainMeshRenderer != null) mainMeshRenderer.enabled = false;
         CreateStretchVisual();
         SetPhysicsEnabled(false);
     }
@@ -243,7 +283,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     public void OnDrag(PointerEventData eventData)
     {
         if (!isBeingHeld) return;
-        Vector3 tip = ScreenToWorld(eventData.position) + dragOffset;
+        Vector3 tip = PlanarPointerInteraction.ScreenToWorldPoint(eventData.position) + dragOffset;
         transform.position = tip;
         UpdateStretchVisual(tip);
     }
@@ -256,6 +296,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         Vector3 tip = transform.position;
         if (stretchVisual != null) { Destroy(stretchVisual); stretchVisual = null; }
         if (mainSpriteRenderer != null) mainSpriteRenderer.enabled = true;
+        if (mainMeshRenderer != null) mainMeshRenderer.enabled = true;
         SetPhysicsEnabled(true);
 
         var editMode = UnityEngine.Object.FindFirstObjectByType<EditModeManager>();
@@ -531,7 +572,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         targetAtom.RefreshCharge();
 
         var bondOrbitalEnd = bond.GetOrbitalTargetWorldState();
-        float sigmaDiff = LogSigmaBondAngles(sourceAtom, bondOrbitalEnd.worldPos, bondOrbitalEnd.worldRot);
+        float sigmaDiff = ComputeSigmaBondAngleDiff(sourceAtom, bondOrbitalEnd.worldPos, bondOrbitalEnd.worldRot);
         bool sigmaNeedsFlip = Mathf.Abs(sigmaDiff) > 90f;
         if (sigmaNeedsFlip)
         {
@@ -797,7 +838,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             var bt = bond.GetOrbitalTargetWorldState();
             bondTargetPos = bt.Item1;
             bondTargetRot = bt.Item2;
-            (float sourceDiff, float targetDiff) = LogPiBondAngles(sourceAtom, targetAtom, bondTargetPos, bondTargetRot, bond);
+            (float sourceDiff, float targetDiff) = ComputePiBondAngleDiffs(sourceAtom, targetAtom, bondTargetPos, bondTargetRot, bond);
             bool flipTarget = Mathf.Abs(sourceDiff) < Mathf.Abs(targetDiff); // Source closer to bond → flip target
             if (flipTarget)
             {
@@ -896,10 +937,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
-    static (float sourceDiff, float targetDiff) LogPiBondAngles(AtomFunction sourceAtom, AtomFunction targetAtom, Vector3 bondPos, Quaternion bondRot, CovalentBond bond)
+    static (float sourceDiff, float targetDiff) ComputePiBondAngleDiffs(AtomFunction sourceAtom, AtomFunction targetAtom, Vector3 bondPos, Quaternion bondRot, CovalentBond bond)
     {
         var toCenterFromSource = bondPos - sourceAtom.transform.position;
-        if (toCenterFromSource.sqrMagnitude < 0.0001f) { Debug.Log("[Pi] toCenterFromSource too small"); return (0f, 0f); }
+        if (toCenterFromSource.sqrMagnitude < 0.0001f) return (0f, 0f);
         toCenterFromSource.Normalize();
         toCenterFromSource.z = 0;
         float sourceAngle = OrbitalAngleUtility.DirectionToAngleWorld(toCenterFromSource);
@@ -917,29 +958,25 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 float bondAngle = OrbitalAngleUtility.DirectionToAngleWorld(bondDir);
                 float sourceDiff = OrbitalAngleUtility.NormalizeAngle(sourceAngle - bondAngle);
                 float targetDiff = OrbitalAngleUtility.NormalizeAngle(targetAngle - bondAngle);
-                bool flipTarget = Mathf.Abs(sourceDiff) < Mathf.Abs(targetDiff);
-                Debug.Log($"[Pi] sourceAngle={sourceAngle:F1}° targetAngle={targetAngle:F1}° bondAngle={bondAngle:F1}° sourceDiff={sourceDiff:F1}° targetDiff={targetDiff:F1}° flipTarget={flipTarget}");
                 return (sourceDiff, targetDiff);
             }
         }
-        Debug.Log($"[Pi] sourceAngle={sourceAngle:F1}° (target/bond calc skipped)");
         return (0f, 0f);
     }
 
-    static float LogSigmaBondAngles(AtomFunction sourceAtom, Vector3 bondPos, Quaternion bondRot)
+    static float ComputeSigmaBondAngleDiff(AtomFunction sourceAtom, Vector3 bondPos, Quaternion bondRot)
     {
         var toCenter = bondPos - sourceAtom.transform.position;
-        if (toCenter.sqrMagnitude < 0.0001f) { Debug.Log("[Sigma] toCenter too small"); return 0f; }
+        if (toCenter.sqrMagnitude < 0.0001f) return 0f;
         toCenter.Normalize();
         toCenter.z = 0;
         float sourceAngle = OrbitalAngleUtility.DirectionToAngleWorld(toCenter);
         var bondDir = bondRot * Vector3.right;
         bondDir.z = 0;
-        if (bondDir.sqrMagnitude < 0.0001f) { Debug.Log("[Sigma] bondDir too small"); return 0f; }
+        if (bondDir.sqrMagnitude < 0.0001f) return 0f;
         bondDir.Normalize();
         float bondAngle = OrbitalAngleUtility.DirectionToAngleWorld(bondDir);
         float diff = OrbitalAngleUtility.NormalizeAngle(sourceAngle - bondAngle);
-        Debug.Log($"[Sigma] sourceAngle={sourceAngle:F1}° bondAngle={bondAngle:F1}° diff={diff:F1}° flip={Mathf.Abs(diff) > 90f}");
         return diff;
     }
 
@@ -1107,9 +1144,17 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         stretchVisual.transform.SetParent(transform.parent);
         stretchVisual.transform.localScale = Vector3.one;
 
-        var color = mainSpriteRenderer != null ? mainSpriteRenderer.color : new Color(1, 1, 1, 0.4f);
-        var sortOrder = mainSpriteRenderer != null ? mainSpriteRenderer.sortingOrder : 0;
-        var sortLayer = mainSpriteRenderer != null ? mainSpriteRenderer.sortingLayerID : 0;
+        Color color = new Color(1, 1, 1, 0.4f);
+        int sortOrder = 0;
+        int sortLayer = 0;
+        if (mainSpriteRenderer != null)
+        {
+            color = mainSpriteRenderer.color;
+            sortOrder = mainSpriteRenderer.sortingOrder;
+            sortLayer = mainSpriteRenderer.sortingLayerID;
+        }
+        else if (mainMeshRenderer != null && mainMeshRenderer.sharedMaterial != null)
+            color = originalColor;
 
         if (stretchSprite != null)
         {
@@ -1213,20 +1258,31 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
-    static Vector3 ScreenToWorld(Vector2 screenPos)
-    {
-        var mouse = new Vector3(screenPos.x, screenPos.y, -Camera.main.transform.position.z);
-        return Camera.main.ScreenToWorldPoint(mouse);
-    }
-
     void Start()
     {
         if (originalLocalScale.sqrMagnitude < 0.01f) originalLocalScale = transform.localScale;
         var sr = GetComponent<SpriteRenderer>();
+        var mr = GetComponent<MeshRenderer>();
         if (sr != null && originalColor.a < 0.01f) originalColor = sr.color;
+        else if (mr != null && mr.sharedMaterial != null && originalColor.a < 0.01f)
+            originalColor = GetMaterialTint(mr.sharedMaterial);
+        ApplyOrbitalVisualOpacity(sr, mr);
         EnsureCollider();
         SyncElectronObjects();
         IgnoreCollisionsWithChildren();
+    }
+
+    void ApplyOrbitalVisualOpacity(SpriteRenderer sr, MeshRenderer mr)
+    {
+        Color c = originalColor;
+        c.a = Mathf.Clamp01(orbitalVisualAlpha);
+        originalColor = c;
+        if (sr != null) sr.color = c;
+        else if (mr != null)
+        {
+            var mat = mr.material;
+            SetMaterialTint(mat, c);
+        }
     }
 
     void IgnoreCollisionsWithChildren()

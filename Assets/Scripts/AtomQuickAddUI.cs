@@ -70,6 +70,9 @@ public class AtomQuickAddUI : MonoBehaviour
         if (periodicTable == null)
             periodicTable = gameObject.AddComponent<PeriodicTableUI>();
 
+        var hudCanvas = ResolveHudCanvas();
+        UiScreenSpace.EnforceOverlay(hudCanvas);
+
         BuildToolbar();
         BuildDisposalZone();
         HideCreateAtomButton();
@@ -82,9 +85,19 @@ public class AtomQuickAddUI : MonoBehaviour
             btn.gameObject.SetActive(false);
     }
 
-    void BuildDisposalZone()
+    Canvas ResolveHudCanvas()
     {
         var canvas = GetComponentInParent<Canvas>();
+        if (canvas == null)
+            canvas = GetComponentInChildren<Canvas>();
+        if (canvas == null)
+            canvas = FindFirstObjectByType<Canvas>();
+        return canvas;
+    }
+
+    void BuildDisposalZone()
+    {
+        var canvas = ResolveHudCanvas();
         if (canvas == null) return;
 
         var go = new GameObject("DisposalZone");
@@ -139,7 +152,7 @@ public class AtomQuickAddUI : MonoBehaviour
 
     void BuildToolbar()
     {
-        var canvas = GetComponentInParent<Canvas>();
+        var canvas = ResolveHudCanvas();
         if (canvas == null) return;
 
         var toolbar = new GameObject("MoleculeToolbar");
@@ -554,16 +567,5 @@ public class AtomQuickAddUI : MonoBehaviour
         }
     }
 
-    Vector3 GetRandomPositionInView()
-    {
-        float min = viewportMargin;
-        float max = 1f - viewportMargin;
-        Vector3 minWorld = Camera.main.ViewportToWorldPoint(new Vector3(min, min, -Camera.main.transform.position.z));
-        Vector3 maxWorld = Camera.main.ViewportToWorldPoint(new Vector3(max, max, -Camera.main.transform.position.z));
-        return new Vector3(
-            Random.Range(minWorld.x, maxWorld.x),
-            Random.Range(minWorld.y, maxWorld.y),
-            minWorld.z
-        );
-    }
+    Vector3 GetRandomPositionInView() => PlanarPointerInteraction.RandomWorldPointInMarginedViewport(viewportMargin);
 }

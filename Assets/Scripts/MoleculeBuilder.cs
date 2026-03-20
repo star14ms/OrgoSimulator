@@ -229,12 +229,5 @@ public class MoleculeBuilder : MonoBehaviour
         }
     }
 
-    Vector3 GetViewportCenter()
-    {
-        float min = viewportMargin;
-        float max = 1f - viewportMargin;
-        float mid = (min + max) * 0.5f;
-        var world = Camera.main.ViewportToWorldPoint(new Vector3(mid, mid, -Camera.main.transform.position.z));
-        return world;
-    }
+    Vector3 GetViewportCenter() => PlanarPointerInteraction.ViewportCenterOnWorkPlane(viewportMargin);
 }
