@@ -1,0 +1,128 @@
+using UnityEngine;
+
+/// <summary>
+/// Ideal electron-domain directions (VSEPR): maximally separated in 3D for linear through octahedral.
+/// Used for perspective (non-orthographic) orbital placement and redistribution.
+/// </summary>
+public static class VseprLayout
+{
+    public static Vector3[] GetIdealLocalDirections(int n)
+    {
+        switch (n)
+        {
+            case 1:
+                return new[] { Vector3.right };
+            case 2:
+                return new[] { Vector3.right, Vector3.left };
+            case 3:
+            {
+                float t = 120f * Mathf.Deg2Rad;
+                return new[]
+                {
+                    Vector3.right,
+                    new Vector3(Mathf.Cos(t), Mathf.Sin(t), 0f),
+                    new Vector3(Mathf.Cos(2f * t), Mathf.Sin(2f * t), 0f)
+                };
+            }
+            case 4:
+            {
+                float s = 1f / Mathf.Sqrt(3f);
+                return new[]
+                {
+                    new Vector3(s, s, s),
+                    new Vector3(s, -s, -s),
+                    new Vector3(-s, s, -s),
+                    new Vector3(-s, -s, s)
+                };
+            }
+            case 5:
+            {
+                float t = 120f * Mathf.Deg2Rad;
+                return new[]
+                {
+                    Vector3.forward,
+                    Vector3.back,
+                    Vector3.right,
+                    new Vector3(Mathf.Cos(t), Mathf.Sin(t), 0f),
+                    new Vector3(Mathf.Cos(2f * t), Mathf.Sin(2f * t), 0f)
+                };
+            }
+            case 6:
+                return new[]
+                {
+                    Vector3.right,
+                    Vector3.left,
+                    Vector3.up,
+                    Vector3.down,
+                    Vector3.forward,
+                    Vector3.back
+                };
+            default:
+            {
+                var dirs = new Vector3[n];
+                for (int i = 0; i < n; i++)
+                {
+                    float ang = 2f * Mathf.PI * i / n;
+                    dirs[i] = new Vector3(Mathf.Cos(ang), Mathf.Sin(ang), 0f);
+                }
+                return dirs;
+            }
+        }
+    }
+
+    /// <summary>Rotate ideal frame so the first ideal direction matches <paramref name="target"/>.</summary>
+    public static Vector3[] AlignFirstDirectionTo(Vector3[] idealDirs, Vector3 target)
+    {
+        if (idealDirs == null || idealDirs.Length == 0) return idealDirs;
+        var t = target.normalized;
+        if (t.sqrMagnitude < 1e-8f) t = Vector3.right;
+        var a = idealDirs[0].normalized;
+        if (a.sqrMagnitude < 1e-8f) a = Vector3.right;
+        Quaternion q = Quaternion.FromToRotation(a, t);
+        var outDirs = new Vector3[idealDirs.Length];
+        for (int i = 0; i < idealDirs.Length; i++)
+            outDirs[i] = (q * idealDirs[i]).normalized;
+        return outDirs;
+    }
+
+    /// <summary>
+    /// Ring methylene (—CH₂—): two C bond directions from carbon toward neighbors (world). Returns H directions
+    /// with H—C—H ≈ 109.5°, **puckered above/below** the plane of the two ring bonds (not coplanar with it).
+    /// </summary>
+    public static void TwoHydrogenDirectionsFromBonds(Vector3 bondFromCarbonToNeighbor1World, Vector3 bondFromCarbonToNeighbor2World, out Vector3 h1World, out Vector3 h2World)
+    {
+        Vector3 u1 = bondFromCarbonToNeighbor1World.normalized;
+        Vector3 u2 = bondFromCarbonToNeighbor2World.normalized;
+
+        Vector3 ridge = Vector3.Cross(u1, u2);
+        if (ridge.sqrMagnitude < 1e-10f)
+        {
+            Vector3 refAxis = Mathf.Abs(u1.y) < 0.92f ? Vector3.up : Vector3.right;
+            ridge = Vector3.Cross(u1, refAxis);
+        }
+        ridge.Normalize();
+
+        Vector3 bisIn = (u1 + u2).normalized;
+        if (bisIn.sqrMagnitude < 1e-10f)
+            bisIn = u1;
+        Vector3 bisOut = -bisIn;
+
+        // Tetrahedral H—C—H: h± = cos(α)·bisOut ± sin(α)·ridge, cos(2α) = -⅓ → α = ½ arccos(-⅓)
+        float alpha = 0.5f * Mathf.Acos(-1f / 3f);
+        float c = Mathf.Cos(alpha);
+        float s = Mathf.Sin(alpha);
+        h1World = (c * bisOut + s * ridge).normalized;
+        h2World = (c * bisOut - s * ridge).normalized;
+    }
+
+    /// <summary>
+    /// sp³ carbon with three σ substituents already placed: approximate direction for the fourth (e.g. one H)
+    /// opposite the umbrella of the three bond vectors (from C toward neighbors, world).
+    /// </summary>
+    public static Vector3 OneHydrogenDirectionFromThreeBondsWorld(Vector3 toNeighbor1World, Vector3 toNeighbor2World, Vector3 toNeighbor3World)
+    {
+        Vector3 s = toNeighbor1World.normalized + toNeighbor2World.normalized + toNeighbor3World.normalized;
+        if (s.sqrMagnitude < 1e-10f) return Vector3.up;
+        return (-s).normalized;
+    }
+}

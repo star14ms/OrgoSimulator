@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 using System.Collections.Generic;
+using System.Text;
 
 /// <summary>
 /// Manages edit mode: selection (click atom to select, background to deselect), add-atom-to-selected,
@@ -54,17 +55,7 @@ public class EditModeManager : MonoBehaviour
     void Update()
     {
         if (Keyboard.current?.eKey.wasPressedThisFrame == true)
-        {
-            editModeActive = !editModeActive;
-            if (!editModeActive) { ClearSelectionHighlights(); selectedAtom = null; selectedOrbital = null; selectedMolecule = null; }
-        }
-        if (!editModeActive && (selectedAtom != null || selectedOrbital != null))
-        {
-            ClearSelectionHighlights();
-            selectedAtom = null;
-            selectedOrbital = null;
-            selectedMolecule = null;
-        }
+            SetEditMode(!editModeActive);
         if (Keyboard.current?.dKey.wasPressedThisFrame == true)
             eraserMode = !eraserMode;
 
@@ -92,8 +83,23 @@ public class EditModeManager : MonoBehaviour
 
     public void SetEditMode(bool on)
     {
+        if (editModeActive == on) return;
         editModeActive = on;
-        if (!on) { ClearSelectionHighlights(); selectedAtom = null; selectedOrbital = null; selectedMolecule = null; }
+        if (!on)
+        {
+            if (selectedOrbital != null) selectedOrbital.SetHighlighted(false);
+            selectedOrbital = null;
+            orbitalExplicitlySelected = false;
+            if (selectedAtom != null) selectedAtom.SetSelectionHighlight(true);
+            return;
+        }
+
+        if (selectedAtom != null)
+        {
+            selectedOrbital = selectedAtom.GetOrbitalClosestToAngle(0f);
+            orbitalExplicitlySelected = false;
+            ApplySelectionHighlights();
+        }
     }
     public void SetHAutoMode(bool on) => hAutoMode = on;
     public void SetEraserMode(bool on) => eraserMode = on;
@@ -101,6 +107,13 @@ public class EditModeManager : MonoBehaviour
     public void DestroyMolecule(HashSet<AtomFunction> atoms)
     {
         if (atoms == null) return;
+        if (selectedAtom != null && atoms.Contains(selectedAtom))
+        {
+            ClearSelectionHighlights();
+            selectedAtom = null;
+            selectedOrbital = null;
+            selectedMolecule = null;
+        }
         foreach (var a in atoms)
         {
             if (a == null) continue;
@@ -117,15 +130,48 @@ public class EditModeManager : MonoBehaviour
         }
     }
 
+    /// <summary>Remove every atom and bond in the scene (all molecules).</summary>
+    public void ClearAllMolecules()
+    {
+        ClearSelectionHighlights();
+        selectedAtom = null;
+        selectedOrbital = null;
+        selectedMolecule = null;
+
+        var atoms = Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
+        var seen = new HashSet<AtomFunction>();
+        foreach (var a in atoms)
+        {
+            if (a == null || !seen.Add(a)) continue;
+            var mol = a.GetConnectedMolecule();
+            foreach (var x in mol)
+                seen.Add(x);
+            DestroyMolecule(mol);
+        }
+    }
+
     public void OnAtomClicked(AtomFunction atom)
     {
-        if (!editModeActive) return;
+        if (atom == null) return;
+
+        if (!editModeActive)
+        {
+            if (selectedAtom == atom) return;
+            ClearSelectionHighlights();
+            selectedAtom = atom;
+            selectedMolecule = atom.GetConnectedMolecule();
+            selectedOrbital = null;
+            orbitalExplicitlySelected = false;
+            selectedAtom.SetSelectionHighlight(true);
+            return;
+        }
+
         orbitalExplicitlySelected = false;
-        var newOrb = atom != null ? atom.GetOrbitalClosestToAngle(0f) : null;
+        var newOrb = atom.GetOrbitalClosestToAngle(0f);
         if (selectedAtom == atom && selectedOrbital == newOrb) return;
         ClearSelectionHighlights();
         selectedAtom = atom;
-        selectedMolecule = atom != null ? atom.GetConnectedMolecule() : null;
+        selectedMolecule = atom.GetConnectedMolecule();
         selectedOrbital = newOrb;
         ApplySelectionHighlights();
     }
@@ -145,7 +191,6 @@ public class EditModeManager : MonoBehaviour
 
     public void OnBackgroundClicked()
     {
-        if (!editModeActive) return;
         orbitalExplicitlySelected = false;
         ClearSelectionHighlights();
         selectedAtom = null;
@@ -163,6 +208,27 @@ public class EditModeManager : MonoBehaviour
     {
         if (selectedAtom != null) selectedAtom.SetSelectionHighlight(true);
         if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
+    }
+
+    public void RepositionDeselectBackground()
+    {
+        var cam = Camera.main;
+        if (cam == null) return;
+        var bg = GameObject.Find("EditModeBackground");
+        if (bg == null) return;
+        bg.transform.position = cam.transform.position + cam.transform.forward * 15f;
+        bg.transform.rotation = cam.transform.rotation;
+    }
+
+    public void RefreshEditSelectionHighlights()
+    {
+        if (!editModeActive)
+        {
+            if (selectedAtom != null) selectedAtom.SetSelectionHighlight(true);
+            return;
+        }
+        ClearSelectionHighlights();
+        ApplySelectionHighlights();
     }
 
     public bool TryAddAtomToSelected(int atomicNumber)
@@ -266,7 +332,7 @@ public class EditModeManager : MonoBehaviour
         return true;
     }
 
-    void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB)
+    void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, bool redistributeAtomA = true, bool redistributeAtomB = true)
     {
         int merged = orbA.ElectronCount + orbB.ElectronCount;
         atomA.UnbondOrbital(orbA);
@@ -277,23 +343,49 @@ public class EditModeManager : MonoBehaviour
         {
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
-            atomA.RedistributeOrbitals();
-            Vector3 dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
-            float bondAngleFromB = Mathf.Atan2(dirBtoA.y, dirBtoA.x) * Mathf.Rad2Deg;
-            atomB.RedistributeOrbitals(piBondAngleOverride: bondAngleFromB);
+            if (redistributeAtomA)
+                atomA.RedistributeOrbitals();
+            if (redistributeAtomB)
+            {
+                Vector3 dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
+                float bondAngleFromB = Mathf.Atan2(dirBtoA.y, dirBtoA.x) * Mathf.Rad2Deg;
+                atomB.RedistributeOrbitals(piBondAngleOverride: bondAngleFromB, refBondWorldDirection: dirBtoA);
+            }
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }
     }
 
-    /// <summary>Saturate cycloalkane carbons with H facing outward. Angular spacing: 90° for C3-C5, 60° for C6.</summary>
-    public void SaturateCycloalkaneWithHydrogen(AtomFunction[] atoms, Vector3 center)
+    static bool TryPickTwoLoneOrbitalsForDirections(AtomFunction carbon, Vector3 h1World, Vector3 h2World, out ElectronOrbitalFunction orb1, out ElectronOrbitalFunction orb2)
+    {
+        orb1 = carbon.GetLoneOrbitalWithOneElectron(h1World);
+        orb2 = null;
+        if (orb1 == null) return false;
+        Vector3 d2 = h2World.sqrMagnitude > 1e-8f ? h2World.normalized : Vector3.right;
+        float bestDot = -2f;
+        foreach (var orb in carbon.GetComponentsInChildren<ElectronOrbitalFunction>())
+        {
+            if (orb.transform.parent != carbon.transform || orb.Bond != null || orb.ElectronCount != 1) continue;
+            if (orb == orb1) continue;
+            float dot = Vector3.Dot(orb.transform.TransformDirection(Vector3.right), d2);
+            if (dot > bestDot)
+            {
+                bestDot = dot;
+                orb2 = orb;
+            }
+        }
+        return orb2 != null;
+    }
+
+    /// <summary>
+    /// Saturate ring carbons to sp³ single bonds: —CH₂— gets two H (109.5° pair); a carbon that already has three σ bonds (e.g. ring + substituent) gets one H.
+    /// </summary>
+    public void SaturateCycloalkaneWithHydrogen(AtomFunction[] atoms)
     {
         if (atoms == null || atomPrefab == null || Camera.main == null) return;
         int n = atoms.Length;
         if (n < 3 || n > 6) return;
 
-        float halfAngleDeg = (n == 6) ? 30f : 45f; // 60° or 90° between the two H's
         float bondLength = GetBondLength();
 
         foreach (var atom in atoms)
@@ -301,22 +393,93 @@ public class EditModeManager : MonoBehaviour
             if (atom == null) continue;
             atom.ForceInitialize();
 
-            Vector3 outward = (atom.transform.position - center).normalized;
-            if (outward.sqrMagnitude < 0.01f) outward = Vector3.right;
+            int hNeeded = 4 - atom.CovalentBonds.Count;
+            if (hNeeded <= 0) continue;
 
-            Vector3 dir1 = Rotate2D(outward, halfAngleDeg);
-            Vector3 dir2 = Rotate2D(outward, -halfAngleDeg);
+            int idx = System.Array.IndexOf(atoms, atom);
+            Vector3 c = atom.transform.position;
+            Vector3 prev = atoms[(idx + n - 1) % n].transform.position;
+            Vector3 next = atoms[(idx + 1) % n].transform.position;
+            Vector3 toPrev = (prev - c).normalized;
+            Vector3 toNext = (next - c).normalized;
+            if (toPrev.sqrMagnitude < 1e-8f || toNext.sqrMagnitude < 1e-8f) continue;
 
-            AddHydrogenAtDirection(atom, dir1, bondLength);
-            AddHydrogenAtDirection(atom, dir2, bondLength);
+            if (hNeeded == 2)
+            {
+                VseprLayout.TwoHydrogenDirectionsFromBonds(toPrev, toNext, out Vector3 h1, out Vector3 h2);
+                if (!TryPickTwoLoneOrbitalsForDirections(atom, h1, h2, out var carbonOrb1, out var carbonOrb2))
+                    continue;
+
+                Vector3 pos1 = c + h1 * bondLength;
+                Vector3 pos2 = c + h2 * bondLength;
+
+                var hGo1 = Instantiate(atomPrefab, pos1, Quaternion.identity);
+                var hGo2 = Instantiate(atomPrefab, pos2, Quaternion.identity);
+                if (!hGo1.TryGetComponent<AtomFunction>(out var hAtom1) || !hGo2.TryGetComponent<AtomFunction>(out var hAtom2))
+                {
+                    Destroy(hGo1);
+                    Destroy(hGo2);
+                    continue;
+                }
+                hAtom1.AtomicNumber = 1;
+                hAtom2.AtomicNumber = 1;
+                hAtom1.ForceInitialize();
+                hAtom2.ForceInitialize();
+
+                var hOrb1 = hAtom1.GetLoneOrbitalWithOneElectron(-h1);
+                var hOrb2 = hAtom2.GetLoneOrbitalWithOneElectron(-h2);
+                if (hOrb1 == null || hOrb2 == null)
+                {
+                    Destroy(hGo1);
+                    Destroy(hGo2);
+                    continue;
+                }
+
+                FormSigmaBondInstant(atom, hAtom1, carbonOrb1, hOrb1, redistributeAtomA: false, redistributeAtomB: false);
+                FormSigmaBondInstant(atom, hAtom2, carbonOrb2, hOrb2, redistributeAtomA: false, redistributeAtomB: false);
+                atom.RedistributeOrbitals();
+            }
+            else if (hNeeded == 1)
+            {
+                var seen = new HashSet<AtomFunction>();
+                var dirs = new List<Vector3>();
+                foreach (var b in atom.CovalentBonds)
+                {
+                    if (b == null) continue;
+                    var other = b.AtomA == atom ? b.AtomB : b.AtomA;
+                    if (other == null || !seen.Add(other)) continue;
+                    Vector3 d = other.transform.position - c;
+                    if (d.sqrMagnitude < 1e-8f) continue;
+                    dirs.Add(d.normalized);
+                }
+                if (dirs.Count < 3) continue;
+
+                Vector3 hDir = VseprLayout.OneHydrogenDirectionFromThreeBondsWorld(dirs[0], dirs[1], dirs[2]);
+                var carbonOrb = atom.GetLoneOrbitalWithOneElectron(hDir);
+                if (carbonOrb == null) continue;
+
+                Vector3 pos = c + hDir * bondLength;
+                var hGo = Instantiate(atomPrefab, pos, Quaternion.identity);
+                if (!hGo.TryGetComponent<AtomFunction>(out var hAtom))
+                {
+                    Destroy(hGo);
+                    continue;
+                }
+                hAtom.AtomicNumber = 1;
+                hAtom.ForceInitialize();
+                var hOrb = hAtom.GetLoneOrbitalWithOneElectron(-hDir);
+                if (hOrb == null)
+                {
+                    Destroy(hGo);
+                    continue;
+                }
+
+                FormSigmaBondInstant(atom, hAtom, carbonOrb, hOrb, redistributeAtomA: false, redistributeAtomB: false);
+                atom.RedistributeOrbitals();
+            }
         }
-    }
 
-    static Vector3 Rotate2D(Vector3 v, float angleDeg)
-    {
-        float rad = angleDeg * Mathf.Deg2Rad;
-        float c = Mathf.Cos(rad), s = Mathf.Sin(rad);
-        return new Vector3(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
+        AtomFunction.SetupGlobalIgnoreCollisions();
     }
 
     void AddHydrogenAtDirection(AtomFunction atom, Vector3 dir, float bondLength)
@@ -342,8 +505,13 @@ public class EditModeManager : MonoBehaviour
         }
 
         FormSigmaBondInstant(atom, hAtom, orb, hOrb);
-        var bondAngle = atom.GetPrimaryBondDirectionAngle();
-        atom.RedistributeOrbitals(piBondAngleOverride: bondAngle);
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            atom.RedistributeOrbitals(refBondWorldDirection: dir.normalized);
+        else
+        {
+            var bondAngle = atom.GetPrimaryBondDirectionAngle();
+            atom.RedistributeOrbitals(piBondAngleOverride: bondAngle);
+        }
         AtomFunction.SetupGlobalIgnoreCollisions();
     }
 
@@ -354,11 +522,26 @@ public class EditModeManager : MonoBehaviour
         atom.ForceInitialize();
         float bondLength = GetBondLength();
 
+        int step = 0;
         var orb = atom.GetLoneOrbitalWithOneElectron(Vector3.right);
+        int pending0 = 0;
+        foreach (var o in atom.GetComponentsInChildren<ElectronOrbitalFunction>())
+        {
+            if (o == null || o.transform.parent != atom.transform || o.Bond != null || o.ElectronCount != 1) continue;
+            pending0++;
+        }
+        Debug.Log($"[H-auto] SaturateWithHydrogen start target Z={atom.AtomicNumber} use3D={OrbitalAngleUtility.UseFull3DOrbitalGeometry} lone-1e count≈{pending0} bondLength={bondLength:F3}");
+
         while (orb != null)
         {
             Vector3 dir = orb.transform.TransformDirection(Vector3.right);
-            Vector3 hPos = atom.transform.position + dir * bondLength;
+            Vector3 dirN = dir.sqrMagnitude > 1e-8f ? dir.normalized : Vector3.right;
+            Vector3 hPos = atom.transform.position + dirN * bondLength;
+
+            var sbBefore = new StringBuilder();
+            sbBefore.Append($"[H-auto] step {step} BEFORE bond: orbital→world dir={dirN} (mag={dir.magnitude:F3}) angles vs existing σ neighbors at C:");
+            LogAnglesFromDirToBondedNeighbors(atom, null, dirN, sbBefore);
+            Debug.Log(sbBefore.ToString());
 
             var hGo = Instantiate(atomPrefab, hPos, Quaternion.identity);
             if (!hGo.TryGetComponent<AtomFunction>(out var hAtom))
@@ -369,7 +552,7 @@ public class EditModeManager : MonoBehaviour
             hAtom.AtomicNumber = 1;
             hAtom.ForceInitialize();
 
-            var hOrb = hAtom.GetLoneOrbitalWithOneElectron(-dir);
+            var hOrb = hAtom.GetLoneOrbitalWithOneElectron(-dirN);
             if (hOrb == null)
             {
                 Destroy(hGo);
@@ -377,12 +560,82 @@ public class EditModeManager : MonoBehaviour
             }
 
             FormSigmaBondInstant(atom, hAtom, orb, hOrb);
-            var bondAngle = atom.GetPrimaryBondDirectionAngle();
-            atom.RedistributeOrbitals(piBondAngleOverride: bondAngle);
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+                atom.RedistributeOrbitals(refBondWorldDirection: dirN);
+            else
+            {
+                var bondAngle = atom.GetPrimaryBondDirectionAngle();
+                atom.RedistributeOrbitals(piBondAngleOverride: bondAngle);
+            }
             AtomFunction.SetupGlobalIgnoreCollisions();
 
+            Vector3 actualDir = (hAtom.transform.position - atom.transform.position).normalized;
+            var sbAfter = new StringBuilder();
+            sbAfter.Append($"[H-auto] step {step} AFTER bond + redistribute: C→H dir={actualDir} | angles X–C–H (target=C):");
+            LogAnglesFromDirToBondedNeighbors(atom, hAtom, actualDir, sbAfter);
+            Debug.Log(sbAfter.ToString());
+
+            step++;
             orb = atom.GetLoneOrbitalWithOneElectron(Vector3.right);
         }
+
+        if (step > 0)
+            DebugLogFullNeighborAngleMatrix(atom, step);
+    }
+
+    static void LogAnglesFromDirToBondedNeighbors(AtomFunction center, AtomFunction excludeNeighbor, Vector3 dirFromCenterToNewBond, StringBuilder sb)
+    {
+        int n = 0;
+        foreach (var b in center.CovalentBonds)
+        {
+            if (b == null) continue;
+            var other = b.AtomA == center ? b.AtomB : b.AtomA;
+            if (other == null || other == excludeNeighbor) continue;
+            Vector3 d = (other.transform.position - center.transform.position).normalized;
+            if (d.sqrMagnitude < 1e-8f) continue;
+            float ang = Vector3.Angle(dirFromCenterToNewBond, d);
+            string sym = AtomFunction.GetElementSymbol(other.AtomicNumber);
+            sb.Append($" ∠({sym}–C–new)={ang:F1}°");
+            n++;
+        }
+        if (n == 0) sb.Append(" (no other neighbors)");
+    }
+
+    static void DebugLogFullNeighborAngleMatrix(AtomFunction center, int hAdded)
+    {
+        var neighbors = new List<AtomFunction>();
+        foreach (var b in center.CovalentBonds)
+        {
+            if (b == null) continue;
+            var other = b.AtomA == center ? b.AtomB : b.AtomA;
+            if (other == null) continue;
+            bool dup = false;
+            foreach (var e in neighbors)
+                if (e == other) { dup = true; break; }
+            if (!dup) neighbors.Add(other);
+        }
+        var dirs = new List<Vector3>(neighbors.Count);
+        foreach (var o in neighbors)
+        {
+            Vector3 d = (o.transform.position - center.transform.position).normalized;
+            dirs.Add(d.sqrMagnitude > 1e-8f ? d : Vector3.zero);
+        }
+
+        var sb = new StringBuilder();
+        sb.Append($"[H-auto] END saturated target Z={center.AtomicNumber} added {hAdded} H | pairwise angles at C (degrees):");
+        for (int i = 0; i < neighbors.Count; i++)
+        {
+            string si = AtomFunction.GetElementSymbol(neighbors[i].AtomicNumber);
+            for (int j = i + 1; j < neighbors.Count; j++)
+            {
+                if (dirs[i].sqrMagnitude < 1e-8f || dirs[j].sqrMagnitude < 1e-8f) continue;
+                float a = Vector3.Angle(dirs[i], dirs[j]);
+                string sj = AtomFunction.GetElementSymbol(neighbors[j].AtomicNumber);
+                sb.Append($" ∠({si}–C–{sj})={a:F1}");
+            }
+        }
+        sb.Append($" | tetrahedral ref≈109.47°");
+        Debug.Log(sb.ToString());
     }
 
     float GetBondLength() => atomPrefab != null && atomPrefab.TryGetComponent<AtomFunction>(out var a) ? 1.2f * a.BondRadius : 0.96f;

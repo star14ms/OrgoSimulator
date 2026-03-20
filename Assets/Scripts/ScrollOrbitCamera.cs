@@ -8,6 +8,7 @@ using UnityEngine.UI;
 /// Orbits the camera around a focus point from mouse wheel / trackpad scroll.
 /// Uses <see cref="InputSystem.onAfterUpdate"/> so scroll is read after the Input System applies wheel deltas
 /// (early <c>Update</c> often sees zero because <c>Mouse</c> resets/applies scroll in the input update).
+/// The <see cref="MoleculeWorkPlane"/> is synced on enable and once after scroll input goes idle (not every tick).
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(Camera))]
@@ -16,12 +17,21 @@ public sealed class ScrollOrbitCamera : MonoBehaviour
     [SerializeField] Vector3 focusPoint = Vector3.zero;
     [Tooltip("Degrees applied per unit of scroll delta (mouse wheel steps are often around ±120).")]
     [SerializeField] float scrollSensitivity = 1f;
+    [Tooltip("Perspective: min/max distance along camera forward for <see cref=\"MoleculeWorkPlane\"/> after orbit (focus projected onto view axis, clamped).")]
+    [SerializeField] float moleculeWorkPlaneDepthMin = 4f;
+    [SerializeField] float moleculeWorkPlaneDepthMax = 42f;
+    [Tooltip("After orbit scroll stops, wait this long (unscaled seconds) then update the work plane once. Avoids work every scroll tick.")]
+    [SerializeField] float moleculeWorkPlaneSyncAfterScrollEndDelay = 0.15f;
 
     int _lastOrbitFrame = -1;
+    float _orbitScrollLastActivityUnscaledTime = -1f;
+    Camera _cam;
 
     void OnEnable()
     {
+        _cam = GetComponent<Camera>();
         InputSystem.onAfterUpdate += OnAfterInputUpdate;
+        SyncMoleculeWorkPlaneToView();
     }
 
     void OnDisable()
@@ -46,6 +56,25 @@ public sealed class ScrollOrbitCamera : MonoBehaviour
         transform.RotateAround(focusPoint, Vector3.up, scroll.x * s);
         transform.RotateAround(focusPoint, transform.right, -scroll.y * s);
         _lastOrbitFrame = Time.frameCount;
+        _orbitScrollLastActivityUnscaledTime = Time.unscaledTime;
+    }
+
+    void LateUpdate()
+    {
+        if (_orbitScrollLastActivityUnscaledTime < 0f) return;
+        if (Time.unscaledTime - _orbitScrollLastActivityUnscaledTime < moleculeWorkPlaneSyncAfterScrollEndDelay)
+            return;
+        _orbitScrollLastActivityUnscaledTime = -1f;
+        SyncMoleculeWorkPlaneToView();
+    }
+
+    /// <summary>Updates <see cref="MoleculeWorkPlane"/> to face <see cref="Camera.main"/> with depth from <see cref="focusPoint"/>.</summary>
+    public void SyncMoleculeWorkPlaneToView()
+    {
+        var cam = _cam != null ? _cam : GetComponent<Camera>();
+        if (cam == null || cam.orthographic) return;
+        if (MoleculeWorkPlane.Instance == null) return;
+        MoleculeWorkPlane.Instance.SyncToPerspectiveOrbit(cam, focusPoint, moleculeWorkPlaneDepthMin, moleculeWorkPlaneDepthMax);
     }
 
     /// <summary>

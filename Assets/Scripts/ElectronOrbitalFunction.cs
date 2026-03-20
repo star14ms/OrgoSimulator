@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Rendering;
@@ -18,10 +19,20 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     [SerializeField] [Range(0.08f, 0.5f)] float drag3DElectronDepthInCapFraction = 0.32f;
     [Tooltip("Draw seam → target → electron paths in Scene view while dragging a 3D orbital.")]
     [SerializeField] bool debugDraw3DElectronDrag;
-    [Tooltip("Print orbital / stretch / seam / target / electron world & local positions while dragging (Console, throttled).")]
-    [SerializeField] bool log3DElectronDragToConsole = true;
-    [SerializeField] [Range(0.05f, 0.5f)] float log3DElectronDragInterval = 0.12f;
-    float last3DElectronDragLogTime = -1000f;
+
+    /// <summary>Unity Console logs for π-bond orbital redistribution (tag <c>[π-redist]</c>). Off in non-editor release builds.</summary>
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    public static bool DebugPiOrbitalRedistribution = true;
+#else
+    public static bool DebugPiOrbitalRedistribution = false;
+#endif
+
+    public static void LogPiRedistDebug(string message)
+    {
+        if (!DebugPiOrbitalRedistribution) return;
+        Debug.Log($"[π-redist] {message}");
+    }
+
     AtomFunction bondedAtom;
     CovalentBond bond;
     bool isBeingHeld;
@@ -108,37 +119,155 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (col2D != null) col2D.enabled = !blocked;
     }
 
+    const string EditModeOrbitalGlowName = "EditModeSelectionGlow";
+    /// <summary>2D ortho: billboard ring outline, same style as <see cref="AtomFunction"/> selection.</summary>
+    GameObject orbitalSelectionHighlight2D;
+
+    static void ConfigureUnlitTransparent(Material mat)
+    {
+        if (mat == null) return;
+        if (mat.HasProperty("_Surface"))
+        {
+            mat.SetFloat("_Surface", 1f);
+            mat.SetFloat("_Blend", 0f);
+            if (mat.HasProperty("_ZWrite")) mat.SetInt("_ZWrite", 0);
+            mat.renderQueue = (int)RenderQueue.Transparent;
+            mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+        }
+        else
+        {
+            if (mat.HasProperty("_ZWrite")) mat.SetInt("_ZWrite", 0);
+            mat.renderQueue = (int)RenderQueue.Transparent;
+        }
+    }
+
     /// <summary>Highlight this orbital (e.g. when selected for bonding in edit mode).</summary>
     public void SetHighlighted(bool on)
     {
-        var sr = GetComponent<SpriteRenderer>();
-        if (sr != null)
+        if (Use3DOrbitalPresentation())
         {
-            if (on && originalColor.a == 0 && originalColor.r == 0 && originalColor.g == 0) originalColor = sr.color;
-            sr.color = on ? new Color(1f, 1f, 0.6f, originalColor.a) : originalColor;
+            if (orbitalSelectionHighlight2D != null) orbitalSelectionHighlight2D.SetActive(false);
+            SetOrbitalHighlight3D(on);
+            return;
         }
-        else
-        {
-            var mr = GetComponent<MeshRenderer>();
-            if (mr != null)
+
+        var glow3d = transform.Find(EditModeOrbitalGlowName);
+        if (glow3d != null) glow3d.gameObject.SetActive(false);
+        SetOrbitalHighlight2DRing(on);
+    }
+
+    static Sprite CreateRingOutlineSprite()
+    {
+        const int size = 32;
+        var tex = new Texture2D(size, size);
+        tex.filterMode = FilterMode.Bilinear;
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
             {
-                var mat = mr.material;
-                Color baseCol = GetMaterialTint(mat);
-                if (on && originalColor.a == 0 && originalColor.r == 0 && originalColor.g == 0) originalColor = baseCol;
-                var target = on ? new Color(1f, 1f, 0.6f, originalColor.a) : originalColor;
-                SetMaterialTint(mat, target);
+                float dx = (x - size * 0.5f) / (size * 0.5f);
+                float dy = (y - size * 0.5f) / (size * 0.5f);
+                float r = Mathf.Sqrt(dx * dx + dy * dy);
+                tex.SetPixel(x, y, r >= 0.85f && r <= 1f ? Color.white : Color.clear);
             }
-        }
-        if (on)
+        tex.Apply();
+        return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 32f);
+    }
+
+    void BillboardEditModeGlowTowardMainCamera(Transform ring)
+    {
+        var cam = Camera.main;
+        if (cam == null || ring == null) return;
+        Vector3 anchor = transform.position;
+        Vector3 toCam = cam.transform.position - anchor;
+        if (toCam.sqrMagnitude < 1e-10f) return;
+        ring.position = anchor;
+        ring.rotation = Quaternion.LookRotation(toCam, cam.transform.up) * Quaternion.Euler(0f, 180f, 0f);
+    }
+
+    /// <summary>Matches atom 2D selection: green ring outline, no body tint or scale change.</summary>
+    void SetOrbitalHighlight2DRing(bool on)
+    {
+        Color ringCol = new Color(0.3f, 0.9f, 0.4f, 0.6f);
+
+        if (!on)
         {
-            var baseScale = originalLocalScale.sqrMagnitude > 0.01f ? originalLocalScale : transform.localScale;
-            transform.localScale = baseScale * 1.2f;
+            if (orbitalSelectionHighlight2D != null) orbitalSelectionHighlight2D.SetActive(false);
+            return;
+        }
+
+        if (orbitalSelectionHighlight2D == null)
+        {
+            orbitalSelectionHighlight2D = new GameObject("SelectionHighlight");
+            orbitalSelectionHighlight2D.transform.SetParent(transform, false);
+            orbitalSelectionHighlight2D.transform.localPosition = Vector3.zero;
+            orbitalSelectionHighlight2D.transform.localRotation = Quaternion.identity;
+            var sr = orbitalSelectionHighlight2D.AddComponent<SpriteRenderer>();
+            sr.sprite = CreateRingOutlineSprite();
+            sr.color = ringCol;
+        }
+
+        var ringSr = orbitalSelectionHighlight2D.GetComponent<SpriteRenderer>();
+        if (ringSr != null)
+        {
+            ringSr.color = ringCol;
+
+            int order = 0;
+            var bodySr = GetComponent<SpriteRenderer>();
+            if (bodySr != null) order = bodySr.sortingOrder;
+            ringSr.sortingOrder = order + 1;
+        }
+
+        float mx = Mathf.Max(orbitalColliderSize.x, 0.05f);
+        float my = Mathf.Max(orbitalColliderSize.y, 0.05f);
+        orbitalSelectionHighlight2D.transform.localScale = new Vector3(mx * 1.4f, my * 1.4f, 1f);
+        orbitalSelectionHighlight2D.SetActive(true);
+    }
+
+    void SetOrbitalHighlight3D(bool on)
+    {
+        var tr = transform.Find(EditModeOrbitalGlowName);
+        if (!on)
+        {
+            if (tr != null) tr.gameObject.SetActive(false);
+            return;
+        }
+
+        if (tr != null && tr.GetComponent<SpriteRenderer>() == null)
+        {
+            Destroy(tr.gameObject);
+            tr = null;
+        }
+
+        GameObject go;
+        if (tr == null)
+        {
+            go = new GameObject(EditModeOrbitalGlowName);
+            go.transform.SetParent(transform, false);
+            go.transform.localPosition = Vector3.zero;
+            go.transform.localRotation = Quaternion.identity;
+            var sr = go.AddComponent<SpriteRenderer>();
+            sr.sprite = CreateRingOutlineSprite();
+            sr.color = new Color(0.25f, 0.98f, 0.42f, 0.92f);
+            sr.sortingOrder = 80;
+        }
+        else go = tr.gameObject;
+
+        var cap = GetComponent<CapsuleCollider>();
+        if (cap != null && cap.direction == 1)
+        {
+            float rxz = cap.radius * 2f * 1.16f;
+            float h = cap.height * 1.1f;
+            go.transform.localScale = new Vector3(rxz, h, 1f);
         }
         else
         {
-            transform.localScale = transform.localScale / 1.2f;
-            originalLocalScale = transform.localScale;
+            float u = Mathf.Max(transform.localScale.x, transform.localScale.y, transform.localScale.z);
+            float s = Mathf.Max(u * 1.18f, 0.4f);
+            go.transform.localScale = new Vector3(s, s, 1f);
         }
+
+        go.SetActive(true);
+        BillboardEditModeGlowTowardMainCamera(go.transform);
     }
 
     /// <summary>Show or hide the orbital and its electron visuals. Used when bond displays as a line.</summary>
@@ -475,7 +604,12 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         originalLocalPosition = transform.localPosition;
         originalLocalScale = transform.localScale;
         originalLocalRotation = transform.localRotation;
-        dragOffset = transform.position - PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
+        var cam = Camera.main;
+        var wp = MoleculeWorkPlane.Instance;
+        if (cam != null && wp != null && wp.TryGetWorldPoint(cam, eventData.position, out var hit))
+            dragOffset = transform.position - hit;
+        else
+            dragOffset = transform.position - PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
         mainSpriteRenderer = GetComponent<SpriteRenderer>();
         mainMeshRenderer = GetComponent<MeshRenderer>();
         if (mainSpriteRenderer != null) mainSpriteRenderer.enabled = false;
@@ -487,8 +621,22 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     public void OnDrag(PointerEventData eventData)
     {
         if (!isBeingHeld) return;
-        Vector3 tip = PlanarPointerInteraction.ScreenToWorldPoint(eventData.position) + dragOffset;
-        transform.position = tip;
+        var cam = Camera.main;
+        Vector3 tip;
+        if (cam != null && MoleculeWorkPlane.Instance != null &&
+            MoleculeWorkPlane.Instance.TryGetWorldPoint(cam, eventData.position, out var hit))
+        {
+            tip = hit + dragOffset;
+            tip = PlanarPointerInteraction.SnapWorldToWorkPlaneIfPresent(tip);
+            transform.position = tip;
+            dragOffset = transform.position - hit;
+        }
+        else
+        {
+            tip = PlanarPointerInteraction.ScreenToWorldPoint(eventData.position) + dragOffset;
+            transform.position = tip;
+        }
+
         UpdateStretchVisual(tip);
     }
 
@@ -982,6 +1130,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         int piBeforeSource = sourceAtom.GetPiBondCount();
         int piBeforeTarget = targetAtom.GetPiBondCount();
         int mergedElectrons = electronCount + targetOrbital.ElectronCount;
+        LogPiRedistDebug($"FormCovalentBondPiCoroutine start: source Z={sourceAtom.AtomicNumber} π={piBeforeSource}, target Z={targetAtom.AtomicNumber} π={piBeforeTarget}, use3D={OrbitalAngleUtility.UseFull3DOrbitalGeometry}");
 
         // Snap source orbital to original position (like sigma bond) before animating to bond center
         transform.localPosition = originalLocalPosition;
@@ -997,7 +1146,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
 
+        LogPiRedistDebug($"After CovalentBond.Create (π): source π={sourceAtom.GetPiBondCount()} target π={targetAtom.GetPiBondCount()} bonds A↔B={sourceAtom.GetBondsTo(targetAtom)}");
+
         yield return AnimateRedistributeOrbitals(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget, this, targetOrbital, bond);
+
+        LogPiRedistDebug($"After AnimateRedistributeOrbitals + TryRedistribute: source π={sourceAtom.GetPiBondCount()} target π={targetAtom.GetPiBondCount()}");
 
         if (bond != null)
         {
@@ -1023,8 +1176,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     {
         var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom);
         var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom);
-        if (redistA.Count == 0 && redistB.Count == 0)
-            TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
+        LogPiRedistDebug($"AnimateRedistribute step2: GetRedistributeTargets counts source={redistA.Count} target={redistB.Count} (use3D={OrbitalAngleUtility.UseFull3DOrbitalGeometry}). If 0/0 after π, see following per-atom lines: lone orbitals may all be bonded, so only π orbitals animate in step 2.");
 
         var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
         var redistBStarts = new List<(Vector3 pos, Quaternion rot)>();
@@ -1083,6 +1235,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 { hasRedistMovement = true; break; }
             }
         bool skipPiStep2 = sourceAtBond && targetAtBond && !hasRedistMovement;
+        LogPiRedistDebug($"AnimateRedistribute motion: skipStep2={skipPiStep2} sourceAtBond={sourceAtBond} targetAtBond={targetAtBond} hasRedistMovement={hasRedistMovement}");
 
         if (!skipPiStep2)
         for (float t = 0; t < bondAnimStep2Duration; t += Time.deltaTime)
@@ -1140,6 +1293,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 sourceOrbital.transform.rotation = sourceTargetRot;
             }
         }
+
+        // Partial lists only animate a subset of lone orbitals; the other atom can get an empty list while π count
+        // still changed. Always run full RedistributeOrbitals on both endpoints when π count changed.
+        TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
     }
 
     static (float sourceDiff, float targetDiff) ComputePiBondAngleDiffs(AtomFunction sourceAtom, AtomFunction targetAtom, Vector3 bondPos, Quaternion bondRot, CovalentBond bond)
@@ -1187,10 +1344,13 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
     static void TryRedistributeOrbitalsAfterBondChange(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget)
     {
-        if (sourceAtom != null && sourceAtom.GetPiBondCount() != piBeforeSource)
-            sourceAtom.RedistributeOrbitals();
-        if (targetAtom != null && targetAtom.GetPiBondCount() != piBeforeTarget)
-            targetAtom.RedistributeOrbitals();
+        int piSrcNow = sourceAtom != null ? sourceAtom.GetPiBondCount() : -1;
+        int piTgtNow = targetAtom != null ? targetAtom.GetPiBondCount() : -1;
+        bool redistSrc = sourceAtom != null && piSrcNow != piBeforeSource;
+        bool redistTgt = targetAtom != null && piTgtNow != piBeforeTarget;
+        LogPiRedistDebug($"TryRedistributeOrbitalsAfterBondChange: source Z={sourceAtom?.AtomicNumber} π {piBeforeSource}→{piSrcNow} → RedistributeOrbitals={(redistSrc ? "call" : "skip")}; target Z={targetAtom?.AtomicNumber} π {piBeforeTarget}→{piTgtNow} → RedistributeOrbitals={(redistTgt ? "call" : "skip")}");
+        if (redistSrc) sourceAtom.RedistributeOrbitals();
+        if (redistTgt) targetAtom.RedistributeOrbitals();
     }
 
     /// <param name="partnerOrbital">Lone pair on the partner atom (receptor direction reference).</param>
@@ -1265,15 +1425,23 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
+    public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPositionFromLocalDirection(Vector3 localDir, float bondRadius)
+    {
+        if (localDir.sqrMagnitude < 1e-8f)
+            localDir = Vector3.right;
+        localDir.Normalize();
+        float offset = bondRadius * 0.6f;
+        var pos = localDir * offset;
+        var rot = Quaternion.FromToRotation(Vector3.right, localDir);
+        return (pos, rot);
+    }
+
     public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPosition(float angleDeg, float bondRadius)
     {
         float angle = NormalizeAngle(angleDeg);
         float rad = angle * Mathf.Deg2Rad;
-        float offset = bondRadius * 0.6f;
         var dir = new Vector3(Mathf.Cos(rad), Mathf.Sin(rad), 0f);
-        var pos = dir * offset;
-        var rot = Quaternion.Euler(0, 0, angle);
-        return (pos, rot);
+        return GetCanonicalSlotPositionFromLocalDirection(dir, bondRadius);
     }
 
     public static float NormalizeAngle(float deg)
@@ -1492,30 +1660,45 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
     void Update3DElectronPositionsForStretchDrag(Vector3 tip)
     {
-        if (!TryCompute3DElectronTargetWorldForTip(tip, out var seamW, out var targetWorld)) return;
-        var local = transform.InverseTransformPoint(targetWorld);
-        foreach (var e in GetComponentsInChildren<ElectronFunction>())
-            e.transform.localPosition = local;
-
-        if (!log3DElectronDragToConsole) return;
-        if (Time.unscaledTime - last3DElectronDragLogTime < log3DElectronDragInterval) return;
-        last3DElectronDragLogTime = Time.unscaledTime;
-
+        if (!TryCompute3DElectronTargetWorldForTip(tip, out _, out var midWorld)) return;
         var hem = stretchVisual != null ? stretchVisual.transform.Find("StretchHemisphere") : null;
-        float capR = hem != null
-            ? 0.5f * Mathf.Max(hem.lossyScale.x, Mathf.Max(hem.lossyScale.y, hem.lossyScale.z))
-            : -1f;
-        var er = Approximate3DElectronSphereRadiusWorld();
-        string parentName = transform.parent != null ? transform.parent.name : "(none)";
-        Debug.Log(
-            $"[3D ElectronDrag] t={Time.unscaledTime:F2}s held={isBeingHeld}\n" +
-            $"  orbital world={transform.position} tip={tip} parent={parentName}\n" +
-            $"  stretch world={stretchVisual.transform.position} hem.up={(hem != null ? hem.up.ToString() : "?")} capR={capR:F4}\n" +
-            $"  seam world={seamW} target world={targetWorld} invLocal={local}\n" +
-            $"  approxElectronR={er:F4} (max child sphere, ×1.08)");
-        int i = 0;
-        foreach (var e in GetComponentsInChildren<ElectronFunction>())
-            Debug.Log($"  electron[{i++}] world={e.transform.position} local={e.transform.localPosition}");
+        if (hem == null) return;
+        Vector3 axisWorld = hem.up.sqrMagnitude > 1e-8f ? hem.up.normalized : Vector3.up;
+        float capRadius = 0.5f * Mathf.Max(hem.lossyScale.x, Mathf.Max(hem.lossyScale.y, hem.lossyScale.z));
+
+        var elist = GetComponentsInChildren<ElectronFunction>()
+            .Where(e => e != null)
+            .OrderBy(e => e.SlotIndex)
+            .ToArray();
+        if (elist.Length == 0) return;
+
+        if (elist.Length == 1)
+        {
+            elist[0].transform.localPosition = transform.InverseTransformPoint(midWorld);
+        }
+        else
+        {
+            // Spread pair symmetrically about the cap interior target, perpendicular to dome axis.
+            Vector3 vWorld = Vector3.Cross(axisWorld, transform.right);
+            if (vWorld.sqrMagnitude < 1e-8f)
+                vWorld = Vector3.Cross(axisWorld, transform.forward);
+            if (vWorld.sqrMagnitude < 1e-8f)
+                vWorld = Vector3.Cross(axisWorld, Vector3.up);
+            vWorld.Normalize();
+
+            float elecR = Approximate3DElectronSphereRadiusWorld();
+            float halfSep = Mathf.Max(elecR * 1.35f, capRadius * 0.2f);
+            float maxHalf = Mathf.Max(0.001f, capRadius * 0.45f - elecR * 0.55f);
+            halfSep = Mathf.Clamp(halfSep, elecR * 0.85f, maxHalf);
+
+            foreach (var e in elist)
+            {
+                float sign = elist.Length == 2 ? (e.SlotIndex == 0 ? -1f : 1f)
+                    : (e.SlotIndex % 2 == 0 ? -1f : 1f);
+                Vector3 posW = midWorld + vWorld * (halfSep * sign);
+                e.transform.localPosition = transform.InverseTransformPoint(posW);
+            }
+        }
     }
 
     void Reposition3DElectronsAfterOrbitalDrag()
@@ -1702,6 +1885,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     {
         if (Use3DOrbitalPresentation())
         {
+            var glowTr = transform.Find(EditModeOrbitalGlowName);
+            if (glowTr != null && glowTr.gameObject.activeSelf)
+                BillboardEditModeGlowTowardMainCamera(glowTr);
+
             if (debugDraw3DElectronDrag && isBeingHeld && stretchVisualIs3D && stretchVisual != null)
             {
                 var tip = transform.position;

@@ -14,20 +14,45 @@ public class AtomQuickAddUI : MonoBehaviour
     [SerializeField] float buttonSize = 36f;
     [SerializeField] float spacing = 4f;
     [SerializeField] int fontSize = 18;
+    [Tooltip("min(Screen.width,height) at which buttonSize/fontSize match the values above.")]
+    [SerializeField] float hudReferenceShortSide = 1080f;
+    [SerializeField] float hudScaleMin = 0.85f;
+    [SerializeField] float hudScaleMax = 2.75f;
+
+    float hudScale = 1f;
+    float layoutButtonSize;
+    float layoutSpacing;
+    int layoutFontSize;
 
     PeriodicTableUI periodicTable;
     EditModeManager editModeManager;
     MoleculeBuilder moleculeBuilder;
     Image eraserToggleImage;
     Image editToggleImage;
+    Image view3DToggleImage;
     static readonly Color EraserActiveColor = new Color(0.5f, 0.2f, 0.2f);
     static readonly Color EditActiveColor = new Color(0.4f, 0.7f, 1f);
+    static readonly Color View3DActiveColor = new Color(0.65f, 0.55f, 0.95f);
 
     static readonly (int z, string label)[] Row1Elements = {
         (1, "H"), (6, "C"), (7, "N"), (8, "O"), (16, "S"), (9, "F"), (17, "Cl"), (35, "Br"), (53, "I")
     };
 
     public GameObject GetAtomPrefab() => atomPrefab;
+
+    void RefreshHudLayoutMetrics()
+    {
+        float shortSide = Mathf.Min(Screen.width, Screen.height);
+        float reference = Mathf.Max(320f, hudReferenceShortSide);
+        hudScale = Mathf.Clamp(shortSide / reference, hudScaleMin, hudScaleMax);
+        layoutButtonSize = buttonSize * hudScale;
+        layoutSpacing = spacing * hudScale;
+        layoutFontSize = Mathf.Max(10, Mathf.RoundToInt(fontSize * hudScale));
+    }
+
+    float Px(float designPixels) => designPixels * hudScale;
+
+    int PxI(float designPixels) => Mathf.Max(0, Mathf.RoundToInt(designPixels * hudScale));
 
     void Update()
     {
@@ -47,6 +72,11 @@ public class AtomQuickAddUI : MonoBehaviour
                 eraserToggleImage.color = editModeManager.EraserMode ? EraserActiveColor : new Color(0.6f, 0.6f, 0.6f);
             if (editToggleImage != null)
                 editToggleImage.color = editModeManager.EditModeActive ? EditActiveColor : new Color(0.6f, 0.6f, 0.6f);
+        }
+        if (view3DToggleImage != null && Camera.main != null)
+        {
+            bool p3 = !Camera.main.orthographic;
+            view3DToggleImage.color = p3 ? View3DActiveColor : new Color(0.6f, 0.6f, 0.6f);
         }
     }
 
@@ -69,6 +99,10 @@ public class AtomQuickAddUI : MonoBehaviour
         periodicTable = GetComponent<PeriodicTableUI>();
         if (periodicTable == null)
             periodicTable = gameObject.AddComponent<PeriodicTableUI>();
+
+        RefreshHudLayoutMetrics();
+        periodicTable.SetHudLayoutScale(hudScale);
+        EnsureCameraViewModeToggle();
 
         var hudCanvas = ResolveHudCanvas();
         UiScreenSpace.EnforceOverlay(hudCanvas);
@@ -95,6 +129,14 @@ public class AtomQuickAddUI : MonoBehaviour
         return canvas;
     }
 
+    void EnsureCameraViewModeToggle()
+    {
+        var cam = Camera.main;
+        if (cam == null) return;
+        if (cam.GetComponent<CameraViewModeToggle>() == null)
+            cam.gameObject.AddComponent<CameraViewModeToggle>();
+    }
+
     void BuildDisposalZone()
     {
         var canvas = ResolveHudCanvas();
@@ -107,8 +149,9 @@ public class AtomQuickAddUI : MonoBehaviour
         rect.anchorMin = new Vector2(1, 0);
         rect.anchorMax = new Vector2(1, 0);
         rect.pivot = new Vector2(1, 0);
-        rect.anchoredPosition = new Vector2(-20, 20);
-        rect.sizeDelta = new Vector2(150, 100);
+        float inset = Px(20f);
+        rect.anchoredPosition = new Vector2(-inset, inset);
+        rect.sizeDelta = new Vector2(Px(150f), Px(100f));
 
         var image = go.AddComponent<Image>();
         image.color = new Color(0.5f, 0.2f, 0.2f, 0.8f);
@@ -120,12 +163,13 @@ public class AtomQuickAddUI : MonoBehaviour
         iconRect.anchorMax = new Vector2(0.5f, 0.5f);
         iconRect.pivot = new Vector2(0.5f, 0.5f);
         iconRect.anchoredPosition = Vector2.zero;
-        iconRect.sizeDelta = new Vector2(80, 80);
+        float iconSide = Px(80f);
+        iconRect.sizeDelta = new Vector2(iconSide, iconSide);
 
         var tmp = iconGo.AddComponent<TextMeshProUGUI>();
         tmp.font = AtomFunction.GetDefaultFont();
         tmp.text = "\u00D7"; // × (multiplication sign) as delete icon - works in standard fonts
-        tmp.fontSize = 48;
+        tmp.fontSize = PxI(48f);
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.raycastTarget = false;
         tmp.color = new Color(1f, 1f, 1f, 0.9f);
@@ -137,17 +181,68 @@ public class AtomQuickAddUI : MonoBehaviour
         labelRect.anchorMax = new Vector2(0.5f, 0.35f);
         labelRect.pivot = new Vector2(0.5f, 0.5f);
         labelRect.anchoredPosition = Vector2.zero;
-        labelRect.sizeDelta = new Vector2(140, 24);
+        labelRect.sizeDelta = new Vector2(Px(140f), Px(24f));
 
         var labelTmp = labelGo.AddComponent<TextMeshProUGUI>();
         labelTmp.font = AtomFunction.GetDefaultFont();
         labelTmp.text = "Trash";
-        labelTmp.fontSize = 14;
+        labelTmp.fontSize = Mathf.Max(8, PxI(14f));
         labelTmp.alignment = TextAlignmentOptions.Center;
         labelTmp.raycastTarget = false;
         labelTmp.color = new Color(1f, 1f, 1f, 0.9f);
 
         go.AddComponent<DisposalZone>();
+
+        BuildClearAllButton(canvas);
+    }
+
+    void BuildClearAllButton(Canvas canvas)
+    {
+        if (canvas == null || editModeManager == null) return;
+
+        float inset = Px(20f);
+        CreateClearAllButton(canvas, "ClearAll",
+            new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0f, 0f),
+            new Vector2(inset, inset),
+            new Vector2(Px(88f), Px(36f)));
+    }
+
+    void CreateClearAllButton(Canvas canvas, string objectName, Vector2 anchorMin, Vector2 anchorMax, Vector2 pivot, Vector2 anchoredPosition, Vector2 sizeDelta)
+    {
+        var go = new GameObject(objectName);
+        go.transform.SetParent(canvas.transform, false);
+        var rect = go.AddComponent<RectTransform>();
+        rect.anchorMin = anchorMin;
+        rect.anchorMax = anchorMax;
+        rect.pivot = pivot;
+        rect.anchoredPosition = anchoredPosition;
+        rect.sizeDelta = sizeDelta;
+
+        var image = go.AddComponent<Image>();
+        image.color = new Color(0.22f, 0.26f, 0.34f, 0.94f);
+
+        var btn = go.AddComponent<Button>();
+        var colors = btn.colors;
+        colors.highlightedColor = Color.Lerp(image.color, Color.white, 0.18f);
+        colors.pressedColor = Color.Lerp(image.color, new Color(0.9f, 0.55f, 0.45f), 0.35f);
+        btn.colors = colors;
+        btn.onClick.AddListener(() => editModeManager.ClearAllMolecules());
+
+        var labelGo = new GameObject("Label");
+        labelGo.transform.SetParent(go.transform, false);
+        var labelRect = labelGo.AddComponent<RectTransform>();
+        labelRect.anchorMin = Vector2.zero;
+        labelRect.anchorMax = Vector2.one;
+        labelRect.offsetMin = Vector2.zero;
+        labelRect.offsetMax = Vector2.zero;
+
+        var tmp = labelGo.AddComponent<TextMeshProUGUI>();
+        tmp.font = AtomFunction.GetDefaultFont();
+        tmp.text = "Clear all";
+        tmp.fontSize = Mathf.Max(12, layoutFontSize - 5);
+        tmp.alignment = TextAlignmentOptions.Center;
+        tmp.raycastTarget = false;
+        tmp.color = new Color(0.95f, 0.95f, 0.98f, 1f);
     }
 
     void BuildToolbar()
@@ -163,11 +258,12 @@ public class AtomQuickAddUI : MonoBehaviour
         toolbarRect.anchorMax = new Vector2(1, 1);
         toolbarRect.pivot = new Vector2(0.5f, 1);
         toolbarRect.anchoredPosition = new Vector2(0, 0);
-        toolbarRect.sizeDelta = new Vector2(0, 100);
+        toolbarRect.sizeDelta = new Vector2(0, Px(100f));
 
         var vLayout = toolbar.AddComponent<VerticalLayoutGroup>();
-        vLayout.spacing = spacing;
-        vLayout.padding = new RectOffset(10, 10, 10, 10);
+        vLayout.spacing = layoutSpacing;
+        int pad = PxI(10f);
+        vLayout.padding = new RectOffset(pad, pad, pad, pad);
         vLayout.childAlignment = TextAnchor.UpperLeft;
         vLayout.childControlWidth = true;
         vLayout.childControlHeight = true;
@@ -192,17 +288,26 @@ public class AtomQuickAddUI : MonoBehaviour
         rect.anchorMin = new Vector2(1, 1);
         rect.anchorMax = new Vector2(1, 1);
         rect.pivot = new Vector2(1, 1);
-        rect.anchoredPosition = new Vector2(-10, -10);
-        rect.sizeDelta = new Vector2(400, buttonSize + 10);
+        rect.anchoredPosition = new Vector2(-Px(10f), -Px(10f));
+        rect.sizeDelta = new Vector2(Px(520f), layoutButtonSize + Px(10f));
 
         var hLayout = panel.AddComponent<HorizontalLayoutGroup>();
-        hLayout.spacing = spacing;
+        hLayout.spacing = layoutSpacing;
         hLayout.childAlignment = TextAnchor.MiddleRight;
         hLayout.childControlWidth = false;
         hLayout.childControlHeight = false;
         hLayout.childForceExpandWidth = false;
         hLayout.childForceExpandHeight = false;
         hLayout.padding = new RectOffset(0, 0, 0, 0);
+
+        // Off = SampleScene-style 2D; on = Main3D-style camera (see CameraViewModeToggle).
+        var viewToggle = CreateToggle("Main 3D", Camera.main != null && !Camera.main.orthographic, on =>
+        {
+            var vt = Camera.main != null ? Camera.main.GetComponent<CameraViewModeToggle>() : null;
+            if (vt != null) vt.SetPerspective3D(on);
+        }, View3DActiveColor);
+        viewToggle.transform.SetParent(panel.transform, false);
+        view3DToggleImage = viewToggle.GetComponent<Image>();
 
         var hAutoToggle = CreateToggle("H-auto", editModeManager != null && editModeManager.HAutoMode, on =>
         {
@@ -232,7 +337,7 @@ public class AtomQuickAddUI : MonoBehaviour
 
         var go = new GameObject($"Toggle_{label}");
         var rect = go.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(120, buttonSize);
+        rect.sizeDelta = new Vector2(Px(120f), layoutButtonSize);
 
         var image = go.AddComponent<Image>();
         image.color = isOn ? active : inactive;
@@ -257,7 +362,7 @@ public class AtomQuickAddUI : MonoBehaviour
         var tmp = labelGo.AddComponent<TextMeshProUGUI>();
         tmp.font = AtomFunction.GetDefaultFont();
         tmp.text = label;
-        tmp.fontSize = fontSize - 2;
+        tmp.fontSize = Mathf.Max(8, layoutFontSize - 2);
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.raycastTarget = false;
 
@@ -268,10 +373,10 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var row = new GameObject("Row1");
         var rect = row.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(800, buttonSize);
+        rect.sizeDelta = new Vector2(Px(800f), layoutButtonSize);
 
         var hLayout = row.AddComponent<HorizontalLayoutGroup>();
-        hLayout.spacing = spacing;
+        hLayout.spacing = layoutSpacing;
         hLayout.childAlignment = TextAnchor.MiddleLeft;
         hLayout.childControlWidth = false;
         hLayout.childControlHeight = false;
@@ -294,10 +399,10 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var row = new GameObject("Row2");
         var rect = row.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(520, buttonSize);
+        rect.sizeDelta = new Vector2(Px(520f), layoutButtonSize);
 
         var hLayout = row.AddComponent<HorizontalLayoutGroup>();
-        hLayout.spacing = spacing;
+        hLayout.spacing = layoutSpacing;
         hLayout.childAlignment = TextAnchor.MiddleLeft;
         hLayout.childControlWidth = false;
         hLayout.childControlHeight = false;
@@ -322,7 +427,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var container = new GameObject("CycloalkanesDropdown");
         var containerRect = container.AddComponent<RectTransform>();
-        containerRect.sizeDelta = new Vector2(140, buttonSize);
+        containerRect.sizeDelta = new Vector2(Px(140f), layoutButtonSize);
 
         var mainBtn = new GameObject("CycloalkanesButton");
         mainBtn.transform.SetParent(container.transform, false);
@@ -349,7 +454,7 @@ public class AtomQuickAddUI : MonoBehaviour
         var tmp = labelGo.AddComponent<TextMeshProUGUI>();
         tmp.font = AtomFunction.GetDefaultFont();
         tmp.text = "Cycloalkanes \u25BC";
-        tmp.fontSize = fontSize - 2;
+        tmp.fontSize = Mathf.Max(8, layoutFontSize - 2);
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.raycastTarget = false;
         tmp.color = Color.white;
@@ -361,14 +466,15 @@ public class AtomQuickAddUI : MonoBehaviour
         panelRect.anchorMax = new Vector2(1, 0);
         panelRect.pivot = new Vector2(0.5f, 1);
         panelRect.anchoredPosition = new Vector2(0, 0); // Top of panel at bottom of button, no gap
-        panelRect.sizeDelta = new Vector2(0, buttonSize * 4 + spacing * 3);
+        panelRect.sizeDelta = new Vector2(0, layoutButtonSize * 4f + layoutSpacing * 3f);
 
         var panelImage = cycloDropdownPanel.AddComponent<Image>();
         panelImage.color = new Color(0.5f, 0.5f, 0.55f);
 
         var vLayout = cycloDropdownPanel.AddComponent<VerticalLayoutGroup>();
-        vLayout.spacing = 2;
-        vLayout.padding = new RectOffset(4, 4, 4, 4);
+        vLayout.spacing = Mathf.Max(1, PxI(2f));
+        int dPad = PxI(4f);
+        vLayout.padding = new RectOffset(dPad, dPad, dPad, dPad);
         vLayout.childAlignment = TextAnchor.UpperCenter;
         vLayout.childControlWidth = true;
         vLayout.childControlHeight = false;
@@ -397,7 +503,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var go = new GameObject($"Item_{label}");
         var rect = go.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(0, buttonSize - 4);
+        rect.sizeDelta = new Vector2(0, layoutButtonSize - Px(4f));
 
         var image = go.AddComponent<Image>();
         image.color = new Color(0.55f, 0.55f, 0.6f);
@@ -422,7 +528,7 @@ public class AtomQuickAddUI : MonoBehaviour
         var tmp = labelGo.AddComponent<TextMeshProUGUI>();
         tmp.font = AtomFunction.GetDefaultFont();
         tmp.text = label;
-        tmp.fontSize = fontSize - 2;
+        tmp.fontSize = Mathf.Max(8, layoutFontSize - 2);
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.raycastTarget = false;
         tmp.color = Color.white;
@@ -434,7 +540,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var go = new GameObject($"Btn_{label}");
         var rect = go.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(buttonSize, buttonSize);
+        rect.sizeDelta = new Vector2(layoutButtonSize, layoutButtonSize);
 
         var image = go.AddComponent<Image>();
         image.color = PeriodicTableUI.GetElementColorStatic(atomicNumber);
@@ -459,7 +565,7 @@ public class AtomQuickAddUI : MonoBehaviour
         var tmp = labelGo.AddComponent<TextMeshProUGUI>();
         tmp.font = AtomFunction.GetDefaultFont();
         tmp.text = label;
-        tmp.fontSize = fontSize;
+        tmp.fontSize = layoutFontSize;
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.raycastTarget = false;
 
@@ -470,7 +576,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var go = new GameObject("Btn_More");
         var rect = go.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(buttonSize * 1.5f, buttonSize);
+        rect.sizeDelta = new Vector2(layoutButtonSize * 1.5f, layoutButtonSize);
 
         var image = go.AddComponent<Image>();
         image.color = new Color(0.6f, 0.6f, 0.7f);
@@ -489,7 +595,7 @@ public class AtomQuickAddUI : MonoBehaviour
         var tmp = labelGo.AddComponent<TextMeshProUGUI>();
         tmp.font = AtomFunction.GetDefaultFont();
         tmp.text = "More";
-        tmp.fontSize = fontSize;
+        tmp.fontSize = layoutFontSize;
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.raycastTarget = false;
 
@@ -500,7 +606,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var go = new GameObject("Btn_Benzene");
         var rect = go.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(100, buttonSize);
+        rect.sizeDelta = new Vector2(Px(100f), layoutButtonSize);
 
         var image = go.AddComponent<Image>();
         image.color = new Color(0.97f, 0.82f, 0.45f);
@@ -519,7 +625,7 @@ public class AtomQuickAddUI : MonoBehaviour
         var tmp = labelGo.AddComponent<TextMeshProUGUI>();
         tmp.font = AtomFunction.GetDefaultFont();
         tmp.text = "Benzene";
-        tmp.fontSize = fontSize - 2;
+        tmp.fontSize = Mathf.Max(8, layoutFontSize - 2);
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.raycastTarget = false;
 
@@ -530,7 +636,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var go = new GameObject("Btn_ElectronTest");
         var rect = go.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(92, buttonSize);
+        rect.sizeDelta = new Vector2(layoutButtonSize, layoutButtonSize);
 
         var image = go.AddComponent<Image>();
         image.color = new Color(0.35f, 0.42f, 0.55f);
@@ -551,7 +657,7 @@ public class AtomQuickAddUI : MonoBehaviour
         // LiberationSans SDF has no U+207B (superscript minus); use rich-text sup + ASCII hyphen.
         tmp.richText = true;
         tmp.text = "e<sup>-</sup>";
-        tmp.fontSize = fontSize - 2;
+        tmp.fontSize = Mathf.Max(8, layoutFontSize - 2);
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.raycastTarget = false;
 
@@ -577,7 +683,11 @@ public class AtomQuickAddUI : MonoBehaviour
     void OnCycloalkaneClicked(int ringSize)
     {
         if (moleculeBuilder != null)
-            moleculeBuilder.CreateCycloalkane(ringSize);
+        {
+            var k = Keyboard.current;
+            bool attachToSelection = k != null && (k.leftShiftKey.isPressed || k.rightShiftKey.isPressed);
+            moleculeBuilder.CreateCycloalkane(ringSize, attachToSelectedOrbital: attachToSelection);
+        }
     }
 
     void OnBenzeneClicked()
@@ -598,7 +708,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         if (atomPrefab == null || Camera.main == null) return;
 
-        Vector3 pos = GetRandomPositionInView();
+        Vector3 pos = PlanarPointerInteraction.SnapWorldToWorkPlaneIfPresent(GetRandomPositionInView());
         var atomObj = Instantiate(atomPrefab, pos, Quaternion.identity);
         if (atomObj.TryGetComponent<AtomFunction>(out var atom))
         {

@@ -7,10 +7,8 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
 {
     [SerializeField] float orbitalWidth = 0.5f; // Fallback; overridden by SetOrbitalWidth from parent orbital
     [SerializeField] float electron3DSphereRadius = 0.16f;
-    [Tooltip("3D idle (pair only): nudge along orbital local +Y so spheres sit under the translucent shell; lone electron stays centered (no bias).")]
-    [SerializeField] float electron3DIdleLocalYBias = 0.08f;
-    [Tooltip("3D idle: ±X separation when this orbital holds two electrons.")]
-    [SerializeField] float electron3DIdlePairSeparation = 0.06f;
+    [Tooltip("3D idle (pair): offset from orbital center along local ±Y (perpendicular to bond axis +X), same convention as 2D width.")]
+    [SerializeField] float electron3DIdlePairHalfSpacing = 0.11f;
 
     int slotIndex;
     static Mesh cachedElectronSphereMesh;
@@ -27,6 +25,8 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
     Vector3 dragOffset;
 
     public void SetSlotIndex(int index) => slotIndex = index;
+
+    public int SlotIndex => slotIndex;
 
     public bool IsElectronPointerDragActive => isBeingHeld;
 
@@ -57,11 +57,15 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
     void OnEnable()
     {
         if (!isActiveAndEnabled) return;
-        if (!Use3DElectronPresentation()) return;
-        var mr = GetComponent<MeshRenderer>();
-        var mf = GetComponent<MeshFilter>();
-        if (mr != null && (mr.sharedMaterial == null || (mf != null && mf.sharedMesh == null)))
-            Refresh3DVisualAndCollider();
+        if (Use3DElectronPresentation())
+        {
+            var mr = GetComponent<MeshRenderer>();
+            var mf = GetComponent<MeshFilter>();
+            if (mr != null && (mr.sharedMaterial == null || (mf != null && mf.sharedMesh == null)))
+                Refresh3DVisualAndCollider();
+        }
+        else
+            Apply2DElectronVisualIfNeeded();
     }
 
     IEnumerator Deferred3DSetup()
@@ -79,8 +83,18 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
     {
         if (Use3DElectronPresentation())
             Setup3DElectronVisualIfNeeded();
+        else
+            Apply2DElectronVisualIfNeeded();
         EnsureCollider();
         UpdatePosition();
+    }
+
+    /// <summary>Orthographic mode keeps the sprite; tint to match 3D (prefab is often white).</summary>
+    void Apply2DElectronVisualIfNeeded()
+    {
+        var sr = GetComponent<SpriteRenderer>();
+        if (sr == null) return;
+        sr.color = Electron3DVisualColor;
     }
 
     static bool Use3DElectronPresentation() =>
@@ -250,8 +264,9 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
             int n = orb != null ? orb.ElectronCount : 1;
             if (n >= 2)
             {
-                float x = (slotIndex == 0 ? -1f : 1f) * electron3DIdlePairSeparation;
-                transform.localPosition = new Vector3(x, electron3DIdleLocalYBias, 0f);
+                float half = Mathf.Max(electron3DIdlePairHalfSpacing, electron3DSphereRadius * 0.9f);
+                float pairLocalY = (slotIndex == 0 ? -1f : 1f) * half;
+                transform.localPosition = new Vector3(0f, pairLocalY, 0f);
             }
             else
                 transform.localPosition = Vector3.zero;

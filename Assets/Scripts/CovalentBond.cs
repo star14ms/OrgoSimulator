@@ -318,6 +318,31 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         lineVisual.AddComponent<BondLineColliderForwarder>();
     }
 
+    /// <summary>Switch cylinder vs sprite bond when toggling orthographic / perspective camera.</summary>
+    public void RefreshLineVisualForCameraMode()
+    {
+        bool wantCylinder = Camera.main != null && !Camera.main.orthographic;
+        if (wantCylinder == useCylinderBondVisual && lineVisual != null)
+        {
+            UpdateBondTransformToCurrentAtoms();
+            PositionBondTransform();
+            return;
+        }
+
+        if (lineVisual != null)
+            Destroy(lineVisual);
+
+        lineVisual = null;
+        lineRenderer = null;
+        cylinderRenderer = null;
+        lineCollider = null;
+        lineCollider3D = null;
+
+        CreateLineVisual();
+        PositionBondTransform();
+        ApplyDisplayMode();
+    }
+
     static Sprite GetOrCreateLineSprite()
     {
         if (lineSprite != null) return lineSprite;
@@ -512,10 +537,12 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         int piBeforeB = atomB != null ? atomB.GetPiBondCount() : 0;
         float? piBondAngleFromA = null;
         float? piBondAngleFromB = null;
+        Vector3 dirAtoB = Vector3.zero;
+        Vector3 dirBtoA = Vector3.zero;
         if (atomA != null && atomB != null)
         {
-            var dirAtoB = (atomB.transform.position - atomA.transform.position).normalized;
-            var dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
+            dirAtoB = (atomB.transform.position - atomA.transform.position).normalized;
+            dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
             if (dirAtoB.sqrMagnitude >= 0.01f)
                 piBondAngleFromA = OrbitalAngleUtility.DirectionToAngleWorld(dirAtoB);
             if (dirBtoA.sqrMagnitude >= 0.01f)
@@ -568,10 +595,12 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         // Redistribute when pi count changed, when atom has pi bonds and got a new lone orbital,
         // when breaking a sigma bond (pi before/after both 0), or when orbital angular distances are inconsistent.
         // Important: redistribute even when pi count is unchanged, if angular distance is not consistent.
+        Vector3? refWorldA = dirAtoB.sqrMagnitude >= 0.01f ? dirAtoB : (Vector3?)null;
+        Vector3? refWorldB = dirBtoA.sqrMagnitude >= 0.01f ? dirBtoA : (Vector3?)null;
         if (atomA != null && (piAfterA != piBeforeA || (piAfterA > 0 && piAfterA == piBeforeA) || (piAfterA == 0 && piBeforeA == 0) || atomA.HasInconsistentOrbitalAngles()))
-            atomA.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null);
+            atomA.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null);
         if (atomB != null && (piAfterB != piBeforeB || (piAfterB > 0 && piAfterB == piBeforeB) || (piAfterB == 0 && piBeforeB == 0) || atomB.HasInconsistentOrbitalAngles()))
-            atomB.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null);
+            atomB.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null);
 
         orbital = null;
         Destroy(gameObject);

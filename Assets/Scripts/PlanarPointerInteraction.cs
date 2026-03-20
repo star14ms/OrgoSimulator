@@ -5,6 +5,16 @@ using UnityEngine;
 /// </summary>
 public static class PlanarPointerInteraction
 {
+    /// <summary>Orthogonal projection of <paramref name="world"/> onto <see cref="MoleculeWorkPlane"/> if present; otherwise unchanged.</summary>
+    public static Vector3 SnapWorldToWorkPlaneIfPresent(Vector3 world)
+    {
+        var wp = MoleculeWorkPlane.Instance;
+        if (wp == null) return world;
+        Vector3 n = wp.WorldPlaneNormal;
+        Vector3 p0 = wp.WorldPlanePoint;
+        return world - n * Vector3.Dot(world - p0, n);
+    }
+
     public static Vector3 ScreenToWorldPoint(Vector2 screenPosition)
     {
         var cam = Camera.main;
@@ -27,15 +37,12 @@ public static class PlanarPointerInteraction
         if (cam == null)
             return Vector3.zero;
 
-        if (MoleculeWorkPlane.Instance != null &&
-            MoleculeWorkPlane.Instance.TryViewportToPlane(cam, new Vector3(min, min, 0f), out var wMin) &&
-            MoleculeWorkPlane.Instance.TryViewportToPlane(cam, new Vector3(max, max, 0f), out var wMax))
+        if (MoleculeWorkPlane.Instance != null)
         {
-            float x0 = Mathf.Min(wMin.x, wMax.x);
-            float x1 = Mathf.Max(wMin.x, wMax.x);
-            float y0 = Mathf.Min(wMin.y, wMax.y);
-            float y1 = Mathf.Max(wMin.y, wMax.y);
-            return new Vector3(Random.Range(x0, x1), Random.Range(y0, y1), wMin.z);
+            float u = Random.Range(min, max);
+            float v = Random.Range(min, max);
+            if (MoleculeWorkPlane.Instance.TryViewportToPlane(cam, new Vector3(u, v, 0f), out var world))
+                return world;
         }
 
         Vector3 minWorld = cam.ViewportToWorldPoint(new Vector3(min, min, -cam.transform.position.z));

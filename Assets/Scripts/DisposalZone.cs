@@ -29,6 +29,10 @@ public class DisposalZone : MonoBehaviour
     public void DestroyMolecule(System.Collections.Generic.HashSet<AtomFunction> atoms)
     {
         if (atoms == null) return;
+        var edit = Object.FindFirstObjectByType<EditModeManager>();
+        if (edit != null && edit.SelectedAtom != null && atoms.Contains(edit.SelectedAtom))
+            edit.OnBackgroundClicked();
+
         foreach (var a in atoms)
         {
             if (a == null) continue;

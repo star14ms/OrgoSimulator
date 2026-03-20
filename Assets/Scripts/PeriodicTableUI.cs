@@ -17,6 +17,24 @@ public class PeriodicTableUI : MonoBehaviour
     [SerializeField] float blockPadding = 10f;
     [SerializeField] int fontSize = 20;
 
+    float hudLayoutScale = 1f;
+    float layoutCellSize;
+    float layoutSpacing;
+    int layoutBlockPadding;
+    int layoutFontSize;
+
+    /// <summary>Match toolbar scaling from AtomQuickAddUI (1 = design resolution).</summary>
+    public void SetHudLayoutScale(float scale) =>
+        hudLayoutScale = Mathf.Clamp(scale, 0.5f, 3f);
+
+    void RefreshTableLayoutMetrics()
+    {
+        layoutCellSize = cellSize * hudLayoutScale;
+        layoutSpacing = spacing * hudLayoutScale;
+        layoutBlockPadding = Mathf.Max(4, Mathf.RoundToInt(blockPadding * hudLayoutScale));
+        layoutFontSize = Mathf.Max(8, Mathf.RoundToInt(fontSize * hudLayoutScale));
+    }
+
     GameObject panel;
     GameObject content;
     const int Cols = 18;
@@ -41,6 +59,8 @@ public class PeriodicTableUI : MonoBehaviour
         var canvas = FindFirstObjectByType<Canvas>();
         if (canvas == null) return;
         UiScreenSpace.EnforceOverlay(canvas);
+
+        RefreshTableLayoutMetrics();
 
         panel = new GameObject("PeriodicTablePanel");
         panel.transform.SetParent(canvas.transform, false);
@@ -93,9 +113,10 @@ public class PeriodicTableUI : MonoBehaviour
         scrollView.content = contentRect;
 
         var grid = content.AddComponent<GridLayoutGroup>();
-        grid.cellSize = new Vector2(cellSize, cellSize);
-        grid.spacing = new Vector2(spacing, spacing);
-        grid.padding = new RectOffset((int)blockPadding, (int)blockPadding, (int)blockPadding, (int)blockPadding);
+        grid.cellSize = new Vector2(layoutCellSize, layoutCellSize);
+        grid.spacing = new Vector2(layoutSpacing, layoutSpacing);
+        int pad = layoutBlockPadding;
+        grid.padding = new RectOffset(pad, pad, pad, pad);
         grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
         grid.constraintCount = Cols;
         grid.childAlignment = TextAnchor.UpperLeft;
@@ -119,7 +140,7 @@ public class PeriodicTableUI : MonoBehaviour
         {
             var spacer = new GameObject("Spacer");
             var rect = spacer.AddComponent<RectTransform>();
-            rect.sizeDelta = new Vector2(cellSize, cellSize);
+            rect.sizeDelta = new Vector2(layoutCellSize, layoutCellSize);
             var img = spacer.AddComponent<Image>();
             img.color = Color.clear;
             img.raycastTarget = true;
@@ -398,7 +419,7 @@ public class PeriodicTableUI : MonoBehaviour
     {
         var go = new GameObject($"Element_{atomicNumber}");
         var rect = go.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(cellSize, cellSize);
+        rect.sizeDelta = new Vector2(layoutCellSize, layoutCellSize);
 
         var image = go.AddComponent<Image>();
         image.color = bgColor;
@@ -423,7 +444,7 @@ public class PeriodicTableUI : MonoBehaviour
         var tmp = labelGo.AddComponent<TextMeshProUGUI>();
         tmp.font = AtomFunction.GetDefaultFont();
         tmp.text = AtomFunction.GetElementSymbol(atomicNumber);
-        tmp.fontSize = fontSize;
+        tmp.fontSize = layoutFontSize;
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.raycastTarget = false;
 
@@ -447,7 +468,7 @@ public class PeriodicTableUI : MonoBehaviour
                 return;
         }
 
-        Vector3 pos = GetRandomPositionInView();
+        Vector3 pos = PlanarPointerInteraction.SnapWorldToWorkPlaneIfPresent(GetRandomPositionInView());
         var atomObj = Instantiate(atomPrefab, pos, Quaternion.identity);
         if (atomObj.TryGetComponent<AtomFunction>(out var atom))
         {

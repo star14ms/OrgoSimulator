@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.Rendering;
 using System.Collections.Generic;
 using System.Linq;
 using TMPro;
@@ -16,6 +17,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     bool isBeingHeld;
     Vector3 dragOffset;
+    Vector3 atomDragPlanePoint;
+    Vector3 atomDragPlaneNormal;
+    bool atomDragPlaneValid;
     HashSet<AtomFunction> moleculeAtoms;
     Transform elementLabelTransform;
 
@@ -206,13 +210,16 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         bondedOrbitals.Remove(orbital);
     }
 
-    /// <summary>Returns true if orbital angles are not evenly spaced (angular distance inconsistent). Used to decide when redistribution is needed after bond break.</summary>
+    /// <summary>Returns true if orbitals are not on ideal VSEPR directions (3D) or evenly spaced in the XY plane (2D).</summary>
     public bool HasInconsistentOrbitalAngles()
     {
         int slotCount = GetOrbitalSlotCount();
         if (slotCount <= 1) return false;
 
         float tolerance = 360f / (2f * slotCount);
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            return HasInconsistentOrbitalDirections3D(tolerance);
+
         var angles = CollectUniqueOrbitalAngles(tolerance);
         if (angles.Count <= 1) return false;
 
@@ -228,9 +235,33 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return false;
     }
 
-    /// <summary>Redistributes non-pi orbital angles when pi bond count has changed. Call after bond formation/breakage. piBondAngleOverride used when pi count dropped to 0 (e.g. after breaking a double bond).</summary>
-    public void RedistributeOrbitals(float? piBondAngleOverride = null)
+    bool HasInconsistentOrbitalDirections3D(float toleranceDeg)
     {
+        var dirs = CollectUniqueOrbitalDirections(toleranceDeg);
+        if (dirs.Count <= 1) return false;
+
+        Vector3 refLocal = ResolveReferenceBondDirectionLocal(null, null);
+        var idealRaw = VseprLayout.GetIdealLocalDirections(dirs.Count);
+        var idealAligned = VseprLayout.AlignFirstDirectionTo(idealRaw, refLocal);
+        foreach (var d in dirs)
+        {
+            float minAng = 360f;
+            foreach (var id in idealAligned)
+                minAng = Mathf.Min(minAng, Vector3.Angle(d, id));
+            if (minAng > toleranceDeg) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Redistributes orbital directions when pi count or bonding changed. In 3D (perspective), uses VSEPR (linear … octahedral). <paramref name="refBondWorldDirection"/> overrides reference axis when set (e.g. bond break).</summary>
+    public void RedistributeOrbitals(float? piBondAngleOverride = null, Vector3? refBondWorldDirection = null)
+    {
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            RedistributeOrbitals3D(piBondAngleOverride, refBondWorldDirection);
+            return;
+        }
+
         int slotCount = GetOrbitalSlotCount();
         if (slotCount <= 1) return;
 
@@ -315,12 +346,309 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
     }
 
+    /// <summary>World σ axes toward bonded partners, in local space, merged within tolerance.</summary>
+    List<Vector3> CollectSigmaBondAxesLocalMerged(float toleranceDeg)
+    {
+        var bondAxes = new List<Vector3>();
+        foreach (var b in covalentBonds)
+        {
+            if (b?.AtomA == null || b?.AtomB == null) continue;
+            var other = b.AtomA == this ? b.AtomB : b.AtomA;
+            var w = (other.transform.position - transform.position).normalized;
+            if (w.sqrMagnitude < 0.01f) continue;
+            bondAxes.Add(transform.InverseTransformDirection(w).normalized);
+        }
+        return MergeDirectionsWithinTolerance(bondAxes, toleranceDeg);
+    }
+
+    /// <summary>
+    /// σ bonds claim vertices of the ideal VSEPR polyhedron; lone orbitals are matched only to the remaining directions.
+    /// (Mixing σ bond axes into the lone-orbital “old” pool broke stepwise H-auto methane tetrahedral layout.)
+    /// </summary>
+    bool TryMatchLoneOrbitalsToFreeIdealDirections(
+        Vector3 refLocal,
+        int slotCount,
+        List<Vector3> bondAxesMerged,
+        List<ElectronOrbitalFunction> loneOrbitals,
+        List<Vector3> newDirsAligned,
+        out List<(Vector3 oldDir, Vector3 newDir)> mapping)
+    {
+        mapping = null;
+        var oldLone = new List<Vector3>(loneOrbitals.Count);
+        foreach (var o in loneOrbitals)
+            oldLone.Add(OrbitalTipLocalDirection(o));
+
+        if (refLocal.sqrMagnitude < 1e-8f) refLocal = Vector3.right;
+
+        bool[] idealUsed = new bool[slotCount];
+        var bondOrder = new List<Vector3>(bondAxesMerged);
+        bondOrder.Sort((a, b) =>
+            Vector3.Dot(b.normalized, refLocal.normalized).CompareTo(Vector3.Dot(a.normalized, refLocal.normalized)));
+
+        foreach (var bd in bondOrder)
+        {
+            int bestI = -1;
+            float bestDot = -2f;
+            for (int i = 0; i < slotCount; i++)
+            {
+                if (idealUsed[i]) continue;
+                float d = Vector3.Dot(bd.normalized, newDirsAligned[i].normalized);
+                if (d > bestDot)
+                {
+                    bestDot = d;
+                    bestI = i;
+                }
+            }
+            if (bestI >= 0) idealUsed[bestI] = true;
+        }
+
+        var free = new List<Vector3>();
+        for (int i = 0; i < slotCount; i++)
+        {
+            if (!idealUsed[i])
+                free.Add(newDirsAligned[i]);
+        }
+
+        if (free.Count != oldLone.Count)
+            return false;
+
+        mapping = FindBestDirectionMapping(oldLone, free);
+        return mapping != null;
+    }
+
+    /// <summary>
+    /// VSEPR vertex count from current σ directions (one per neighbor) plus lone lobes, clamped to [2, max valence].
+    /// Prevents forcing tetrahedral (4) on sp²-like centers (e.g. C with one σ+π partner + two lone → 3 domains).
+    /// </summary>
+    int GetVseprSlotCount3D(int mergedSigmaAxisCount, int loneOrbitalCount)
+    {
+        int maxSlots = GetOrbitalSlotCount();
+        int domains = mergedSigmaAxisCount + loneOrbitalCount;
+        domains = Mathf.Max(domains, 2);
+        return Mathf.Min(domains, maxSlots);
+    }
+
+    void RedistributeOrbitals3D(float? piBondAngleOverride, Vector3? refBondWorldDirection)
+    {
+        int maxSlots = GetOrbitalSlotCount();
+        if (maxSlots <= 1) return;
+
+        float mergeToleranceDeg = 360f / (2f * maxSlots);
+        Vector3 refLocal = ResolveReferenceBondDirectionLocal(piBondAngleOverride, refBondWorldDirection);
+
+        var loneOrbitals = bondedOrbitals.Where(orb => orb != null && orb.Bond == null).ToList();
+        if (loneOrbitals.Count == 0) return;
+
+        var bondAxes = CollectSigmaBondAxesLocalMerged(mergeToleranceDeg);
+        int slotCount = GetVseprSlotCount3D(bondAxes.Count, loneOrbitals.Count);
+
+        var idealRaw = VseprLayout.GetIdealLocalDirections(slotCount);
+        var newDirs = new List<Vector3>(VseprLayout.AlignFirstDirectionTo(idealRaw, refLocal));
+
+        float matchToleranceDeg = 360f / (2f * slotCount);
+        if (!TryMatchLoneOrbitalsToFreeIdealDirections(refLocal, slotCount, bondAxes, loneOrbitals, newDirs, out var bestMapping) ||
+            bestMapping == null)
+            return;
+
+        var moved = new HashSet<ElectronOrbitalFunction>();
+        foreach (var (oldDir, newDir) in bestMapping)
+        {
+            var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(newDir, bondRadius);
+            foreach (var orb in loneOrbitals)
+            {
+                if (moved.Contains(orb)) continue;
+                Vector3 oDir = OrbitalTipLocalDirection(orb);
+                if (DirectionsWithinTolerance(oDir, oldDir, matchToleranceDeg))
+                {
+                    orb.transform.localPosition = pos;
+                    orb.transform.localRotation = rot;
+                    moved.Add(orb);
+                    break;
+                }
+            }
+        }
+    }
+
+    Vector3 ResolveReferenceBondDirectionLocal(float? piBondAngleOverride, Vector3? refBondWorldDirection)
+    {
+        foreach (var b in covalentBonds)
+        {
+            if (b?.AtomA == null || b?.AtomB == null) continue;
+            var other = b.AtomA == this ? b.AtomB : b.AtomA;
+            if (GetBondsTo(other) <= 1) continue;
+            var w = (other.transform.position - transform.position).normalized;
+            if (w.sqrMagnitude >= 0.01f)
+                return transform.InverseTransformDirection(w).normalized;
+        }
+        if (refBondWorldDirection.HasValue)
+        {
+            var w = refBondWorldDirection.Value;
+            if (w.sqrMagnitude >= 0.01f)
+                return transform.InverseTransformDirection(w.normalized).normalized;
+        }
+        if (piBondAngleOverride.HasValue)
+        {
+            float a = NormalizeAngleTo360(piBondAngleOverride.Value) * Mathf.Deg2Rad;
+            var worldXy = new Vector3(Mathf.Cos(a), Mathf.Sin(a), 0f);
+            return transform.InverseTransformDirection(worldXy).normalized;
+        }
+        if (covalentBonds.Count > 0)
+        {
+            var b = covalentBonds.FirstOrDefault(x => x?.AtomA != null && x?.AtomB != null);
+            if (b != null)
+            {
+                var other = b.AtomA == this ? b.AtomB : b.AtomA;
+                var w = (other.transform.position - transform.position).normalized;
+                if (w.sqrMagnitude >= 0.01f)
+                    return transform.InverseTransformDirection(w).normalized;
+            }
+        }
+        return Vector3.right;
+    }
+
+    Vector3 RedistributeReferenceDirectionLocalForTargets(AtomFunction newBondPartner)
+    {
+        foreach (var b in covalentBonds)
+        {
+            if (b?.AtomA == null || b?.AtomB == null) continue;
+            var other = b.AtomA == this ? b.AtomB : b.AtomA;
+            if (GetBondsTo(other) <= 1) continue;
+            var w = (other.transform.position - transform.position).normalized;
+            if (w.sqrMagnitude >= 0.01f)
+                return transform.InverseTransformDirection(w).normalized;
+        }
+        if (newBondPartner != null)
+        {
+            var w = (newBondPartner.transform.position - transform.position).normalized;
+            if (w.sqrMagnitude >= 0.01f)
+                return transform.InverseTransformDirection(w).normalized;
+        }
+        if (covalentBonds.Count > 0)
+        {
+            var b = covalentBonds.FirstOrDefault(x => x?.AtomA != null && x?.AtomB != null);
+            if (b != null)
+            {
+                var other = b.AtomA == this ? b.AtomB : b.AtomA;
+                var w = (other.transform.position - transform.position).normalized;
+                if (w.sqrMagnitude >= 0.01f)
+                    return transform.InverseTransformDirection(w).normalized;
+            }
+        }
+        return Vector3.right;
+    }
+
+    static Vector3 OrbitalTipLocalDirection(ElectronOrbitalFunction orb) =>
+        (orb.transform.localRotation * Vector3.right).normalized;
+
+    List<Vector3> CollectUniqueOrbitalDirections(float toleranceDeg)
+    {
+        var bondDirs = new List<Vector3>();
+        foreach (var b in covalentBonds)
+        {
+            if (b?.AtomA == null || b?.AtomB == null) continue;
+            var other = b.AtomA == this ? b.AtomB : b.AtomA;
+            var w = (other.transform.position - transform.position).normalized;
+            if (w.sqrMagnitude < 0.01f) continue;
+            bondDirs.Add(transform.InverseTransformDirection(w).normalized);
+        }
+        var mergedBond = MergeDirectionsWithinTolerance(bondDirs, toleranceDeg);
+
+        var loneDirs = new List<Vector3>();
+        foreach (var orb in bondedOrbitals)
+        {
+            if (orb == null || orb.Bond != null || orb.transform.parent != transform) continue;
+            loneDirs.Add(OrbitalTipLocalDirection(orb));
+        }
+        var result = new List<Vector3>(mergedBond);
+        result.AddRange(loneDirs);
+        return result;
+    }
+
+    static List<Vector3> MergeDirectionsWithinTolerance(List<Vector3> dirs, float toleranceDeg)
+    {
+        if (dirs.Count == 0) return new List<Vector3>();
+        var used = new bool[dirs.Count];
+        var result = new List<Vector3>();
+        for (int i = 0; i < dirs.Count; i++)
+        {
+            if (used[i]) continue;
+            Vector3 acc = dirs[i].normalized;
+            int count = 1;
+            used[i] = true;
+            for (int j = i + 1; j < dirs.Count; j++)
+            {
+                if (used[j]) continue;
+                if (Vector3.Angle(acc, dirs[j]) <= toleranceDeg)
+                {
+                    acc += dirs[j].normalized;
+                    count++;
+                    used[j] = true;
+                }
+            }
+            result.Add((acc / count).normalized);
+        }
+        return result;
+    }
+
+    static int FindClosestDirectionIndex(List<Vector3> dirs, Vector3 target, float _)
+    {
+        target = target.normalized;
+        int best = 0;
+        float bestAng = 360f;
+        for (int i = 0; i < dirs.Count; i++)
+        {
+            float ang = Vector3.Angle(dirs[i], target);
+            if (ang < bestAng)
+            {
+                bestAng = ang;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    static List<(Vector3 oldDir, Vector3 newDir)> FindBestDirectionMapping(List<Vector3> oldDirs, List<Vector3> newDirs)
+    {
+        if (oldDirs.Count != newDirs.Count || oldDirs.Count == 0) return null;
+        var indices = Enumerable.Range(0, newDirs.Count).ToArray();
+        List<(Vector3, Vector3)> bestMapping = null;
+        float bestTotal = float.MaxValue;
+
+        foreach (var perm in Permutations(indices))
+        {
+            float total = 0f;
+            for (int i = 0; i < oldDirs.Count; i++)
+                total += Vector3.Angle(oldDirs[i], newDirs[perm[i]]);
+            if (total < bestTotal)
+            {
+                bestTotal = total;
+                bestMapping = new List<(Vector3, Vector3)>();
+                for (int i = 0; i < oldDirs.Count; i++)
+                    bestMapping.Add((oldDirs[i], newDirs[perm[i]]));
+            }
+        }
+        return bestMapping;
+    }
+
+    static bool DirectionsWithinTolerance(Vector3 a, Vector3 b, float tolDeg) =>
+        Vector3.Angle(a, b) <= tolDeg;
+
+    void LogPiRedistEmptyTargets3D(int piBefore, string reason)
+    {
+        if (!ElectronOrbitalFunction.DebugPiOrbitalRedistribution) return;
+        if (GetPiBondCount() == piBefore) return;
+        ElectronOrbitalFunction.LogPiRedistDebug($"GetRedistributeTargets3D Z={atomicNumber} (id={GetInstanceID()}): 0 tween targets — {reason}");
+    }
+
     /// <summary>Returns (orbital, targetLocalPos, targetLocalRot) for orbitals that would move during RedistributeOrbitals. Empty if pi count unchanged. For sigma bonds, pass newBondPartner to redistribute when bonding to an orbital that was already rotated.</summary>
     public List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> GetRedistributeTargets(int piBefore, AtomFunction newBondPartner = null)
     {
         var result = new List<(ElectronOrbitalFunction, Vector3, Quaternion)>();
         bool piCountChanged = GetPiBondCount() != piBefore;
         if (!piCountChanged && newBondPartner == null) return result;
+
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            return GetRedistributeTargets3D(piBefore, newBondPartner);
 
         int slotCount = GetOrbitalSlotCount();
         if (slotCount <= 1) return result;
@@ -389,6 +717,58 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 if (moved.Contains(orb)) continue;
                 float orbAngle = OrbitalAngleUtility.GetOrbitalAngleWorld(orb.transform);
                 if (AnglesWithinTolerance(orbAngle, oldAngle, tolerance))
+                {
+                    result.Add((orb, pos, rot));
+                    moved.Add(orb);
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> GetRedistributeTargets3D(int piBefore, AtomFunction newBondPartner)
+    {
+        var result = new List<(ElectronOrbitalFunction, Vector3, Quaternion)>();
+        int maxSlots = GetOrbitalSlotCount();
+        if (maxSlots <= 1)
+        {
+            LogPiRedistEmptyTargets3D(piBefore, "slotCount≤1 (nothing to tween)");
+            return result;
+        }
+
+        float mergeToleranceDeg = 360f / (2f * maxSlots);
+        Vector3 refLocal = RedistributeReferenceDirectionLocalForTargets(newBondPartner);
+
+        var loneOrbitals = bondedOrbitals.Where(orb => orb != null && orb.Bond == null).ToList();
+        if (loneOrbitals.Count == 0)
+        {
+            LogPiRedistEmptyTargets3D(piBefore, "no lone orbitals (every child orbital is in a bond; step-2 only tweens Bond==null)");
+            return result;
+        }
+
+        var bondAxes = CollectSigmaBondAxesLocalMerged(mergeToleranceDeg);
+        int slotCount = GetVseprSlotCount3D(bondAxes.Count, loneOrbitals.Count);
+
+        var idealRaw = VseprLayout.GetIdealLocalDirections(slotCount);
+        var newDirs = new List<Vector3>(VseprLayout.AlignFirstDirectionTo(idealRaw, refLocal));
+
+        float matchToleranceDeg = 360f / (2f * slotCount);
+        if (!TryMatchLoneOrbitalsToFreeIdealDirections(refLocal, slotCount, bondAxes, loneOrbitals, newDirs, out var bestMapping) ||
+            bestMapping == null)
+        {
+            LogPiRedistEmptyTargets3D(piBefore, $"VSEPR TryMatch failed (lone={loneOrbitals.Count}, vseprSlots={slotCount}, maxSlots={maxSlots}, merged σ axes={bondAxes.Count})");
+            return result;
+        }
+
+        var moved = new HashSet<ElectronOrbitalFunction>();
+        foreach (var (oldDir, newDir) in bestMapping)
+        {
+            var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(newDir, bondRadius);
+            foreach (var orb in loneOrbitals)
+            {
+                if (moved.Contains(orb)) continue;
+                if (DirectionsWithinTolerance(OrbitalTipLocalDirection(orb), oldDir, matchToleranceDeg))
                 {
                     result.Add((orb, pos, rot));
                     moved.Add(orb);
@@ -542,6 +922,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public (Vector3 position, Quaternion rotation) GetSlotForNewOrbital(Vector3 preferredDirectionWorld, ElectronOrbitalFunction excludeOrbital = null)
     {
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            return GetSlotForNewOrbital3D(preferredDirectionWorld, excludeOrbital);
+
         Vector3 localDir = transform.InverseTransformDirection(preferredDirectionWorld);
         localDir.z = 0;
         if (localDir.sqrMagnitude < 0.01f) localDir = Vector3.right;
@@ -581,6 +964,43 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             }
         }
         return ElectronOrbitalFunction.GetCanonicalSlotPosition(bestAngle, bondRadius);
+    }
+
+    (Vector3 position, Quaternion rotation) GetSlotForNewOrbital3D(Vector3 preferredDirectionWorld, ElectronOrbitalFunction excludeOrbital)
+    {
+        Vector3 prefLocal = transform.InverseTransformDirection(preferredDirectionWorld);
+        if (prefLocal.sqrMagnitude < 1e-6f) prefLocal = Vector3.right;
+        prefLocal.Normalize();
+
+        int slotCount = GetOrbitalSlotCount();
+        float slotToleranceDeg = 360f / (2f * Mathf.Max(1, slotCount));
+        var slots = VseprLayout.GetIdealLocalDirections(slotCount);
+
+        float bestDot = -2f;
+        Vector3 bestDir = slots[0];
+        foreach (var slot in slots)
+        {
+            bool occupied = false;
+            foreach (var orb in GetComponentsInChildren<ElectronOrbitalFunction>())
+            {
+                if (orb.transform.parent != transform || orb == excludeOrbital || orb == null) continue;
+                if (Vector3.Angle(OrbitalTipLocalDirection(orb), slot) < slotToleranceDeg)
+                {
+                    occupied = true;
+                    break;
+                }
+            }
+            if (!occupied)
+            {
+                float dot = Vector3.Dot(prefLocal, slot);
+                if (dot > bestDot)
+                {
+                    bestDot = dot;
+                    bestDir = slot;
+                }
+            }
+        }
+        return ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(bestDir, bondRadius);
     }
 
     public ElectronOrbitalFunction GetEmptyLoneOrbital()
@@ -706,9 +1126,19 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     GameObject selectionHighlight;
+    GameObject selectionHighlight3D;
 
     public void SetSelectionHighlight(bool on)
     {
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            SetSelectionHighlight3D(on);
+            if (selectionHighlight != null) selectionHighlight.SetActive(false);
+            return;
+        }
+
+        if (selectionHighlight3D != null) selectionHighlight3D.SetActive(false);
+
         if (on)
         {
             if (selectionHighlight == null)
@@ -729,6 +1159,106 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         {
             selectionHighlight.SetActive(false);
         }
+    }
+
+    void SetSelectionHighlight3D(bool on)
+    {
+        if (!on)
+        {
+            if (selectionHighlight3D != null) selectionHighlight3D.SetActive(false);
+            return;
+        }
+
+        if (selectionHighlight3D != null && selectionHighlight3D.GetComponent<SpriteRenderer>() == null)
+        {
+            Destroy(selectionHighlight3D);
+            selectionHighlight3D = null;
+        }
+
+        if (selectionHighlight3D == null)
+        {
+            selectionHighlight3D = new GameObject("SelectionHighlight3D");
+            selectionHighlight3D.transform.SetParent(transform, false);
+            selectionHighlight3D.transform.localPosition = Vector3.zero;
+            selectionHighlight3D.transform.localRotation = Quaternion.identity;
+            selectionHighlight3D.transform.localScale = Vector3.one;
+            var sr = selectionHighlight3D.AddComponent<SpriteRenderer>();
+            sr.sprite = CreateCircleSprite();
+            sr.color = new Color(0.25f, 0.98f, 0.42f, 0.92f);
+            sr.sortingOrder = 80;
+        }
+
+        float rWorld = GetAtomBodyRadiusWorld();
+        float parentMag = Mathf.Max(
+            Mathf.Abs(transform.lossyScale.x),
+            Mathf.Abs(transform.lossyScale.y),
+            Mathf.Abs(transform.lossyScale.z));
+        parentMag = Mathf.Max(parentMag, 1e-4f);
+        float diameterWorld = 2f * rWorld * 1.18f;
+        float childUniform = diameterWorld / parentMag;
+        selectionHighlight3D.transform.localScale = Vector3.one * childUniform;
+        selectionHighlight3D.SetActive(true);
+        BillboardSelectionRingTowardMainCamera(selectionHighlight3D.transform, transform.position);
+    }
+
+    static void BillboardSelectionRingTowardMainCamera(Transform ring, Vector3 worldAnchor)
+    {
+        var cam = Camera.main;
+        if (cam == null || ring == null) return;
+        Vector3 toCam = cam.transform.position - worldAnchor;
+        if (toCam.sqrMagnitude < 1e-10f) return;
+        ring.position = worldAnchor;
+        ring.rotation = Quaternion.LookRotation(toCam, cam.transform.up) * Quaternion.Euler(0f, 180f, 0f);
+    }
+
+    static bool TryScreenRayIntersectPlane(Camera cam, Vector2 screen, Vector3 planeNormal, Vector3 planePoint, out Vector3 hit)
+    {
+        hit = default;
+        if (cam == null) return false;
+        var ray = cam.ScreenPointToRay(screen);
+        var plane = new Plane(planeNormal.normalized, planePoint);
+        if (!plane.Raycast(ray, out float t)) return false;
+        hit = ray.GetPoint(t);
+        return true;
+    }
+
+    /// <summary>Project <paramref name="point"/> onto the plane (camera-facing “depth” sheet) through <paramref name="planePoint"/>.</summary>
+    static Vector3 ProjectPointOntoViewDepthPlane(Vector3 point, Vector3 planePoint, Vector3 viewForward)
+    {
+        Vector3 n = viewForward.normalized;
+        return point - n * Vector3.Dot(point - planePoint, n);
+    }
+
+    void SnapMoleculeToViewDepthPlane(Camera cam, Vector3 planeAnchor)
+    {
+        if (moleculeAtoms == null || cam == null) return;
+        Vector3 n = cam.transform.forward;
+        foreach (var a in moleculeAtoms)
+        {
+            if (a == null) continue;
+            a.transform.position = ProjectPointOntoViewDepthPlane(a.transform.position, planeAnchor, n);
+        }
+    }
+
+    static void ProjectMoleculeOntoPlane(HashSet<AtomFunction> atoms, Vector3 planePoint, Vector3 planeNormal)
+    {
+        if (atoms == null) return;
+        Vector3 n = planeNormal.sqrMagnitude > 1e-10f ? planeNormal.normalized : Vector3.forward;
+        foreach (var a in atoms)
+        {
+            if (a == null) continue;
+            a.transform.position = ProjectPointOntoViewDepthPlane(a.transform.position, planePoint, n);
+        }
+    }
+
+    void SnapMoleculeAfterDragStep(Camera cam)
+    {
+        if (moleculeAtoms == null || cam == null) return;
+        var wp = MoleculeWorkPlane.Instance;
+        if (wp != null)
+            ProjectMoleculeOntoPlane(moleculeAtoms, wp.WorldPlanePoint, wp.WorldPlaneNormal);
+        else
+            SnapMoleculeToViewDepthPlane(cam, transform.position);
     }
 
     static Sprite CreateCircleSprite()
@@ -900,6 +1430,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     void LateUpdate()
     {
+        if (selectionHighlight3D != null && selectionHighlight3D.activeSelf)
+            BillboardSelectionRingTowardMainCamera(selectionHighlight3D.transform, transform.position);
+
         if (elementLabelTransform == null)
             elementLabelTransform = transform.Find("ElementLabel");
         if (elementLabelTransform == null) return;
@@ -937,27 +1470,95 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         isBeingHeld = true;
-        dragOffset = transform.position - PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
         moleculeAtoms = GetConnectedMolecule();
 
-        if (editMode != null && editMode.EditModeActive)
+        var cam = Camera.main;
+        var wp = MoleculeWorkPlane.Instance;
+        // Lone atom: project onto sheet / view depth. Bonded: preserve 3D geometry — only translate the whole molecule
+        // rigidly so the grabbed atom lies on the work plane (partners are not individually projected).
+        if (cam != null && moleculeAtoms != null)
+        {
+            if (moleculeAtoms.Count == 1)
+            {
+                if (wp != null)
+                    ProjectMoleculeOntoPlane(moleculeAtoms, wp.WorldPlanePoint, wp.WorldPlaneNormal);
+                else
+                    SnapMoleculeToViewDepthPlane(cam, transform.position);
+            }
+            else if (wp != null)
+            {
+                Vector3 n = wp.WorldPlaneNormal.sqrMagnitude > 1e-10f ? wp.WorldPlaneNormal.normalized : Vector3.forward;
+                Vector3 projectedLead = ProjectPointOntoViewDepthPlane(transform.position, wp.WorldPlanePoint, n);
+                Vector3 rigid = projectedLead - transform.position;
+                if (rigid.sqrMagnitude > 1e-12f)
+                {
+                    foreach (var a in moleculeAtoms)
+                        if (a != null) a.transform.position += rigid;
+                }
+            }
+        }
+
+        atomDragPlaneValid = false;
+        if (cam != null && wp != null && wp.TryGetWorldPoint(cam, eventData.position, out var workHit))
+        {
+            atomDragPlaneNormal = wp.WorldPlaneNormal;
+            atomDragPlanePoint = wp.WorldPlanePoint;
+            atomDragPlaneValid = true;
+            dragOffset = transform.position - workHit;
+        }
+        else if (cam != null && TryScreenRayIntersectPlane(cam, eventData.position, cam.transform.forward, transform.position, out var planeHit))
+        {
+            atomDragPlaneNormal = cam.transform.forward;
+            atomDragPlanePoint = transform.position;
+            atomDragPlaneValid = true;
+            dragOffset = transform.position - planeHit;
+        }
+        else
+        {
+            dragOffset = transform.position - PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
+        }
+
+        if (editMode != null)
             editMode.OnAtomClicked(this);
     }
 
     public void OnDrag(PointerEventData eventData)
     {
         if (!isBeingHeld) return;
-        var newPos = PlanarPointerInteraction.ScreenToWorldPoint(eventData.position) + dragOffset;
+
+        Vector3 newPos;
+        var cam = Camera.main;
+        var wp = MoleculeWorkPlane.Instance;
+        Vector3 hit = default;
+        bool haveHit = false;
+        if (cam != null && wp != null && wp.TryGetWorldPoint(cam, eventData.position, out hit))
+            haveHit = true;
+        else if (atomDragPlaneValid && cam != null &&
+                 TryScreenRayIntersectPlane(cam, eventData.position, atomDragPlaneNormal, atomDragPlanePoint, out hit))
+            haveHit = true;
+
+        if (haveHit)
+            newPos = hit + dragOffset;
+        else
+            newPos = PlanarPointerInteraction.ScreenToWorldPoint(eventData.position) + dragOffset;
+
         var delta = newPos - transform.position;
+        // Move grabbed atom first; rest of molecule follows by the same rigid offset (preserves relative layout).
         transform.position = newPos;
         if (moleculeAtoms != null)
         {
             foreach (var a in moleculeAtoms)
             {
-                if (a != this)
+                if (a != this && a != null)
                     a.transform.position += delta;
             }
+            // Only flatten a single atom onto the plane each step; bonded molecules stay rigid (same translation only).
+            if (Camera.main != null && moleculeAtoms.Count == 1)
+                SnapMoleculeAfterDragStep(Camera.main);
         }
+
+        if (haveHit)
+            dragOffset = transform.position - hit;
     }
 
     public HashSet<AtomFunction> GetConnectedMolecule()
@@ -992,6 +1593,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             }
         }
         isBeingHeld = false;
+        atomDragPlaneValid = false;
     }
 
     bool initialized;
@@ -1169,18 +1771,36 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             remaining -= add;
         }
 
-        for (int i = 0; i < orbitalCount; i++)
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
         {
-            var orbital = Instantiate(orbitalPrefab, transform);
-            float angleDeg = angles[i];
-            float rad = angleDeg * Mathf.Deg2Rad;
-            Vector3 dir = new Vector3(Mathf.Cos(rad), Mathf.Sin(rad), 0f);
-            orbital.transform.localPosition = dir * offset;
-            orbital.transform.localScale = Vector3.one * 0.6f;
-            orbital.transform.localRotation = Quaternion.Euler(0, 0, angleDeg);
-            orbital.ElectronCount = electronsPerOrbital[i];
-            orbital.SetBondedAtom(this);
-            BondOrbital(orbital);
+            var dirs = VseprLayout.GetIdealLocalDirections(orbitalCount);
+            for (int i = 0; i < orbitalCount; i++)
+            {
+                var orbital = Instantiate(orbitalPrefab, transform);
+                var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(dirs[i], bondRadius);
+                orbital.transform.localPosition = pos;
+                orbital.transform.localScale = Vector3.one * 0.6f;
+                orbital.transform.localRotation = rot;
+                orbital.ElectronCount = electronsPerOrbital[i];
+                orbital.SetBondedAtom(this);
+                BondOrbital(orbital);
+            }
+        }
+        else
+        {
+            for (int i = 0; i < orbitalCount; i++)
+            {
+                var orbital = Instantiate(orbitalPrefab, transform);
+                float angleDeg = angles[i];
+                float rad = angleDeg * Mathf.Deg2Rad;
+                Vector3 dir = new Vector3(Mathf.Cos(rad), Mathf.Sin(rad), 0f);
+                orbital.transform.localPosition = dir * offset;
+                orbital.transform.localScale = Vector3.one * 0.6f;
+                orbital.transform.localRotation = Quaternion.Euler(0, 0, angleDeg);
+                orbital.ElectronCount = electronsPerOrbital[i];
+                orbital.SetBondedAtom(this);
+                BondOrbital(orbital);
+            }
         }
         SetupIgnoreCollisions();
     }
