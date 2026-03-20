@@ -1,4 +1,19 @@
+using System.Collections.Generic;
 using UnityEngine;
+
+/// <summary>Edit-mode toolbar functional groups: attach to a free orbital or replace selected hydrogen.</summary>
+public enum FunctionalGroupKind
+{
+    AmineNH2,
+    Hydroxyl,
+    Methoxy,
+    Aldehyde,
+    Carboxyl,
+    Sulfo,
+    Nitrile,
+    Nitro,
+    PhosphateDihydrogen
+}
 
 /// <summary>
 /// Creates preset molecules: cycloalkanes (C3-C6), benzene. Uses programmatic bond formation.
@@ -394,6 +409,378 @@ public class MoleculeBuilder : MonoBehaviour
             atomB.RefreshCharge();
             ElectronOrbitalFunction.LogPiRedistDebug($"FormPiBondInstant done: Z={atomA.AtomicNumber} π={atomA.GetPiBondCount()} Z={atomB.AtomicNumber} π={atomB.GetPiBondCount()} (redistributed={(redistributeEndpoints ? "per-atom" : "deferred")})");
         }
+    }
+
+    /// <summary>Second π between the same pair (σ + π already present) for approximate triple bonds.</summary>
+    void FormSecondPiBondInstant(AtomFunction atomA, AtomFunction atomB, bool redistributeEndpoints = true)
+    {
+        if (atomA == null || atomB == null) return;
+        if (atomA.GetBondsTo(atomB) != 2) return;
+
+        var dirAtoB = (atomB.transform.position - atomA.transform.position).normalized;
+        var dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
+
+        var orbA = atomA.GetLoneOrbitalWithOneElectron(dirAtoB);
+        var orbB = atomB.GetLoneOrbitalWithOneElectron(dirBtoA);
+        if (orbA == null || orbB == null) return;
+
+        int merged = orbA.ElectronCount + orbB.ElectronCount;
+        atomA.UnbondOrbital(orbA);
+        atomB.UnbondOrbital(orbB);
+
+        var bond = CovalentBond.Create(atomA, atomB, orbA, atomA, animateOrbitalToBond: false);
+        if (bond != null)
+        {
+            orbA.ElectronCount = merged;
+            Destroy(orbB.gameObject);
+            if (redistributeEndpoints)
+            {
+                atomA.RedistributeOrbitals();
+                atomB.RedistributeOrbitals();
+            }
+            atomA.RefreshCharge();
+            atomB.RefreshCharge();
+        }
+    }
+
+    AtomFunction SpawnAtomElement(int z, Vector3 pos)
+    {
+        var go = Instantiate(atomPrefab, pos, Quaternion.identity);
+        if (!go.TryGetComponent<AtomFunction>(out var a))
+        {
+            Destroy(go);
+            return null;
+        }
+        a.AtomicNumber = z;
+        a.ForceInitialize();
+        return a;
+    }
+
+    bool BondSigmaNoRedist(AtomFunction a, AtomFunction b)
+    {
+        Vector3 dAB = (b.transform.position - a.transform.position).normalized;
+        Vector3 dBA = -dAB;
+        var oa = a.GetLoneOrbitalForBondFormation(dAB);
+        var ob = b.GetLoneOrbitalWithOneElectron(dBA);
+        if (oa == null || ob == null) return false;
+        FormSigmaBondInstant(a, b, oa, ob, false);
+        return true;
+    }
+
+    /// <param name="refBondWorldForRedist">If set, orients lone orbitals after σ bond (matches <see cref="EditModeManager.AddHydrogenAtDirection"/>).</param>
+    bool TryBondHydrogen(AtomFunction heavy, Vector3 dirHeavyToH, Vector3? refBondWorldForRedist = null)
+    {
+        if (heavy == null || dirHeavyToH.sqrMagnitude < 1e-10f) return false;
+        dirHeavyToH.Normalize();
+        float L = GetBondLength();
+        var ho = heavy.GetLoneOrbitalWithOneElectron(dirHeavyToH);
+        if (ho == null) return false;
+        var h = SpawnAtomElement(1, heavy.transform.position + dirHeavyToH * L);
+        if (h == null) return false;
+        var hOrb = h.GetLoneOrbitalWithOneElectron(-dirHeavyToH);
+        if (hOrb == null)
+        {
+            Destroy(h.gameObject);
+            return false;
+        }
+        FormSigmaBondInstant(heavy, h, ho, hOrb, false);
+        if (refBondWorldForRedist.HasValue)
+        {
+            Vector3 refd = refBondWorldForRedist.Value.normalized;
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+                heavy.RedistributeOrbitals(refBondWorldDirection: refd);
+            else
+                heavy.RedistributeOrbitals(piBondAngleOverride: Mathf.Atan2(refd.y, refd.x) * Mathf.Rad2Deg);
+        }
+        return true;
+    }
+
+    /// <summary>One H on a center that already has one σ to a heavy neighbor (e.g. alcohol O): bent ~109°, not colinear with that bond.</summary>
+    bool TryBondHydrogenBent(AtomFunction center, Vector3 dirCenterToHeavyNeighbor)
+    {
+        if (center == null || dirCenterToHeavyNeighbor.sqrMagnitude < 1e-10f) return false;
+        Vector3 u1 = dirCenterToHeavyNeighbor.normalized;
+        GetAttachBasis(u1, out var perp, out _);
+        Vector3 hd1, hd2;
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            VseprLayout.TwoHydrogenDirectionsFromBonds(u1, perp, out hd1, out hd2);
+        else
+            VseprLayout.TwoHydrogenDirectionsFromBondsPlanarXY(u1, perp, out hd1, out hd2);
+        return TryBondHydrogen(center, hd1, refBondWorldForRedist: hd1);
+    }
+
+    static void GetAttachBasis(Vector3 dirParentToAnchor, out Vector3 right, out Vector3 up)
+    {
+        Vector3 f = dirParentToAnchor.normalized;
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            f.z = 0f;
+            if (f.sqrMagnitude < 1e-8f) f = Vector3.right;
+            else f.Normalize();
+            right = new Vector3(-f.y, f.x, 0f);
+            if (right.sqrMagnitude < 1e-8f) right = Vector3.up;
+            else right.Normalize();
+            up = Vector3.forward;
+            return;
+        }
+        Vector3 refAxis = Mathf.Abs(Vector3.Dot(f, Vector3.up)) < 0.95f ? Vector3.up : Vector3.right;
+        right = Vector3.Cross(refAxis, f).normalized;
+        up = Vector3.Cross(f, right).normalized;
+    }
+
+    /// <summary>First atom of the group is placed at <paramref name="anchorWorldPos"/> and σ-bonded to <paramref name="parent"/>.</summary>
+    public bool BuildFunctionalGroup(FunctionalGroupKind kind, AtomFunction parent, Vector3 anchorWorldPos, EditModeManager edit, out AtomFunction selectionAnchor)
+    {
+        selectionAnchor = null;
+        if (parent == null || atomPrefab == null) return false;
+
+        Vector3 dirOut = anchorWorldPos - parent.transform.position;
+        if (dirOut.sqrMagnitude < 1e-10f) return false;
+        dirOut.Normalize();
+
+        int z0 = kind switch
+        {
+            FunctionalGroupKind.AmineNH2 => 7,
+            FunctionalGroupKind.Hydroxyl => 8,
+            FunctionalGroupKind.Methoxy => 8,
+            FunctionalGroupKind.Aldehyde => 6,
+            FunctionalGroupKind.Carboxyl => 6,
+            FunctionalGroupKind.Sulfo => 16,
+            FunctionalGroupKind.Nitrile => 6,
+            FunctionalGroupKind.Nitro => 7,
+            FunctionalGroupKind.PhosphateDihydrogen => 15,
+            _ => 6
+        };
+
+        var anchor = SpawnAtomElement(z0, anchorWorldPos);
+        if (anchor == null) return false;
+        if (!BondSigmaNoRedist(parent, anchor))
+        {
+            Destroy(anchor.gameObject);
+            return false;
+        }
+
+        selectionAnchor = anchor;
+        float L = GetBondLength();
+        var touched = new List<AtomFunction> { parent, anchor };
+        GetAttachBasis(dirOut, out var right, out var up);
+
+        bool ok = true;
+        switch (kind)
+        {
+            case FunctionalGroupKind.AmineNH2:
+            {
+                Vector3 u1 = (parent.transform.position - anchor.transform.position).normalized;
+                Vector3 hd1, hd2;
+                if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+                    VseprLayout.TwoHydrogenDirectionsFromBonds(u1, right, out hd1, out hd2);
+                else
+                    VseprLayout.TwoHydrogenDirectionsFromBondsPlanarXY(u1, right, out hd1, out hd2);
+                ok = TryBondHydrogen(anchor, hd1) && TryBondHydrogen(anchor, hd2);
+                break;
+            }
+            case FunctionalGroupKind.Hydroxyl:
+                ok = TryBondHydrogenBent(anchor, parent.transform.position - anchor.transform.position);
+                break;
+            case FunctionalGroupKind.Methoxy:
+            {
+                Vector3 oc = anchor.transform.position + right * L;
+                var c = SpawnAtomElement(6, oc);
+                if (c == null) { ok = false; break; }
+                touched.Add(c);
+                ok = BondSigmaNoRedist(anchor, c);
+                if (ok && edit != null) edit.SaturateWithHydrogen(c);
+                break;
+            }
+            case FunctionalGroupKind.Aldehyde:
+            {
+                Vector3 cPos = anchor.transform.position;
+                var o = SpawnAtomElement(8, cPos + right * L);
+                if (o == null) { ok = false; break; }
+                touched.Add(o);
+                ok = BondSigmaNoRedist(anchor, o);
+                if (ok)
+                    FormPiBondInstant(anchor, o, false);
+                if (ok)
+                {
+                    Vector3 uR = (parent.transform.position - anchor.transform.position).normalized;
+                    Vector3 uO = (o.transform.position - anchor.transform.position).normalized;
+                    Vector3 hd1, hd2;
+                    if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+                        VseprLayout.TwoHydrogenDirectionsFromBonds(uR, uO, out hd1, out hd2);
+                    else
+                        VseprLayout.TwoHydrogenDirectionsFromBondsPlanarXY(uR, uO, out hd1, out hd2);
+                    ok = TryBondHydrogen(anchor, hd1, refBondWorldForRedist: hd1);
+                }
+                break;
+            }
+            case FunctionalGroupKind.Carboxyl:
+            {
+                Vector3 cPos = anchor.transform.position;
+                ComputeTrigonalDirsTowardParentForFunctionalGroup(cPos, parent.transform.position, out Vector3 dirCarbonylO, out Vector3 dirHydroxylO);
+
+                var oC = SpawnAtomElement(8, cPos + dirCarbonylO * L);
+                var oH = SpawnAtomElement(8, cPos + dirHydroxylO * L);
+                if (oC == null || oH == null) { ok = false; break; }
+                touched.Add(oC);
+                touched.Add(oH);
+                ok = BondSigmaNoRedist(anchor, oC) && BondSigmaNoRedist(anchor, oH);
+                if (ok)
+                {
+                    FormPiBondInstant(anchor, oC, false);
+                    ok = TryBondHydrogenBent(oH, anchor.transform.position - oH.transform.position);
+                }
+                break;
+            }
+            case FunctionalGroupKind.Sulfo:
+            {
+                Vector3 sPos = anchor.transform.position;
+                ComputeTetraThreeOxyDirsTowardParentForSulfo(sPos, parent.transform.position, out Vector3 d1, out Vector3 d2, out Vector3 d3);
+                var o1 = SpawnAtomElement(8, sPos + d1 * L);
+                var o2 = SpawnAtomElement(8, sPos + d2 * L);
+                var o3 = SpawnAtomElement(8, sPos + d3 * L);
+                if (o1 == null || o2 == null || o3 == null) { ok = false; break; }
+                touched.Add(o1);
+                touched.Add(o2);
+                touched.Add(o3);
+                ok = BondSigmaNoRedist(anchor, o1) && BondSigmaNoRedist(anchor, o2) && BondSigmaNoRedist(anchor, o3);
+                if (ok)
+                    ok = TryBondHydrogenBent(o3, anchor.transform.position - o3.transform.position);
+                break;
+            }
+            case FunctionalGroupKind.Nitrile:
+            {
+                var n = SpawnAtomElement(7, anchor.transform.position + dirOut * L);
+                if (n == null) { ok = false; break; }
+                touched.Add(n);
+                ok = BondSigmaNoRedist(anchor, n);
+                if (ok)
+                {
+                    FormPiBondInstant(anchor, n, false);
+                    FormSecondPiBondInstant(anchor, n, false);
+                }
+                break;
+            }
+            case FunctionalGroupKind.Nitro:
+            {
+                Vector3 nPos = anchor.transform.position;
+                ComputeTrigonalDirsTowardParentForFunctionalGroup(nPos, parent.transform.position, out Vector3 dirO1, out Vector3 dirO2);
+                var o1 = SpawnAtomElement(8, nPos + dirO1 * L);
+                var o2 = SpawnAtomElement(8, nPos + dirO2 * L);
+                if (o1 == null || o2 == null) { ok = false; break; }
+                touched.Add(o1);
+                touched.Add(o2);
+                ok = BondSigmaNoRedist(anchor, o1) && BondSigmaNoRedist(anchor, o2);
+                break;
+            }
+            case FunctionalGroupKind.PhosphateDihydrogen:
+            {
+                // R—P(=O)(OH)₂: tetrahedral at P (same σ layout as sulfo); two hydroxyl O + one P=O.
+                Vector3 pPos = anchor.transform.position;
+                ComputeTetraThreeOxyDirsTowardParentForSulfo(pPos, parent.transform.position, out Vector3 d1, out Vector3 d2, out Vector3 d3);
+                var o1 = SpawnAtomElement(8, pPos + d1 * L);
+                var o2 = SpawnAtomElement(8, pPos + d2 * L);
+                var o3 = SpawnAtomElement(8, pPos + d3 * L);
+                if (o1 == null || o2 == null || o3 == null) { ok = false; break; }
+                touched.Add(o1);
+                touched.Add(o2);
+                touched.Add(o3);
+                ok = BondSigmaNoRedist(anchor, o1) && BondSigmaNoRedist(anchor, o2) && BondSigmaNoRedist(anchor, o3);
+                if (ok)
+                    FormPiBondInstant(anchor, o3, false);
+                if (ok)
+                    ok = TryBondHydrogenBent(o1, anchor.transform.position - o1.transform.position)
+                        && TryBondHydrogenBent(o2, anchor.transform.position - o2.transform.position);
+                break;
+            }
+        }
+
+        if (!ok)
+        {
+            selectionAnchor = null;
+            return false;
+        }
+
+        foreach (var a in touched)
+            if (a != null) a.RedistributeOrbitals();
+        parent.RedistributeOrbitals();
+
+        AtomFunction.SetupGlobalIgnoreCollisions();
+        return true;
+    }
+
+    /// <summary>~120° σ directions for two substituents (e.g. nitro O—N—O) given center→parent bond.</summary>
+    static void ComputeTrigonalDirsTowardParentForFunctionalGroup(Vector3 centerWorld, Vector3 parentWorld, out Vector3 dirSubA, out Vector3 dirSubB)
+    {
+        Vector3 uR = parentWorld - centerWorld;
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            uR.z = 0f;
+            if (uR.sqrMagnitude < 1e-10f) uR = Vector3.right;
+            else uR.Normalize();
+        }
+        else if (uR.sqrMagnitude < 1e-10f)
+            uR = Vector3.right;
+        else
+            uR.Normalize();
+
+        var tri = VseprLayout.AlignFirstDirectionTo(VseprLayout.GetIdealLocalDirections(3), uR);
+        dirSubA = tri[1].normalized;
+        dirSubB = tri[2].normalized;
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            ProjectFunctionalGroupDirToXY(ref dirSubA, uR, null);
+            ProjectFunctionalGroupDirToXY(ref dirSubB, uR, dirSubA);
+        }
+    }
+
+    /// <summary>Three tetrahedral σ directions for sulfonate / phosphonate oxygens (avoids colinear R—S—O / R—P—O).</summary>
+    static void ComputeTetraThreeOxyDirsTowardParentForSulfo(Vector3 centerWorld, Vector3 parentWorld, out Vector3 d1, out Vector3 d2, out Vector3 d3)
+    {
+        Vector3 uR = parentWorld - centerWorld;
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            uR.z = 0f;
+            if (uR.sqrMagnitude < 1e-10f) uR = Vector3.right;
+            else uR.Normalize();
+        }
+        else if (uR.sqrMagnitude < 1e-10f)
+            uR = Vector3.right;
+        else
+            uR.Normalize();
+
+        var tet = VseprLayout.AlignFirstDirectionTo(VseprLayout.GetIdealLocalDirections(4), uR);
+        d1 = tet[1].normalized;
+        d2 = tet[2].normalized;
+        d3 = tet[3].normalized;
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            ProjectFunctionalGroupDirToXY(ref d1, uR, null);
+            ProjectFunctionalGroupDirToXY(ref d2, uR, d1);
+            ProjectFunctionalGroupDirToXY(ref d3, uR, d1 + d2);
+        }
+    }
+
+    static void ProjectFunctionalGroupDirToXY(ref Vector3 v, Vector3 uR, Vector3? sumPrior)
+    {
+        v.z = 0f;
+        if (v.sqrMagnitude > 1e-10f)
+        {
+            v.Normalize();
+            return;
+        }
+        if (!sumPrior.HasValue)
+            v = new Vector3(-uR.y, uR.x, 0f);
+        else
+        {
+            Vector3 s = sumPrior.Value;
+            s.z = 0f;
+            v = (-uR - s);
+        }
+        if (v.sqrMagnitude > 1e-10f)
+            v.Normalize();
+        else
+            v = new Vector3(-uR.y, uR.x, 0f).normalized;
     }
 
     Vector3 GetViewportCenter() => PlanarPointerInteraction.ViewportCenterOnWorkPlane(viewportMargin);

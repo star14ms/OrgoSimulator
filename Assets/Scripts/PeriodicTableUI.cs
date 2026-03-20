@@ -54,6 +54,8 @@ public class PeriodicTableUI : MonoBehaviour
         }
     }
 
+    public bool IsVisible => panel != null;
+
     void CreatePanel()
     {
         var canvas = FindFirstObjectByType<Canvas>();

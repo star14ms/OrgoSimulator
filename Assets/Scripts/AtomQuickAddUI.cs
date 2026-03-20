@@ -5,7 +5,7 @@ using TMPro;
 
 /// <summary>
 /// Builds the molecule construction toolbar: Row 1 (H, C, N, O, S, F, Cl, Br, I, More),
-/// Row 2 (Cycloalkanes dropdown, Benzene, free-electron spawn). "More" opens the full periodic table.
+/// Row 2 (FG ▼ [edit mode], Cycloalkanes dropdown, Benzene, free-electron spawn). "More" opens the full periodic table.
 /// </summary>
 public class AtomQuickAddUI : MonoBehaviour
 {
@@ -37,6 +37,13 @@ public class AtomQuickAddUI : MonoBehaviour
     Image eraserToggleImage;
     Image editToggleImage;
     Image view3DToggleImage;
+    Canvas hudCanvas;
+    RectTransform cycloDropdownButtonRect;
+    RectTransform cycloDropdownPanelRect;
+    RectTransform funcGroupDropdownButtonRect;
+    RectTransform funcGroupDropdownPanelRect;
+    Button funcGroupMainButton;
+    GameObject funcGroupToolbarRoot;
     static readonly Color EraserActiveColor = new Color(0.5f, 0.2f, 0.2f);
     static readonly Color EditActiveColor = new Color(0.4f, 0.7f, 1f);
     static readonly Color View3DActiveColor = new Color(0.65f, 0.55f, 0.95f);
@@ -106,12 +113,39 @@ public class AtomQuickAddUI : MonoBehaviour
                 eraserToggleImage.color = editModeManager.EraserMode ? EraserActiveColor : new Color(0.6f, 0.6f, 0.6f);
             if (editToggleImage != null)
                 editToggleImage.color = editModeManager.EditModeActive ? EditActiveColor : new Color(0.6f, 0.6f, 0.6f);
+            bool fgReady = editModeManager.FunctionalGroupAttachmentReady();
+            if (funcGroupMainButton != null)
+                funcGroupMainButton.interactable = fgReady;
+            if (funcGroupDropdownPanel != null && funcGroupDropdownPanel.activeSelf
+                && (editModeManager == null || !fgReady))
+                funcGroupDropdownPanel.SetActive(false);
         }
         if (view3DToggleImage != null && Camera.main != null && enableMain3DCameraToggleButton)
         {
             bool p3 = !Camera.main.orthographic;
             view3DToggleImage.color = p3 ? View3DActiveColor : new Color(0.6f, 0.6f, 0.6f);
         }
+    }
+
+    void LateUpdate()
+    {
+        var mouse = Mouse.current;
+        if (mouse == null || !mouse.leftButton.wasPressedThisFrame) return;
+
+        Camera uiCam = hudCanvas != null && hudCanvas.renderMode == RenderMode.ScreenSpaceCamera ? hudCanvas.worldCamera : null;
+        Vector2 sp = mouse.position.ReadValue();
+
+        void CloseIfOutside(GameObject panel, RectTransform btnRt, RectTransform panelRt)
+        {
+            if (panel == null || !panel.activeSelf) return;
+            bool overBtn = btnRt != null && RectTransformUtility.RectangleContainsScreenPoint(btnRt, sp, uiCam);
+            bool overPanel = panelRt != null && RectTransformUtility.RectangleContainsScreenPoint(panelRt, sp, uiCam);
+            if (!overBtn && !overPanel)
+                panel.SetActive(false);
+        }
+
+        CloseIfOutside(cycloDropdownPanel, cycloDropdownButtonRect, cycloDropdownPanelRect);
+        CloseIfOutside(funcGroupDropdownPanel, funcGroupDropdownButtonRect, funcGroupDropdownPanelRect);
     }
 
     void Start()
@@ -233,9 +267,12 @@ public class AtomQuickAddUI : MonoBehaviour
         if (canvas == null || editModeManager == null) return;
 
         float inset = Px(20f);
+        float trashWidth = Px(150f);
+        float gap = Px(8f);
+        // Bottom-right stack: Clear all sits just left of DisposalZone (same vertical baseline as trash).
         CreateClearAllButton(canvas, "ClearAll",
-            new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0f, 0f),
-            new Vector2(inset, inset),
+            new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(1f, 0f),
+            new Vector2(-inset - trashWidth - gap, inset),
             new Vector2(Px(88f), Px(36f)));
     }
 
@@ -281,6 +318,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var canvas = ResolveHudCanvas();
         if (canvas == null) return;
+        hudCanvas = canvas;
 
         var toolbar = new GameObject("MoleculeToolbar");
         toolbar.transform.SetParent(canvas.transform, false);
@@ -441,7 +479,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var row = new GameObject("Row2");
         var rect = row.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(Px(520f), layoutButtonSize);
+        rect.sizeDelta = new Vector2(Px(780f), layoutButtonSize);
 
         var hLayout = row.AddComponent<HorizontalLayoutGroup>();
         hLayout.spacing = layoutSpacing;
@@ -450,6 +488,9 @@ public class AtomQuickAddUI : MonoBehaviour
         hLayout.childControlHeight = false;
         hLayout.childForceExpandWidth = false;
         hLayout.childForceExpandHeight = false;
+
+        var fgDropdown = CreateFunctionalGroupDropdown();
+        fgDropdown.transform.SetParent(row.transform, false);
 
         var cycloDropdown = CreateCycloalkanesDropdown();
         cycloDropdown.transform.SetParent(row.transform, false);
@@ -464,6 +505,147 @@ public class AtomQuickAddUI : MonoBehaviour
     }
 
     GameObject cycloDropdownPanel;
+    GameObject funcGroupDropdownPanel;
+
+    GameObject CreateFunctionalGroupDropdown()
+    {
+        var container = new GameObject("FunctionalGroupDropdown");
+        funcGroupToolbarRoot = container;
+        var containerRect = container.AddComponent<RectTransform>();
+        containerRect.sizeDelta = new Vector2(Px(118f), layoutButtonSize);
+
+        var mainBtnGo = new GameObject("FunctionalGroupButton");
+        mainBtnGo.transform.SetParent(container.transform, false);
+        var mainRect = mainBtnGo.AddComponent<RectTransform>();
+        mainRect.anchorMin = Vector2.zero;
+        mainRect.anchorMax = new Vector2(1, 1);
+        mainRect.offsetMin = Vector2.zero;
+        mainRect.offsetMax = Vector2.zero;
+        funcGroupDropdownButtonRect = mainRect;
+
+        var mainImage = mainBtnGo.AddComponent<Image>();
+        mainImage.color = new Color(0.35f, 0.48f, 0.42f);
+
+        funcGroupMainButton = mainBtnGo.AddComponent<Button>();
+        funcGroupMainButton.interactable = editModeManager != null && editModeManager.FunctionalGroupAttachmentReady();
+        funcGroupMainButton.onClick.AddListener(ToggleFunctionalGroupDropdown);
+
+        var labelGo = new GameObject("Label");
+        labelGo.transform.SetParent(mainBtnGo.transform, false);
+        var labelRect = labelGo.AddComponent<RectTransform>();
+        labelRect.anchorMin = Vector2.zero;
+        labelRect.anchorMax = Vector2.one;
+        labelRect.offsetMin = Vector2.zero;
+        labelRect.offsetMax = Vector2.zero;
+
+        var tmp = labelGo.AddComponent<TextMeshProUGUI>();
+        tmp.font = AtomFunction.GetDefaultFont();
+        tmp.text = "Func. grp. \u25BC";
+        tmp.fontSize = Mathf.Max(7, layoutFontSize - 2);
+        tmp.alignment = TextAlignmentOptions.Center;
+        tmp.textWrappingMode = TextWrappingModes.Normal;
+        tmp.raycastTarget = false;
+        tmp.color = Color.white;
+
+        funcGroupDropdownPanel = new GameObject("FunctionalGroupPanel");
+        funcGroupDropdownPanel.transform.SetParent(container.transform, false);
+        var panelRect = funcGroupDropdownPanel.AddComponent<RectTransform>();
+        panelRect.anchorMin = new Vector2(0, 0);
+        panelRect.anchorMax = new Vector2(1, 0);
+        panelRect.pivot = new Vector2(0.5f, 1f);
+        panelRect.anchoredPosition = Vector2.zero;
+        const int nItems = 9;
+        panelRect.sizeDelta = new Vector2(0, layoutButtonSize * nItems + layoutSpacing * (nItems - 1) + Px(8f));
+        funcGroupDropdownPanelRect = panelRect;
+
+        var panelImage = funcGroupDropdownPanel.AddComponent<Image>();
+        panelImage.color = new Color(0.42f, 0.5f, 0.46f);
+
+        var vLayout = funcGroupDropdownPanel.AddComponent<VerticalLayoutGroup>();
+        vLayout.spacing = Mathf.Max(1, PxI(2f));
+        int dPad = PxI(4f);
+        vLayout.padding = new RectOffset(dPad, dPad, dPad, dPad);
+        vLayout.childAlignment = TextAnchor.UpperCenter;
+        vLayout.childControlWidth = true;
+        vLayout.childControlHeight = false;
+        vLayout.childForceExpandWidth = true;
+        vLayout.childForceExpandHeight = false;
+
+        (FunctionalGroupKind kind, string label)[] items =
+        {
+            (FunctionalGroupKind.AmineNH2, "NH2"),
+            (FunctionalGroupKind.Hydroxyl, "OH"),
+            (FunctionalGroupKind.Methoxy, "OCH3"),
+            (FunctionalGroupKind.Aldehyde, "C(=O)-H"),
+            (FunctionalGroupKind.Carboxyl, "C(=O)-OH"),
+            (FunctionalGroupKind.Sulfo, "SO3H"),
+            (FunctionalGroupKind.Nitrile, "C\u2261N"),
+            (FunctionalGroupKind.Nitro, "NO2"),
+            (FunctionalGroupKind.PhosphateDihydrogen, "PO3H2")
+        };
+
+        foreach (var (kind, label) in items)
+        {
+            var itemBtn = CreateFunctionalGroupDropdownItem(label, kind);
+            itemBtn.transform.SetParent(funcGroupDropdownPanel.transform, false);
+        }
+
+        funcGroupDropdownPanel.SetActive(false);
+        return container;
+    }
+
+    void ToggleFunctionalGroupDropdown()
+    {
+        if (editModeManager == null || !editModeManager.FunctionalGroupAttachmentReady()) return;
+        if (cycloDropdownPanel != null)
+            cycloDropdownPanel.SetActive(false);
+        if (funcGroupDropdownPanel != null)
+            funcGroupDropdownPanel.SetActive(!funcGroupDropdownPanel.activeSelf);
+    }
+
+    GameObject CreateFunctionalGroupDropdownItem(string label, FunctionalGroupKind kind)
+    {
+        var go = new GameObject($"FG_{kind}");
+        var rt = go.AddComponent<RectTransform>();
+        rt.sizeDelta = new Vector2(0, layoutButtonSize - Px(4f));
+
+        var image = go.AddComponent<Image>();
+        image.color = new Color(0.5f, 0.58f, 0.52f);
+
+        var btn = go.AddComponent<Button>();
+        var k = kind;
+        btn.onClick.AddListener(() =>
+        {
+            OnFunctionalGroupClicked(k);
+            if (funcGroupDropdownPanel != null)
+                funcGroupDropdownPanel.SetActive(false);
+        });
+
+        var labelGo = new GameObject("Label");
+        labelGo.transform.SetParent(go.transform, false);
+        var labelRect = labelGo.AddComponent<RectTransform>();
+        labelRect.anchorMin = Vector2.zero;
+        labelRect.anchorMax = Vector2.one;
+        labelRect.offsetMin = Vector2.zero;
+        labelRect.offsetMax = Vector2.zero;
+
+        var tmp = labelGo.AddComponent<TextMeshProUGUI>();
+        tmp.font = AtomFunction.GetDefaultFont();
+        tmp.text = label;
+        tmp.fontSize = Mathf.Max(7, layoutFontSize - 3);
+        tmp.alignment = TextAlignmentOptions.Center;
+        tmp.textWrappingMode = TextWrappingModes.Normal;
+        tmp.raycastTarget = false;
+        tmp.color = Color.white;
+
+        return go;
+    }
+
+    void OnFunctionalGroupClicked(FunctionalGroupKind kind)
+    {
+        if (editModeManager == null || !editModeManager.FunctionalGroupAttachmentReady()) return;
+        editModeManager.TryAttachFunctionalGroup(kind);
+    }
 
     GameObject CreateCycloalkanesDropdown()
     {
@@ -478,6 +660,7 @@ public class AtomQuickAddUI : MonoBehaviour
         mainRect.anchorMax = new Vector2(1, 1);
         mainRect.offsetMin = Vector2.zero;
         mainRect.offsetMax = Vector2.zero;
+        cycloDropdownButtonRect = mainRect;
 
         var image = mainBtn.AddComponent<Image>();
         image.color = new Color(0.45f, 0.45f, 0.5f);
@@ -509,6 +692,7 @@ public class AtomQuickAddUI : MonoBehaviour
         panelRect.pivot = new Vector2(0.5f, 1);
         panelRect.anchoredPosition = new Vector2(0, 0); // Top of panel at bottom of button, no gap
         panelRect.sizeDelta = new Vector2(0, layoutButtonSize * 4f + layoutSpacing * 3f);
+        cycloDropdownPanelRect = panelRect;
 
         var panelImage = cycloDropdownPanel.AddComponent<Image>();
         panelImage.color = new Color(0.5f, 0.5f, 0.55f);
@@ -537,6 +721,8 @@ public class AtomQuickAddUI : MonoBehaviour
 
     void ToggleCycloalkanesDropdown()
     {
+        if (funcGroupDropdownPanel != null)
+            funcGroupDropdownPanel.SetActive(false);
         if (cycloDropdownPanel != null)
             cycloDropdownPanel.SetActive(!cycloDropdownPanel.activeSelf);
     }
@@ -651,7 +837,7 @@ public class AtomQuickAddUI : MonoBehaviour
         rect.sizeDelta = new Vector2(Px(100f), layoutButtonSize);
 
         var image = go.AddComponent<Image>();
-        image.color = new Color(0.97f, 0.82f, 0.45f);
+        image.color = new Color(0.45f, 0.45f, 0.5f);
 
         var btn = go.AddComponent<Button>();
         btn.onClick.AddListener(OnBenzeneClicked);
@@ -670,6 +856,7 @@ public class AtomQuickAddUI : MonoBehaviour
         tmp.fontSize = Mathf.Max(8, layoutFontSize - 2);
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.raycastTarget = false;
+        tmp.color = Color.white;
 
         return go;
     }

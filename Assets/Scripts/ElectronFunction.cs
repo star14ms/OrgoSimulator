@@ -225,6 +225,20 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
 
     public void OnPointerDown(PointerEventData eventData)
     {
+        var editMode = Object.FindFirstObjectByType<EditModeManager>();
+        if (editMode != null && editMode.EraserMode)
+        {
+            var orb = GetComponentInParent<ElectronOrbitalFunction>();
+            if (orb != null)
+            {
+                orb.RemoveElectron(this);
+                Destroy(gameObject);
+            }
+            else
+                Destroy(gameObject);
+            return;
+        }
+
         var orbital = GetComponentInParent<ElectronOrbitalFunction>();
         if (orbital != null && orbital.Bond != null) return;
 
@@ -246,11 +260,20 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
     {
         isBeingHeld = false;
         SetPhysicsEnabled(true);
+        var disposal = Object.FindFirstObjectByType<DisposalZone>();
+        bool overTrash = disposal != null && disposal.ContainsScreenPoint(eventData.position);
+
         var orbital = GetComponentInParent<ElectronOrbitalFunction>();
         if (orbital != null)
         {
             orbital.SetPointerBlocked(false);
             orbital.SetPhysicsEnabled(true);
+            if (overTrash)
+            {
+                orbital.RemoveElectron(this);
+                Destroy(gameObject);
+                return;
+            }
             if (!orbital.ContainsPoint(transform.position))
             {
                 orbital.RemoveElectron(this);
@@ -260,6 +283,12 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
             {
                 transform.localPosition = originalLocalPosition;
             }
+            return;
+        }
+
+        if (overTrash)
+        {
+            Destroy(gameObject);
             return;
         }
         TryAcceptIntoOrbital();

@@ -7,6 +7,7 @@ using System.Linq;
 /// <summary>
 /// Manages edit mode: selection (click atom to select, background to deselect), add-atom-to-selected,
 /// H-auto mode (saturate new atoms with hydrogen). Toggle edit mode with E.
+/// Eraser (D): removes only “end” atoms — fewer than two bonds to non-hydrogen neighbors (plus attached H on that center).
 /// Left/right arrows cycle the selected atom within the molecule whenever an atom is selected; up/down orbitals only in edit mode.
 /// </summary>
 public class EditModeManager : MonoBehaviour
@@ -26,6 +27,87 @@ public class EditModeManager : MonoBehaviour
     public bool EraserMode => eraserMode;
     public AtomFunction SelectedAtom => selectedAtom;
     public ElectronOrbitalFunction SelectedOrbital => selectedOrbital;
+
+    /// <summary>True when functional groups can attach: selected H (replace), or a free 1e lone orbital on the selected non-H atom (including the orbital auto-picked when the atom is clicked).</summary>
+    public bool FunctionalGroupAttachmentReady()
+    {
+        if (!editModeActive || selectedAtom == null) return false;
+        if (selectedAtom.AtomicNumber == 1 && !orbitalExplicitlySelected)
+            return true;
+        return selectedOrbital != null
+            && selectedOrbital.Bond == null
+            && selectedOrbital.ElectronCount == 1;
+    }
+
+    /// <summary>Distinct neighbors reached by a σ bond whose atomic number is not 1.</summary>
+    public static int CountDistinctNonHydrogenNeighbors(AtomFunction a)
+    {
+        if (a == null) return 0;
+        var seen = new HashSet<AtomFunction>();
+        foreach (var b in a.CovalentBonds)
+        {
+            if (b == null) continue;
+            var o = b.AtomA == a ? b.AtomB : b.AtomA;
+            if (o != null && o.AtomicNumber != 1)
+                seen.Add(o);
+        }
+        return seen.Count;
+    }
+
+    /// <summary>Eraser: remove this atom and its directly bonded hydrogens only if it is a chain end (&lt; 2 non-H neighbors).</summary>
+    public bool TryEraseAtomIfChainEnd(AtomFunction atom)
+    {
+        if (!eraserMode || atom == null) return false;
+        if (CountDistinctNonHydrogenNeighbors(atom) >= 2) return false;
+
+        var remove = new HashSet<AtomFunction> { atom };
+        foreach (var b in atom.CovalentBonds)
+        {
+            if (b == null) continue;
+            var o = b.AtomA == atom ? b.AtomB : b.AtomA;
+            if (o != null && o.AtomicNumber == 1)
+                remove.Add(o);
+        }
+
+        for (int guard = 0; guard < 64; guard++)
+        {
+            CovalentBond bridge = null;
+            AtomFunction keeper = null;
+            foreach (var a in remove)
+            {
+                if (a == null) continue;
+                foreach (var bond in a.CovalentBonds.ToList())
+                {
+                    if (bond == null) continue;
+                    var other = bond.AtomA == a ? bond.AtomB : bond.AtomA;
+                    if (other == null) continue;
+                    if (remove.Contains(other)) continue;
+                    bridge = bond;
+                    keeper = other;
+                    break;
+                }
+                if (bridge != null) break;
+            }
+            if (bridge == null) break;
+            bridge.BreakBond(keeper);
+        }
+
+        DestroyMolecule(remove);
+
+        if (selectedAtom != null && remove.Contains(selectedAtom))
+        {
+            ClearSelectionHighlights();
+            selectedAtom = null;
+            selectedOrbital = null;
+            selectedMolecule = null;
+            orbitalExplicitlySelected = false;
+        }
+        else if (selectedAtom != null)
+            RefreshSelectedMoleculeAfterBondChange();
+
+        AtomFunction.SetupGlobalIgnoreCollisions();
+        return true;
+    }
 
     MoleculeBuilder moleculeBuilder;
 
@@ -664,10 +746,9 @@ public class EditModeManager : MonoBehaviour
             }
             else
             {
-                orb = atom.GetLoneOrbitalWithOneElectron(Vector3.right);
-                if (orb == null) break;
-                Vector3 dir = orb.transform.TransformDirection(Vector3.right);
-                dirN = dir.sqrMagnitude > 1e-8f ? dir.normalized : Vector3.right;
+                var dirsXY = CollectSigmaBondNeighborDirectionsWorldXY(atom);
+                dirN = ComputeNextHydrogenDirectionWorldForSaturatePlanarXY(atom, dirsXY);
+                orb = atom.GetLoneOrbitalWithOneElectron(dirN);
             }
 
             if (orb == null) break;
@@ -721,6 +802,63 @@ public class EditModeManager : MonoBehaviour
         return list;
     }
 
+    /// <summary>σ directions toward neighbors, projected to XY for orthographic saturation.</summary>
+    static List<Vector3> CollectSigmaBondNeighborDirectionsWorldXY(AtomFunction center)
+    {
+        var full = CollectSigmaBondNeighborDirectionsWorld(center);
+        var list = new List<Vector3>();
+        foreach (var d in full)
+        {
+            Vector3 v = d;
+            v.z = 0f;
+            if (v.sqrMagnitude < 1e-10f) continue;
+            list.Add(v.normalized);
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Next H direction in the work plane when σ neighbors are given in XY (orthographic saturation).
+    /// Avoids reusing the same preferred axis every step (previous bug: always <see cref="Vector3.right"/>).
+    /// </summary>
+    static Vector3 ComputeNextHydrogenDirectionWorldForSaturatePlanarXY(AtomFunction center, List<Vector3> dirsXY)
+    {
+        int n = dirsXY.Count;
+        bool piPresent = center != null && center.GetPiBondCount() > 0;
+
+        if (n == 0)
+            return Vector3.right;
+
+        if (n == 1)
+        {
+            var ideal = piPresent ? VseprLayout.GetIdealLocalDirections(3) : VseprLayout.GetIdealLocalDirections(4);
+            var aligned = VseprLayout.AlignFirstDirectionTo(ideal, dirsXY[0]);
+            for (int i = 1; i < aligned.Length; i++)
+            {
+                Vector3 v = aligned[i];
+                v.z = 0f;
+                if (v.sqrMagnitude > 1e-10f)
+                    return v.normalized;
+            }
+            Vector3 perp = new Vector3(-dirsXY[0].y, dirsXY[0].x, 0f);
+            return perp.sqrMagnitude > 1e-10f ? perp.normalized : Vector3.up;
+        }
+
+        if (n == 2)
+        {
+            if (piPresent)
+            {
+                Vector3 v = VseprLayout.TrigonalPlanarThirdDirectionFromTwoBondsWorld(dirsXY[0], dirsXY[1]);
+                v.z = 0f;
+                return v.sqrMagnitude > 1e-10f ? v.normalized : Vector3.right;
+            }
+            VseprLayout.TwoHydrogenDirectionsFromBondsPlanarXY(dirsXY[0], dirsXY[1], out var h1, out var _);
+            return h1.normalized;
+        }
+
+        return VseprLayout.OneHydrogenDirectionFromThreeBondsWorldPlanarXY(dirsXY[0], dirsXY[1], dirsXY[2]);
+    }
+
     /// <summary>
     /// Next H direction for incremental saturation. Uses tetrahedral (~109.5°) when there is no π on the center;
     /// when π is already present (e.g. benzene built σ then π then H), uses trigonal planar (~120° in the σ plane)
@@ -755,4 +893,72 @@ public class EditModeManager : MonoBehaviour
     float GetBondLength() => atomPrefab != null && atomPrefab.TryGetComponent<AtomFunction>(out var a) ? 1.2f * a.BondRadius : 0.96f;
 
     public void SetAtomPrefab(GameObject prefab) => atomPrefab = prefab;
+
+    /// <summary>Attach a preset functional group in edit mode: replace selected H, or bond to selected free 1e orbital.</summary>
+    public bool TryAttachFunctionalGroup(FunctionalGroupKind kind)
+    {
+        if (!editModeActive || atomPrefab == null || Camera.main == null) return false;
+        if (selectedAtom == null) return false;
+        if (moleculeBuilder == null)
+            moleculeBuilder = FindFirstObjectByType<MoleculeBuilder>();
+        if (moleculeBuilder == null) return false;
+
+        if (selectedAtom.AtomicNumber == 1 && !orbitalExplicitlySelected)
+        {
+            var hydrogen = selectedAtom;
+            AtomFunction parentAtom = null;
+            CovalentBond bondToBreak = null;
+            foreach (var b in hydrogen.CovalentBonds)
+            {
+                if (b == null) continue;
+                var other = b.AtomA == hydrogen ? b.AtomB : b.AtomA;
+                if (other != null) { parentAtom = other; bondToBreak = b; break; }
+            }
+            if (parentAtom == null || bondToBreak == null) return false;
+
+            Vector3 hPos = hydrogen.transform.position;
+            bondToBreak.BreakBond(parentAtom);
+            if (selectedAtom != null) selectedAtom.SetSelectionHighlight(false);
+            if (selectedOrbital != null) selectedOrbital.SetHighlighted(false);
+            Destroy(hydrogen.gameObject);
+
+            if (!moleculeBuilder.BuildFunctionalGroup(kind, parentAtom, hPos, this, out var sel))
+                return false;
+
+            selectedAtom = sel;
+            selectedMolecule = selectedAtom != null ? selectedAtom.GetConnectedMolecule() : null;
+            selectedOrbital = selectedAtom != null ? selectedAtom.GetOrbitalClosestToAngle(0f) : null;
+            orbitalExplicitlySelected = false;
+            ApplySelectionHighlights();
+            RefreshSelectedMoleculeAfterBondChange();
+            return true;
+        }
+
+        var orb = selectedOrbital ?? selectedAtom.GetOrbitalClosestToAngle(0f);
+        if (orb == null || orb.Bond != null || orb.ElectronCount != 1) return false;
+
+        Vector3 dir = orb.transform.TransformDirection(Vector3.right);
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            dir.z = 0f;
+            if (dir.sqrMagnitude < 1e-8f) dir = Vector3.right;
+            else dir.Normalize();
+        }
+        else if (dir.sqrMagnitude < 1e-8f)
+            dir = Vector3.right;
+        else
+            dir.Normalize();
+
+        float bl = GetBondLength();
+        Vector3 anchorPos = selectedAtom.transform.position + dir * bl;
+
+        if (!moleculeBuilder.BuildFunctionalGroup(kind, selectedAtom, anchorPos, this, out _))
+            return false;
+
+        selectedOrbital?.SetHighlighted(false);
+        selectedOrbital = selectedAtom.GetOrbitalClosestToAngle(0f);
+        if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
+        RefreshSelectedMoleculeAfterBondChange();
+        return true;
+    }
 }

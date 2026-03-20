@@ -402,7 +402,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         float lineScaleMult = orbitalToLineAnimProgress < 0 ? 1f : orbitalToLineAnimProgress;
         if (useCylinderBondVisual)
         {
-            const float radiusScale = 0.25f;
+            const float radiusScale = 0.15f;
             float halfHeight = 0.5f * lineLength * lineScaleMult;
             lineVisual.transform.localScale = new Vector3(radiusScale, Mathf.Max(0.001f, halfHeight), radiusScale);
         }

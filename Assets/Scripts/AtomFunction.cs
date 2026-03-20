@@ -1534,8 +1534,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var editMode = FindFirstObjectByType<EditModeManager>();
         if (editMode != null && editMode.EraserMode)
         {
-            var molecule = GetConnectedMolecule();
-            editMode.DestroyMolecule(molecule);
+            if (editMode.TryEraseAtomIfChainEnd(this))
+                return;
             return;
         }
 

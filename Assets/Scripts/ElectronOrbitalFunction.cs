@@ -14,7 +14,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     [SerializeField] Sprite stretchSprite; // Optional: single sprite for stretch. If null, uses procedural triangle+circle composite.
     [SerializeField] [Range(0.05f, 1f)] float orbitalVisualAlpha = 0.05f;
     [Tooltip("Edit-mode selected orbital: body alpha (higher than orbitalVisualAlpha so the lobe reads brighter).")]
-    [SerializeField] [Range(0.05f, 1f)] float orbitalHighlightAlpha = 0.30f;
+    [SerializeField] [Range(0.05f, 1f)] float orbitalHighlightAlpha = 0.05f;
     [Tooltip("3D drag stretch only: scales hemisphere diameter and cone base (XZ) vs idle orbital sizing.")]
     [SerializeField] [Range(0.35f, 1f)] float dragStretch3DCrossSectionScale = 0.65f;
     [Tooltip("3D drag: offset from flat seam into the hemispherical bulk along the tip axis, as a fraction of cap radius (keeps electrons under the dome, not on the outer shell).")]
@@ -85,6 +85,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             bond.NotifyElectronCountChanged();
         else
             bondedAtom?.OnElectronRemoved();
+        SyncElectronObjects();
     }
 
     public bool CanAcceptElectron() => electronCount < MaxElectrons;
