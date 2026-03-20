@@ -1,6 +1,6 @@
 %YAML 1.1
 %TAG !u! tag:unity3d.com,2011:
---- !u!1 &8844935860487030881
+--- !u!1 &880010001
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -8,48 +8,48 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 7619085031751387793}
-  - component: {fileID: 8755832011866069762}
-  - component: {fileID: 475226692553934696}
-  - component: {fileID: 6605737747197433415}
-  - component: {fileID: 8844935860487030890}
+  - component: {fileID: 880010002}
+  - component: {fileID: 880010003}
+  - component: {fileID: 880010004}
+  - component: {fileID: 880010005}
+  - component: {fileID: 880010006}
   m_Layer: 0
-  m_Name: ElectronOrbital
+  m_Name: Electron
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!4 &7619085031751387793
+--- !u!4 &880010002
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 8844935860487030881}
+  m_GameObject: {fileID: 880010001}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0.75715, y: 1.12258, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 0.32, y: 0.32, z: 0.32}
+  m_ConstrainProportionsScale: 1
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!33 &8755832011866069762
+--- !u!33 &880010003
 MeshFilter:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 8844935860487030881}
-  m_Mesh: {fileID: 10208, guid: 0000000000000000e000000000000000, type: 0}
---- !u!23 &475226692553934696
+  m_GameObject: {fileID: 880010001}
+  m_Mesh: {fileID: 10207, guid: 0000000000000000e000000000000000, type: 0}
+--- !u!23 &880010004
 MeshRenderer:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 8844935860487030881}
+  m_GameObject: {fileID: 880010001}
   m_Enabled: 1
   m_CastShadows: 1
   m_ReceiveShadows: 1
@@ -92,13 +92,13 @@ MeshRenderer:
   m_SortingOrder: 0
   m_MaskInteraction: 0
   m_AdditionalVertexStreams: {fileID: 0}
---- !u!136 &6605737747197433415
-CapsuleCollider:
+--- !u!135 &880010005
+SphereCollider:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 8844935860487030881}
+  m_GameObject: {fileID: 880010001}
   m_Material: {fileID: 0}
   m_IncludeLayers:
     serializedVersion: 2
@@ -107,32 +107,25 @@ CapsuleCollider:
     serializedVersion: 2
     m_Bits: 0
   m_LayerOverridePriority: 0
-  m_IsTrigger: 0
+  m_IsTrigger: 1
   m_ProvidesContacts: 0
   m_Enabled: 1
-  serializedVersion: 2
+  serializedVersion: 3
   m_Radius: 0.5
-  m_Height: 2
-  m_Direction: 1
   m_Center: {x: 0, y: 0, z: 0}
---- !u!114 &8844935860487030890
+--- !u!114 &880010006
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 8844935860487030881}
+  m_GameObject: {fileID: 880010001}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: da9aa7b79c60843538b6a34c60ea74aa, type: 3}
+  m_Script: {fileID: 11500000, guid: 72577aabd6c90480d815302f883d0b97, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::ElectronOrbitalFunction
-  electronCount: 0
-  electronPrefab: {fileID: 880010006, guid: 21bfb587330974e60b862af38eec61b8, type: 3}
-  electronSpacing: 0.5
-  stretchSprite: {fileID: 0}
-  apexPadding: 0.3
-  orbitalColliderSize: {x: 1, y: 0.15}
-  bondAnimStep1Duration: 0.5
-  bondAnimStep2Duration: 0.5
-  bondAnimStep3Duration: 0.5
+  m_EditorClassIdentifier: '::'
+  orbitalWidth: 0.5
+  electron3DSphereRadius: 0.16
+  electron3DIdleLocalYBias: 0.08
+  electron3DIdlePairSeparation: 0.06

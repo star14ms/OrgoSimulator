@@ -2,11 +2,13 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.Rendering;
 
 /// <summary>
 /// Represents a covalent bond between two atoms. Owns the shared orbital and its electrons.
 /// Positions the orbital between the two atoms and notifies both when electrons change.
-/// By default displays as a single line; click to show orbital while holding, returns to line on release if bond doesn't break.
+/// Orthographic scenes: 2D sprite line. Perspective (3D) scenes: solid cylinder mesh along the bond axis.
+/// Click to show orbital while holding, returns to line/cylinder on release if bond doesn't break.
 /// </summary>
 public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IPointerUpHandler
 {
@@ -24,9 +26,16 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     PointerEventData storedPressData;
     GameObject lineVisual;
     SpriteRenderer lineRenderer;
+    MeshRenderer cylinderRenderer;
+    bool useCylinderBondVisual;
     BoxCollider2D lineCollider;
     BoxCollider lineCollider3D;
     static Sprite lineSprite;
+    static Material bondCylinderMaterial;
+
+    /// <summary>Black bond stroke with slight transparency (sprite + 3D cylinder).</summary>
+    const float BondVisualAlpha = 0.82f;
+    static readonly Color BondVisualColor = new Color(0f, 0f, 0f, BondVisualAlpha);
 
     public AtomFunction AtomA => atomA;
     public AtomFunction AtomB => atomB;
@@ -65,7 +74,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var distance = delta.magnitude;
         if (distance < 0.001f) return;
         transform.position = center;
-        transform.rotation = Quaternion.Euler(0, 0, Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg - 90f);
+        transform.rotation = BondFrameRotation(delta, useCylinderBondVisual);
     }
 
     /// <summary>Snaps the bond orbital to the exact world position that matches lineVisual (center + perpendicular * offset). Call at end of step 2 to prevent teleport into step 3. Call UpdateBondTransformToCurrentAtoms first.</summary>
@@ -89,7 +98,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var delta = second.transform.position - first.transform.position;
         var distance = delta.magnitude;
         if (distance < 0.001f) return (center, transform.rotation * Quaternion.Euler(0, 0, 90f));
-        var perpendicular = Vector3.Cross(Vector3.forward, delta / distance).normalized;
+        var perpendicular = PerpendicularToBondDirection(delta / distance);
         float offset = GetLineOffset(GetBondIndex(), atomA.GetBondsTo(atomB));
         var worldPos = center + perpendicular * offset;
         var worldRot = transform.rotation * Quaternion.Euler(0, 0, 90f);
@@ -121,6 +130,67 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return (bondIndex % 2 == 1 ? -1f : 1f) * ((bondIndex + 1) / 2) * piOffset; // pi: -0.2, +0.2, -0.4, +0.4...
     }
 
+    /// <summary>URP cylinder material; shared across bonds. Uses alpha so bonds read slightly softer in 3D.</summary>
+    static Material GetOrCreateBondCylinderMaterial()
+    {
+        if (bondCylinderMaterial != null) return bondCylinderMaterial;
+        Shader sh = Shader.Find("Universal Render Pipeline/Lit");
+        if (sh == null) sh = Shader.Find("Universal Render Pipeline/Simple Lit");
+        if (sh == null) sh = Shader.Find("Standard");
+        bondCylinderMaterial = sh != null ? new Material(sh) : null;
+        if (bondCylinderMaterial != null)
+        {
+            bondCylinderMaterial.enableInstancing = true;
+            ApplyBondVisualColorToMaterial(bondCylinderMaterial);
+        }
+        return bondCylinderMaterial;
+    }
+
+    static void ApplyBondVisualColorToMaterial(Material mat)
+    {
+        if (mat == null) return;
+        var c = BondVisualColor;
+        mat.color = c;
+        if (mat.HasProperty("_BaseColor"))
+            mat.SetColor("_BaseColor", c);
+        if (mat.HasProperty("_Color"))
+            mat.SetColor("_Color", c);
+        // URP Lit / Simple Lit: use transparent surface so alpha is visible
+        if (mat.HasProperty("_Surface"))
+        {
+            mat.SetFloat("_Surface", 1f);
+            mat.SetFloat("_Blend", 0f);
+            mat.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
+            mat.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
+            if (mat.HasProperty("_ZWrite"))
+                mat.SetInt("_ZWrite", 0);
+            mat.renderQueue = (int)RenderQueue.Transparent;
+            mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            mat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+        }
+    }
+
+    Vector3 PerpendicularToBondDirection(Vector3 deltaNormalized)
+    {
+        if (useCylinderBondVisual)
+        {
+            Vector3 perp = Vector3.Cross(deltaNormalized, Vector3.up);
+            if (perp.sqrMagnitude < 1e-8f)
+                perp = Vector3.Cross(deltaNormalized, Vector3.right);
+            return perp.normalized;
+        }
+        return Vector3.Cross(Vector3.forward, deltaNormalized).normalized;
+    }
+
+    static Quaternion BondFrameRotation(Vector3 delta, bool full3DAxis)
+    {
+        if (delta.sqrMagnitude < 1e-6f) return Quaternion.identity;
+        var dn = delta.normalized;
+        if (full3DAxis)
+            return Quaternion.FromToRotation(Vector3.up, dn);
+        return Quaternion.Euler(0f, 0f, Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg - 90f);
+    }
+
     public static CovalentBond Create(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction sharedOrbital, AtomFunction orbitalContributor, bool animateOrbitalToBond = false)
     {
         if (atomA == null || atomB == null || sharedOrbital == null) return null;
@@ -138,6 +208,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomB = b;
         orbital = orb;
         orbitalContributor = contributor;
+        useCylinderBondVisual = Camera.main != null && !Camera.main.orthographic;
 
         atomA.RegisterBond(this);
         atomB.RegisterBond(this);
@@ -205,23 +276,45 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         lineVisual = new GameObject("BondLine");
         lineVisual.transform.SetParent(transform);
 
-        lineRenderer = lineVisual.AddComponent<SpriteRenderer>();
-        lineRenderer.sprite = GetOrCreateLineSprite();
-        lineRenderer.color = Color.black;
-        lineRenderer.sortingOrder = 0;
-        lineRenderer.sortingLayerID = 0;
-
         bool use3DCollider = Camera.main != null && !Camera.main.orthographic;
-        if (use3DCollider)
+        useCylinderBondVisual = use3DCollider;
+
+        if (useCylinderBondVisual)
+        {
+        var tmp = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        var mesh = tmp.GetComponent<MeshFilter>().sharedMesh;
+        Destroy(tmp);
+
+            var mf = lineVisual.AddComponent<MeshFilter>();
+            mf.sharedMesh = mesh;
+            cylinderRenderer = lineVisual.AddComponent<MeshRenderer>();
+            var mat = GetOrCreateBondCylinderMaterial();
+            if (mat != null)
+                cylinderRenderer.sharedMaterial = mat;
+
+            lineCollider3D = lineVisual.AddComponent<BoxCollider>();
+            lineCollider3D.isTrigger = true;
+            lineCollider3D.size = new Vector3(1f, 2f, 1f);
+            lineCollider3D.center = Vector3.zero;
+        }
+        else
+        {
+            lineRenderer = lineVisual.AddComponent<SpriteRenderer>();
+            lineRenderer.sprite = GetOrCreateLineSprite();
+            lineRenderer.color = BondVisualColor;
+            lineRenderer.sortingOrder = 0;
+            lineRenderer.sortingLayerID = 0;
+
+            lineCollider = lineVisual.AddComponent<BoxCollider2D>();
+            lineCollider.isTrigger = true;
+        }
+
+        if (use3DCollider && !useCylinderBondVisual)
         {
             lineCollider3D = lineVisual.AddComponent<BoxCollider>();
             lineCollider3D.isTrigger = true;
         }
-        else
-        {
-            lineCollider = lineVisual.AddComponent<BoxCollider2D>();
-            lineCollider.isTrigger = true;
-        }
+
         lineVisual.AddComponent<BondLineColliderForwarder>();
     }
 
@@ -251,7 +344,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var distance = delta.magnitude;
         if (distance < 0.001f) return;
         transform.position = center;
-        transform.rotation = Quaternion.Euler(0, 0, Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg - 90f);
+        transform.rotation = BondFrameRotation(delta, useCylinderBondVisual);
     }
 
     void LateUpdate()
@@ -270,19 +363,26 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (!animatingOrbitalToBondPosition)
         {
             transform.position = center;
-            transform.rotation = Quaternion.Euler(0, 0, Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg - 90f);
+            transform.rotation = BondFrameRotation(delta, useCylinderBondVisual);
         }
 
         int bondIndex = GetBondIndex();
         int bondCount = atomA.GetBondsTo(atomB);
         float offset = GetLineOffset(bondIndex, bondCount);
-        var perpendicular = Vector3.Cross(Vector3.forward, delta / distance).normalized;
+        var perpendicular = PerpendicularToBondDirection(delta / distance);
         // Each bond has its own lineVisual + collider; position this bond's line at its offset (not shared)
         lineVisual.transform.position = center + perpendicular * offset;
         lineVisual.transform.localRotation = Quaternion.identity;
         float lineLength = Mathf.Max(0.1f, distance * 0.5f);
         float lineScaleMult = orbitalToLineAnimProgress < 0 ? 1f : orbitalToLineAnimProgress;
-        lineVisual.transform.localScale = new Vector3(0.25f, lineLength * lineScaleMult, 1f);
+        if (useCylinderBondVisual)
+        {
+            const float radiusScale = 0.25f;
+            float halfHeight = 0.5f * lineLength * lineScaleMult;
+            lineVisual.transform.localScale = new Vector3(radiusScale, Mathf.Max(0.001f, halfHeight), radiusScale);
+        }
+        else
+            lineVisual.transform.localScale = new Vector3(0.25f, lineLength * lineScaleMult, 1f);
 
         // Collider size = sprite base size (0.5 x 1) so it scales with the transform and matches the line
         if (lineCollider != null)
@@ -292,8 +392,16 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
         if (lineCollider3D != null)
         {
-            lineCollider3D.size = new Vector3(0.5f, 1f, 0.2f);
-            lineCollider3D.center = Vector3.zero;
+            if (useCylinderBondVisual)
+            {
+                lineCollider3D.size = new Vector3(1f, 2f, 1f);
+                lineCollider3D.center = Vector3.zero;
+            }
+            else
+            {
+                lineCollider3D.size = new Vector3(0.5f, 1f, 0.2f);
+                lineCollider3D.center = Vector3.zero;
+            }
         }
 
         // Position bond orbital at same world position as lineVisual (center + perpendicular * offset)
@@ -319,8 +427,9 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbital.SetPointerBlocked(true);
         }
         bool animating = orbitalToLineAnimProgress >= 0 && orbitalToLineAnimProgress < 1f;
-        bool showLine = !orbitalVisible || animating; // Show line from start of step 3 so it grows with orbital shrinking
+        bool showLine = !orbitalVisible || animating; // Show line/cylinder from start of step 3 so it grows with orbital shrinking
         if (lineRenderer != null) lineRenderer.enabled = showLine;
+        if (cylinderRenderer != null) cylinderRenderer.enabled = showLine;
         if (lineCollider != null) lineCollider.enabled = !orbitalVisible && orbitalToLineAnimProgress < 0;
         if (lineCollider3D != null) lineCollider3D.enabled = !orbitalVisible && orbitalToLineAnimProgress < 0;
     }
@@ -336,7 +445,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var distance = delta.magnitude;
         if (distance < 0.001f) return;
         var dir = delta / distance;
-        var right = Vector3.Cross(Vector3.forward, dir).normalized;
+        var right = PerpendicularToBondDirection(dir);
         int bondIndex = GetBondIndex();
         int bondCount = atomA.GetBondsTo(atomB);
         float offset = GetLineOffset(bondIndex, bondCount);

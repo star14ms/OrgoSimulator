@@ -168,6 +168,19 @@ public class MoleculeBuilder : MonoBehaviour
         AtomFunction.SetupGlobalIgnoreCollisions();
     }
 
+    /// <summary>Spawns only an electron at the work-plane (same prefab as orbital lone pairs), for 3D electron tests.</summary>
+    public void CreateFreeElectronAtViewport()
+    {
+        if (atomPrefab == null || Camera.main == null) return;
+        if (!atomPrefab.TryGetComponent<AtomFunction>(out var atomFn) || atomFn.OrbitalPrefab == null) return;
+        var ep = atomFn.OrbitalPrefab.ElectronPrefab;
+        if (ep == null) return;
+
+        Vector3 pos = GetViewportCenter() + new Vector3(0.18f, 0.1f, 0f);
+        Instantiate(ep, pos, Quaternion.identity);
+        AtomFunction.SetupGlobalIgnoreCollisions();
+    }
+
     void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB)
     {
         if (atomA == null || atomB == null) return;

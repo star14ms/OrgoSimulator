@@ -1,11 +1,21 @@
+using System.Collections;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.Rendering;
 
 public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IPointerUpHandler
 {
     [SerializeField] float orbitalWidth = 0.5f; // Fallback; overridden by SetOrbitalWidth from parent orbital
+    [SerializeField] float electron3DSphereRadius = 0.16f;
+    [Tooltip("3D idle (pair only): nudge along orbital local +Y so spheres sit under the translucent shell; lone electron stays centered (no bias).")]
+    [SerializeField] float electron3DIdleLocalYBias = 0.08f;
+    [Tooltip("3D idle: ±X separation when this orbital holds two electrons.")]
+    [SerializeField] float electron3DIdlePairSeparation = 0.06f;
 
     int slotIndex;
+    static Mesh cachedElectronSphereMesh;
+    /// <summary>Slightly above black so Lit/Unlit both read on screen; pure black often vanishes.</summary>
+    static readonly Color Electron3DVisualColor = new Color(0.1f, 0.1f, 0.14f, 1f);
 
     public void SetOrbitalWidth(float width)
     {
@@ -17,6 +27,11 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
     Vector3 dragOffset;
 
     public void SetSlotIndex(int index) => slotIndex = index;
+
+    public bool IsElectronPointerDragActive => isBeingHeld;
+
+    /// <summary>Re-apply default offset (2D) or orbital center (3D) after orbital drag ends.</summary>
+    public void ApplyOrbitalSlotPosition() => UpdatePosition();
 
     void SetPhysicsEnabled(bool enabled)
     {
@@ -36,12 +51,136 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
 
     void Start()
     {
+        StartCoroutine(Deferred3DSetup());
+    }
+
+    void OnEnable()
+    {
+        if (!isActiveAndEnabled) return;
+        if (!Use3DElectronPresentation()) return;
+        var mr = GetComponent<MeshRenderer>();
+        var mf = GetComponent<MeshFilter>();
+        if (mr != null && (mr.sharedMaterial == null || (mf != null && mf.sharedMesh == null)))
+            Refresh3DVisualAndCollider();
+    }
+
+    IEnumerator Deferred3DSetup()
+    {
+        Refresh3DVisualAndCollider();
+        yield return null;
+        if (Use3DElectronPresentation())
+        {
+            Setup3DElectronVisualIfNeeded();
+            UpdatePosition();
+        }
+    }
+
+    void Refresh3DVisualAndCollider()
+    {
+        if (Use3DElectronPresentation())
+            Setup3DElectronVisualIfNeeded();
         EnsureCollider();
         UpdatePosition();
     }
 
+    static bool Use3DElectronPresentation() =>
+        Camera.main != null && !Camera.main.orthographic;
+
+    static Mesh GetElectronSphereMesh()
+    {
+        if (cachedElectronSphereMesh != null) return cachedElectronSphereMesh;
+        var tmp = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        cachedElectronSphereMesh = tmp.GetComponent<MeshFilter>().sharedMesh;
+        Destroy(tmp);
+        return cachedElectronSphereMesh;
+    }
+
+    static Shader TryFindElectron3DShader()
+    {
+        // Lit makes pure black nearly invisible with weak/wrong lighting; Unlit stays a solid sphere inside the orbital shell.
+        var sh = Shader.Find("Universal Render Pipeline/Unlit");
+        if (sh == null) sh = Shader.Find("Unlit/Universal");
+        if (sh == null) sh = Shader.Find("Universal Render Pipeline/Lit");
+        if (sh == null) sh = Shader.Find("Universal Render Pipeline/Simple Lit");
+        return sh;
+    }
+
+    static void ConfigureElectron3DMaterial(Material mat, Color tint)
+    {
+        if (mat == null) return;
+        mat.color = tint;
+        if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", tint);
+        if (mat.HasProperty("_Color")) mat.SetColor("_Color", tint);
+        mat.renderQueue = (int)RenderQueue.Geometry;
+        if (mat.shader == null) return;
+        string sn = mat.shader.name;
+        bool lit = sn.IndexOf("Lit", System.StringComparison.OrdinalIgnoreCase) >= 0
+                   && sn.IndexOf("Unlit", System.StringComparison.OrdinalIgnoreCase) < 0;
+        if (lit && mat.HasProperty("_EmissionColor"))
+        {
+            mat.SetColor("_EmissionColor", new Color(0.06f, 0.06f, 0.09f));
+            mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+            if (mat.HasProperty("_Emission")) mat.SetFloat("_Emission", 1f);
+            mat.EnableKeyword("_EMISSION");
+        }
+    }
+
+    static void ApplyElectron3DMeshAppearance(MeshRenderer mr, Color tint)
+    {
+        if (mr == null) return;
+        var sh = TryFindElectron3DShader();
+        if (sh == null) return;
+        mr.sharedMaterial = new Material(sh) { name = "Electron3D_" + sh.name };
+        ConfigureElectron3DMaterial(mr.sharedMaterial, tint);
+        mr.allowOcclusionWhenDynamic = false;
+        mr.shadowCastingMode = ShadowCastingMode.Off;
+        mr.receiveShadows = false;
+    }
+
+    /// <summary>Replaces 2D sprite with a URP mesh sphere; uses Unlit so the ball stays visible inside translucent orbitals.</summary>
+    void Setup3DElectronVisualIfNeeded()
+    {
+        var sr = GetComponent<SpriteRenderer>();
+        var existingMr = GetComponent<MeshRenderer>();
+        if (sr == null && existingMr != null)
+        {
+            var mf = GetComponent<MeshFilter>();
+            if (mf == null) mf = gameObject.AddComponent<MeshFilter>();
+            if (mf.sharedMesh == null) mf.sharedMesh = GetElectronSphereMesh();
+            transform.localScale = Vector3.one * (electron3DSphereRadius * 2f);
+            ApplyElectron3DMeshAppearance(existingMr, Electron3DVisualColor);
+            return;
+        }
+        if (sr == null) return;
+
+        var circle2D = GetComponent<CircleCollider2D>();
+        if (circle2D != null) Destroy(circle2D);
+        Destroy(sr);
+
+        var mf2 = gameObject.GetComponent<MeshFilter>();
+        if (mf2 == null) mf2 = gameObject.AddComponent<MeshFilter>();
+        mf2.sharedMesh = GetElectronSphereMesh();
+
+        var mr = gameObject.GetComponent<MeshRenderer>();
+        if (mr == null) mr = gameObject.AddComponent<MeshRenderer>();
+        transform.localScale = Vector3.one * (electron3DSphereRadius * 2f);
+        ApplyElectron3DMeshAppearance(mr, Electron3DVisualColor);
+    }
+
     void EnsureCollider()
     {
+        if (Use3DElectronPresentation())
+        {
+            var box = GetComponent<BoxCollider>();
+            if (box != null) Destroy(box);
+            var circle2D = GetComponent<CircleCollider2D>();
+            if (circle2D != null) Destroy(circle2D);
+            var sph = GetComponent<SphereCollider>();
+            if (sph == null) sph = gameObject.AddComponent<SphereCollider>();
+            sph.isTrigger = true;
+            sph.radius = 0.5f;
+            return;
+        }
         if (GetComponent<Collider>() != null || GetComponent<Collider2D>() != null) return;
         var col = gameObject.AddComponent<BoxCollider>();
         col.size = new Vector3(0.3f, 0.3f, 0.1f);
@@ -105,9 +244,21 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
 
     void UpdatePosition()
     {
-        // Along orbital width (perpendicular to atom–orbital axis). Slot 0: one side; slot 1: other side.
-        // For left/right orbitals: electrons up/down. For top/bottom orbitals: electrons left/right.
-        float centerOfHalf = orbitalWidth * 0.5f; // Half the total spacing; electrons at ±centerOfHalf
+        if (Use3DElectronPresentation())
+        {
+            var orb = GetComponentInParent<ElectronOrbitalFunction>();
+            int n = orb != null ? orb.ElectronCount : 1;
+            if (n >= 2)
+            {
+                float x = (slotIndex == 0 ? -1f : 1f) * electron3DIdlePairSeparation;
+                transform.localPosition = new Vector3(x, electron3DIdleLocalYBias, 0f);
+            }
+            else
+                transform.localPosition = Vector3.zero;
+            return;
+        }
+        // 2D: always slot-based (±half-width); lone electron stays on slot 0 side.
+        float centerOfHalf = orbitalWidth * 0.5f;
         float y = (slotIndex == 0 ? -1f : 1f) * centerOfHalf;
         transform.localPosition = new Vector3(0, y, 0);
     }

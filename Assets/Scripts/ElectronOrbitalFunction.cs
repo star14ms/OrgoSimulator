@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.Rendering;
 
 public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IPointerUpHandler
 {
@@ -10,7 +11,17 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     [SerializeField] ElectronFunction electronPrefab;
     [SerializeField] float electronSpacing = 0.5f; // Distance between electrons (larger = more spread)
     [SerializeField] Sprite stretchSprite; // Optional: single sprite for stretch. If null, uses procedural triangle+circle composite.
-    [SerializeField] [Range(0.05f, 1f)] float orbitalVisualAlpha = 0.32f;
+    [SerializeField] [Range(0.05f, 1f)] float orbitalVisualAlpha = 0.05f;
+    [Tooltip("3D drag stretch only: scales hemisphere diameter and cone base (XZ) vs idle orbital sizing.")]
+    [SerializeField] [Range(0.35f, 1f)] float dragStretch3DCrossSectionScale = 0.65f;
+    [Tooltip("3D drag: offset from flat seam into the hemispherical bulk along the tip axis, as a fraction of cap radius (keeps electrons under the dome, not on the outer shell).")]
+    [SerializeField] [Range(0.08f, 0.5f)] float drag3DElectronDepthInCapFraction = 0.32f;
+    [Tooltip("Draw seam → target → electron paths in Scene view while dragging a 3D orbital.")]
+    [SerializeField] bool debugDraw3DElectronDrag;
+    [Tooltip("Print orbital / stretch / seam / target / electron world & local positions while dragging (Console, throttled).")]
+    [SerializeField] bool log3DElectronDragToConsole = true;
+    [SerializeField] [Range(0.05f, 0.5f)] float log3DElectronDragInterval = 0.12f;
+    float last3DElectronDragLogTime = -1000f;
     AtomFunction bondedAtom;
     CovalentBond bond;
     bool isBeingHeld;
@@ -48,6 +59,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     public void SetBondedAtom(AtomFunction atom) => bondedAtom = atom;
 
     public void SetBond(CovalentBond b) => bond = b;
+
+    /// <summary>Prefab used for lone-pair electrons (e.g. spawn free electrons for testing).</summary>
+    public ElectronFunction ElectronPrefab => electronPrefab;
 
     public void RemoveElectron(ElectronFunction electron)
     {
@@ -155,6 +169,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     Quaternion originalLocalRotation;
     Color originalColor;
     GameObject stretchVisual;
+    bool stretchVisualIs3D;
     SpriteRenderer mainSpriteRenderer;
     MeshRenderer mainMeshRenderer;
     const float MinStretchLength = 0.5f;
@@ -163,6 +178,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     static Sprite cachedTriangleSprite;
     static Sprite cachedCircleSprite;
     static Material cachedTriangleClipMaterial;
+    static Mesh cachedBuiltinSphereMesh;
+    static Mesh cachedUnitConeMesh;
+    static Mesh cachedUnitHemisphereMesh;
     static readonly int ClipCenterId = Shader.PropertyToID("_ClipCenter");
     static readonly int ClipRadiusXId = Shader.PropertyToID("_ClipRadiusX");
     static readonly int ClipRadiusYId = Shader.PropertyToID("_ClipRadiusY");
@@ -264,6 +282,192 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 32f);
     }
 
+    static bool Use3DOrbitalPresentation() =>
+        Camera.main != null && !Camera.main.orthographic;
+
+    static Mesh GetBuiltinSphereMesh()
+    {
+        if (cachedBuiltinSphereMesh != null) return cachedBuiltinSphereMesh;
+        var tmp = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        cachedBuiltinSphereMesh = tmp.GetComponent<MeshFilter>().sharedMesh;
+        Destroy(tmp);
+        return cachedBuiltinSphereMesh;
+    }
+
+    /// <summary>Upper hemisphere, radius 0.5 (diameter 1 at scale 1, matches Unity sphere). Flat cap in XZ at y=0, dome toward +Y — attach y=0 flush to cone top.</summary>
+    static Mesh GetOrCreateUnitHemisphereMesh()
+    {
+        if (cachedUnitHemisphereMesh != null) return cachedUnitHemisphereMesh;
+        const float rad = 0.5f;
+        const int nSeg = 24;
+        const int nLat = 12;
+        var verts = new List<Vector3>();
+        var tris = new List<int>();
+
+        verts.Add(new Vector3(0f, rad, 0f));
+
+        for (int lat = 1; lat <= nLat; lat++)
+        {
+            float phi = (lat / (float)nLat) * (Mathf.PI * 0.5f);
+            float y = rad * Mathf.Cos(phi);
+            float ringR = rad * Mathf.Sin(phi);
+            for (int seg = 0; seg < nSeg; seg++)
+            {
+                float theta = (seg / (float)nSeg) * Mathf.PI * 2f;
+                verts.Add(new Vector3(ringR * Mathf.Cos(theta), y, ringR * Mathf.Sin(theta)));
+            }
+        }
+
+        for (int seg = 0; seg < nSeg; seg++)
+        {
+            int s1 = (seg + 1) % nSeg;
+            tris.Add(0);
+            tris.Add(1 + s1);
+            tris.Add(1 + seg);
+        }
+
+        for (int lat = 1; lat < nLat; lat++)
+        {
+            int ringA = 1 + (lat - 1) * nSeg;
+            int ringB = 1 + lat * nSeg;
+            for (int seg = 0; seg < nSeg; seg++)
+            {
+                int s1 = (seg + 1) % nSeg;
+                int a = ringA + seg, b = ringA + s1, c = ringB + seg, d = ringB + s1;
+                tris.Add(a);
+                tris.Add(c);
+                tris.Add(b);
+                tris.Add(b);
+                tris.Add(c);
+                tris.Add(d);
+            }
+        }
+
+        int eqBase = 1 + (nLat - 1) * nSeg;
+        int capCenter = verts.Count;
+        verts.Add(Vector3.zero);
+        for (int seg = 0; seg < nSeg; seg++)
+        {
+            int s1 = (seg + 1) % nSeg;
+            tris.Add(capCenter);
+            tris.Add(eqBase + s1);
+            tris.Add(eqBase + seg);
+        }
+
+        cachedUnitHemisphereMesh = new Mesh { name = "OrgoUnitHemisphere" };
+        cachedUnitHemisphereMesh.SetVertices(verts);
+        cachedUnitHemisphereMesh.SetTriangles(tris, 0);
+        cachedUnitHemisphereMesh.RecalculateNormals();
+        cachedUnitHemisphereMesh.RecalculateBounds();
+        return cachedUnitHemisphereMesh;
+    }
+
+    static Mesh GetOrCreateUnitConeMesh()
+    {
+        if (cachedUnitConeMesh != null) return cachedUnitConeMesh;
+        const int n = 20;
+        const float h = 1f;
+        const float r = 0.5f;
+        var vertices = new Vector3[n + 2];
+        var uv = new Vector2[n + 2];
+        vertices[0] = new Vector3(0f, -h * 0.5f, 0f);
+        uv[0] = new Vector2(0.5f, 0f);
+        for (int i = 0; i <= n; i++)
+        {
+            float t = i / (float)n * Mathf.PI * 2f;
+            float x = Mathf.Cos(t) * r;
+            float z = Mathf.Sin(t) * r;
+            vertices[i + 1] = new Vector3(x, h * 0.5f, z);
+            uv[i + 1] = new Vector2(i / (float)n, 1f);
+        }
+        var tris = new int[n * 3];
+        for (int i = 0; i < n; i++)
+        {
+            tris[i * 3] = 0;
+            tris[i * 3 + 1] = i + 1;
+            tris[i * 3 + 2] = i + 2;
+        }
+        cachedUnitConeMesh = new Mesh { name = "OrgoUnitCone" };
+        cachedUnitConeMesh.vertices = vertices;
+        cachedUnitConeMesh.triangles = tris;
+        cachedUnitConeMesh.uv = uv;
+        cachedUnitConeMesh.RecalculateNormals();
+        cachedUnitConeMesh.RecalculateBounds();
+        return cachedUnitConeMesh;
+    }
+
+    static void ConfigureUrpSurfaceTransparent(Material mat)
+    {
+        if (mat == null) return;
+        if (mat.HasProperty("_Surface"))
+        {
+            mat.SetFloat("_Surface", 1f);
+            mat.SetFloat("_Blend", 0f);
+            mat.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
+            mat.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
+            if (mat.HasProperty("_ZWrite"))
+                mat.SetInt("_ZWrite", 0);
+            mat.renderQueue = (int)RenderQueue.Transparent;
+            mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            mat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+        }
+        else
+        {
+            // Without _Surface (some URP variants), still avoid opaque shell overwriting inner electrons.
+            if (mat.HasProperty("_ZWrite"))
+                mat.SetInt("_ZWrite", 0);
+            mat.renderQueue = (int)RenderQueue.Transparent;
+        }
+    }
+
+    static Shader TryFindUrplShader()
+    {
+        var sh = Shader.Find("Universal Render Pipeline/Lit");
+        if (sh == null) sh = Shader.Find("Universal Render Pipeline/Simple Lit");
+        return sh;
+    }
+
+    Material CreateStretchOrbitalMaterial(Color tint)
+    {
+        var sh = TryFindUrplShader();
+        if (sh == null) return null;
+        var mat = new Material(sh);
+        ConfigureUrpSurfaceTransparent(mat);
+        mat.color = tint;
+        if (mat.HasProperty(ShaderPropBaseColor)) mat.SetColor(ShaderPropBaseColor, tint);
+        return mat;
+    }
+
+    static Quaternion RotationFromUpTo(Vector3 dir)
+    {
+        if (dir.sqrMagnitude < 1e-10f) return Quaternion.identity;
+        dir.Normalize();
+        if (Vector3.Dot(Vector3.up, dir) < -0.998f)
+            return Quaternion.AngleAxis(180f, Vector3.right);
+        return Quaternion.FromToRotation(Vector3.up, dir);
+    }
+
+    void Setup3DOrbitalVisual(MeshFilter mf, MeshRenderer mr)
+    {
+        if (mf == null || mr == null) return;
+        mf.sharedMesh = GetBuiltinSphereMesh();
+        var sh = TryFindUrplShader();
+        if (sh == null) return;
+        var mat = new Material(sh);
+        ConfigureUrpSurfaceTransparent(mat);
+        mr.sharedMaterial = mat;
+        mainMeshRenderer = mr;
+
+        var cap = GetComponent<CapsuleCollider>();
+        if (cap != null)
+        {
+            cap.direction = 1;
+            cap.radius = 0.22f;
+            cap.height = 0.62f;
+            cap.center = Vector3.zero;
+        }
+    }
+
     public void OnPointerDown(PointerEventData eventData)
     {
         isBeingHeld = true;
@@ -295,6 +499,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         isBeingHeld = false;
         Vector3 tip = transform.position;
         if (stretchVisual != null) { Destroy(stretchVisual); stretchVisual = null; }
+        Reposition3DElectronsAfterOrbitalDrag();
         if (mainSpriteRenderer != null) mainSpriteRenderer.enabled = true;
         if (mainMeshRenderer != null) mainMeshRenderer.enabled = true;
         SetPhysicsEnabled(true);
@@ -1138,7 +1343,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     void CreateStretchVisual()
     {
         if (stretchVisual != null) return;
-        var anchor = GetAtomCenter();
         var tip = transform.position;
         stretchVisual = new GameObject("StretchVisual");
         stretchVisual.transform.SetParent(transform.parent);
@@ -1156,6 +1360,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         else if (mainMeshRenderer != null && mainMeshRenderer.sharedMaterial != null)
             color = originalColor;
 
+        color.a = Mathf.Clamp01(orbitalVisualAlpha);
+        stretchVisualIs3D = Use3DOrbitalPresentation() && stretchSprite == null;
+
         if (stretchSprite != null)
         {
             var sr = stretchVisual.AddComponent<SpriteRenderer>();
@@ -1163,6 +1370,28 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             sr.color = color;
             sr.sortingOrder = sortOrder;
             sr.sortingLayerID = sortLayer;
+        }
+        else if (stretchVisualIs3D)
+        {
+            var coneGo = new GameObject("StretchCone");
+            coneGo.transform.SetParent(stretchVisual.transform);
+            coneGo.transform.localPosition = Vector3.zero;
+            coneGo.transform.localRotation = Quaternion.identity;
+            coneGo.transform.localScale = Vector3.one;
+            var mfCone = coneGo.AddComponent<MeshFilter>();
+            mfCone.sharedMesh = GetOrCreateUnitConeMesh();
+            var mrCone = coneGo.AddComponent<MeshRenderer>();
+            mrCone.sharedMaterial = CreateStretchOrbitalMaterial(color);
+
+            var hemGo = new GameObject("StretchHemisphere");
+            hemGo.transform.SetParent(stretchVisual.transform);
+            hemGo.transform.localPosition = Vector3.zero;
+            hemGo.transform.localRotation = Quaternion.identity;
+            hemGo.transform.localScale = Vector3.one;
+            var mfSph = hemGo.AddComponent<MeshFilter>();
+            mfSph.sharedMesh = GetOrCreateUnitHemisphereMesh();
+            var mrSph = hemGo.AddComponent<MeshRenderer>();
+            mrSph.sharedMaterial = CreateStretchOrbitalMaterial(color);
         }
         else
         {
@@ -1193,12 +1422,113 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         UpdateStretchVisual(tip);
     }
 
-    Vector3 GetAtomCenter() => transform.parent != null ? transform.parent.position : transform.position;
+    /// <summary>Cone/hemisphere anchor for stretch. Bond orbitals at the bond center use an atom so tip−anchor is non‑degenerate (sigma bonds).</summary>
+    Vector3 GetStretchAnchorForTip(Vector3 tip)
+    {
+        if (bond != null)
+        {
+            var atomA = bond.AtomA;
+            var atomB = bond.AtomB;
+            if (atomA != null && atomB != null)
+            {
+                Vector3 center = bond.transform.position;
+                Vector3 delta = tip - center;
+                const float eps = 0.02f;
+                if (delta.sqrMagnitude >= eps * eps)
+                    return center;
+                float dA = (tip - atomA.transform.position).sqrMagnitude;
+                float dB = (tip - atomB.transform.position).sqrMagnitude;
+                return dA >= dB ? atomA.transform.position : atomB.transform.position;
+            }
+        }
+        if (transform.parent != null)
+            return transform.parent.position;
+        return transform.position;
+    }
+
+    float Approximate3DElectronSphereRadiusWorld()
+    {
+        float maxR = 0f;
+        foreach (var e in GetComponentsInChildren<ElectronFunction>(true))
+        {
+            if (e == null) continue;
+            float m = Mathf.Max(Mathf.Max(e.transform.lossyScale.x, e.transform.lossyScale.y), e.transform.lossyScale.z);
+            maxR = Mathf.Max(maxR, m * 0.5f);
+        }
+        // Slight overestimate so the black sphere stays clearly inside the translucent cap.
+        return maxR > 0.001f ? maxR * 1.08f : 0.12f;
+    }
+
+    /// <summary>Shared math for 3D stretch: seam plane (cone–hemisphere) and electron center inside the dome (not protruding through the outer shell).</summary>
+    bool TryCompute3DElectronTargetWorldForTip(Vector3 tip, out Vector3 seamCenterWorld, out Vector3 electronTargetWorld)
+    {
+        seamCenterWorld = electronTargetWorld = default;
+        if (!Use3DOrbitalPresentation() || !stretchVisualIs3D || stretchVisual == null) return false;
+        var anchor = GetStretchAnchorForTip(tip);
+        var delta = tip - anchor;
+        float distance = delta.magnitude;
+        if (distance < 0.01f && bond == null) return false;
+
+        Transform hem = stretchVisual.transform.Find("StretchHemisphere");
+        if (hem == null) return false;
+
+        // Pivot = flat-face / sphere center; cap radius from world scale (matches rendered hemisphere).
+        seamCenterWorld = hem.position;
+        Vector3 axis = hem.up;
+        float capRadius = 0.5f * Mathf.Max(hem.lossyScale.x, Mathf.Max(hem.lossyScale.y, hem.lossyScale.z));
+        if (capRadius < 0.001f) return false;
+
+        float electronR = Approximate3DElectronSphereRadiusWorld();
+        const float shellMargin = 1.28f;
+        float maxAxialForSphereCenter = Mathf.Max(0.001f, capRadius - electronR * shellMargin);
+        float desiredAxial = capRadius * drag3DElectronDepthInCapFraction;
+        float axial = Mathf.Min(desiredAxial, maxAxialForSphereCenter);
+        float minAxial = capRadius * 0.06f;
+        if (axial < minAxial)
+            axial = Mathf.Min(minAxial, maxAxialForSphereCenter);
+        electronTargetWorld = seamCenterWorld + axis * axial;
+        return true;
+    }
+
+    void Update3DElectronPositionsForStretchDrag(Vector3 tip)
+    {
+        if (!TryCompute3DElectronTargetWorldForTip(tip, out var seamW, out var targetWorld)) return;
+        var local = transform.InverseTransformPoint(targetWorld);
+        foreach (var e in GetComponentsInChildren<ElectronFunction>())
+            e.transform.localPosition = local;
+
+        if (!log3DElectronDragToConsole) return;
+        if (Time.unscaledTime - last3DElectronDragLogTime < log3DElectronDragInterval) return;
+        last3DElectronDragLogTime = Time.unscaledTime;
+
+        var hem = stretchVisual != null ? stretchVisual.transform.Find("StretchHemisphere") : null;
+        float capR = hem != null
+            ? 0.5f * Mathf.Max(hem.lossyScale.x, Mathf.Max(hem.lossyScale.y, hem.lossyScale.z))
+            : -1f;
+        var er = Approximate3DElectronSphereRadiusWorld();
+        string parentName = transform.parent != null ? transform.parent.name : "(none)";
+        Debug.Log(
+            $"[3D ElectronDrag] t={Time.unscaledTime:F2}s held={isBeingHeld}\n" +
+            $"  orbital world={transform.position} tip={tip} parent={parentName}\n" +
+            $"  stretch world={stretchVisual.transform.position} hem.up={(hem != null ? hem.up.ToString() : "?")} capR={capR:F4}\n" +
+            $"  seam world={seamW} target world={targetWorld} invLocal={local}\n" +
+            $"  approxElectronR={er:F4} (max child sphere, ×1.08)");
+        int i = 0;
+        foreach (var e in GetComponentsInChildren<ElectronFunction>())
+            Debug.Log($"  electron[{i++}] world={e.transform.position} local={e.transform.localPosition}");
+    }
+
+    void Reposition3DElectronsAfterOrbitalDrag()
+    {
+        if (!Use3DOrbitalPresentation()) return;
+        foreach (var e in GetComponentsInChildren<ElectronFunction>())
+            e.ApplyOrbitalSlotPosition();
+    }
 
     void UpdateStretchVisual(Vector3 tip)
     {
         if (stretchVisual == null) return;
-        var anchor = GetAtomCenter();
+        var anchor = GetStretchAnchorForTip(tip);
         var dir = (tip - anchor);
         var distance = dir.magnitude;
         if (distance < 0.01f && bond == null) return;
@@ -1208,53 +1538,83 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         float minLength = (bond != null) ? 0f : MinStretchLength;
         distance = Mathf.Max(distance, minLength);
 
-        float angle = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg - 90f;
-        stretchVisual.transform.rotation = Quaternion.Euler(0, 0, angle);
+        float padding = (bond != null) ? 0f : Mathf.Min(apexPadding, distance * 0.4f);
+        float triLength = Mathf.Max(0.01f, distance - padding);
+        Vector3 triApex = anchor + padding * dir;
+        Vector3 triBase = tip;
 
         if (stretchSprite != null)
         {
+            float angle = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg - 90f;
+            stretchVisual.transform.rotation = Quaternion.Euler(0, 0, angle);
             stretchVisual.transform.position = (anchor + tip) * 0.5f;
             stretchVisual.transform.localScale = Vector3.one;
+            return;
         }
-        else
+
+        if (stretchVisualIs3D)
         {
-            stretchVisual.transform.localScale = Vector3.one;
-            var tri = stretchVisual.transform.Find("Triangle");
-            var circle = stretchVisual.transform.Find("Circle");
-            // Bond orbitals: no nucleus at center, so triangle tip can reach the origin. Lone orbitals: use apexPadding to avoid overlapping nucleus.
-            float padding = (bond != null) ? 0f : Mathf.Min(apexPadding, distance * 0.4f);
-            float triLength = distance - padding;
-            Vector3 triApex = anchor + padding * dir;
-            Vector3 triBase = tip;
+            stretchVisual.transform.rotation = RotationFromUpTo(dir);
             stretchVisual.transform.position = (triApex + triBase) * 0.5f;
+            stretchVisual.transform.localScale = Vector3.one;
             const float ProceduralSpriteSize = 2f;
             float targetSize = ProceduralSpriteSize * originalLocalScale.y;
             float circleScale = targetSize / ProceduralSpriteSize;
-            float triWidthScale = circleScale * 2f;
-            float triHeightScale = triLength / ProceduralSpriteSize;
-            if (tri != null)
+            float triWidthScale = circleScale * 2f * dragStretch3DCrossSectionScale;
+            // Unit cone base diameter = 1; scale.xz = triWidthScale → matches hemisphere base (diameter triWidthScale).
+            // Hemisphere flat face at local y=0 sits flush on cone top (y = coneTopY); dome extends toward the tip.
+            float coneTopY = 0.5f * triLength;
+            var coneT = stretchVisual.transform.Find("StretchCone");
+            var sphereT = stretchVisual.transform.Find("StretchHemisphere");
+            if (coneT != null)
             {
-                tri.localPosition = Vector3.zero;
-                tri.localRotation = Quaternion.identity;
-                tri.localScale = new Vector3(triWidthScale, triHeightScale, 1f);
-                var triSr = tri.GetComponent<SpriteRenderer>();
-                if (triSr != null && triSr.material != null)
-                {
-                    var block = new MaterialPropertyBlock();
-                    triSr.GetPropertyBlock(block);
-                    block.SetVector(ClipCenterId, new Vector4(0f, 1f, 0f, 0f));
-                    float clipRadius = circleScale;
-                    block.SetFloat(ClipRadiusXId, clipRadius / Mathf.Max(triWidthScale, 0.001f));
-                    block.SetFloat(ClipRadiusYId, clipRadius / Mathf.Max(triHeightScale, 0.001f));
-                    triSr.SetPropertyBlock(block);
-                }
+                coneT.localPosition = Vector3.zero;
+                coneT.localRotation = Quaternion.identity;
+                coneT.localScale = new Vector3(triWidthScale, triLength, triWidthScale);
             }
-            if (circle != null)
+            if (sphereT != null)
             {
-                circle.localPosition = new Vector3(0f, triHeightScale, 0f);
-                circle.localRotation = Quaternion.identity;
-                circle.localScale = new Vector3(circleScale * OffsetScale, circleScale * OffsetScale, 1f);
+                sphereT.localPosition = new Vector3(0f, coneTopY, 0f);
+                sphereT.localRotation = Quaternion.identity;
+                sphereT.localScale = Vector3.one * triWidthScale;
             }
+            Update3DElectronPositionsForStretchDrag(tip);
+            return;
+        }
+
+        float angleSprite = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg - 90f;
+        stretchVisual.transform.rotation = Quaternion.Euler(0, 0, angleSprite);
+        stretchVisual.transform.localScale = Vector3.one;
+        var tri = stretchVisual.transform.Find("Triangle");
+        var circle = stretchVisual.transform.Find("Circle");
+        stretchVisual.transform.position = (triApex + triBase) * 0.5f;
+        const float ProcSize = 2f;
+        float targetSz = ProcSize * originalLocalScale.y;
+        float circSc = targetSz / ProcSize;
+        float triW = circSc * 2f;
+        float triH = triLength / ProcSize;
+        if (tri != null)
+        {
+            tri.localPosition = Vector3.zero;
+            tri.localRotation = Quaternion.identity;
+            tri.localScale = new Vector3(triW, triH, 1f);
+            var triSr = tri.GetComponent<SpriteRenderer>();
+            if (triSr != null && triSr.material != null)
+            {
+                var block = new MaterialPropertyBlock();
+                triSr.GetPropertyBlock(block);
+                block.SetVector(ClipCenterId, new Vector4(0f, 1f, 0f, 0f));
+                float clipRadius = circSc;
+                block.SetFloat(ClipRadiusXId, clipRadius / Mathf.Max(triW, 0.001f));
+                block.SetFloat(ClipRadiusYId, clipRadius / Mathf.Max(triH, 0.001f));
+                triSr.SetPropertyBlock(block);
+            }
+        }
+        if (circle != null)
+        {
+            circle.localPosition = new Vector3(0f, triH, 0f);
+            circle.localRotation = Quaternion.identity;
+            circle.localScale = new Vector3(circSc * OffsetScale, circSc * OffsetScale, 1f);
         }
     }
 
@@ -1263,9 +1623,14 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (originalLocalScale.sqrMagnitude < 0.01f) originalLocalScale = transform.localScale;
         var sr = GetComponent<SpriteRenderer>();
         var mr = GetComponent<MeshRenderer>();
+        var mf = GetComponent<MeshFilter>();
         if (sr != null && originalColor.a < 0.01f) originalColor = sr.color;
         else if (mr != null && mr.sharedMaterial != null && originalColor.a < 0.01f)
             originalColor = GetMaterialTint(mr.sharedMaterial);
+
+        if (Use3DOrbitalPresentation())
+            Setup3DOrbitalVisual(mf, mr);
+
         ApplyOrbitalVisualOpacity(sr, mr);
         EnsureCollider();
         SyncElectronObjects();
@@ -1333,7 +1698,35 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             box2D.size = orbitalColliderSize;
     }
 
-    void Update() { }
+    void LateUpdate()
+    {
+        if (Use3DOrbitalPresentation())
+        {
+            if (debugDraw3DElectronDrag && isBeingHeld && stretchVisualIs3D && stretchVisual != null)
+            {
+                var tip = transform.position;
+                if (TryCompute3DElectronTargetWorldForTip(tip, out var seam, out var tgt))
+                {
+                    Debug.DrawLine(seam, tgt, Color.green);
+                    Debug.DrawRay(seam, stretchVisual.transform.up * 0.04f, Color.yellow);
+                    foreach (var e in GetComponentsInChildren<ElectronFunction>())
+                    {
+                        Debug.DrawLine(tgt, e.transform.position, Color.cyan);
+                        Debug.DrawRay(e.transform.position, Vector3.up * 0.03f, Color.magenta);
+                    }
+                }
+            }
+
+            if (!isBeingHeld)
+            {
+                foreach (var e in GetComponentsInChildren<ElectronFunction>())
+                {
+                    if (e == null || e.IsElectronPointerDragActive) continue;
+                    e.ApplyOrbitalSlotPosition();
+                }
+            }
+        }
+    }
 
     void SyncElectronObjects()
     {

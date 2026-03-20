@@ -17,6 +17,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     bool isBeingHeld;
     Vector3 dragOffset;
     HashSet<AtomFunction> moleculeAtoms;
+    Transform elementLabelTransform;
 
     public float BondRadius => bondRadius;
     public ElectronOrbitalFunction OrbitalPrefab => orbitalPrefab;
@@ -798,6 +799,12 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         foreach (var orb in orbitals)
             allElectrons.AddRange(orb.GetComponentsInChildren<ElectronFunction>());
 
+        foreach (var e in Object.FindObjectsByType<ElectronFunction>(FindObjectsSortMode.None))
+        {
+            if (e != null && !allElectrons.Contains(e))
+                allElectrons.Add(e);
+        }
+
         for (int i = 0; i < atomColliders.Count; i++)
             for (int j = i + 1; j < atomColliders.Count; j++)
                 IgnoreCollisionPair(atomColliders[i], atomColliders[j]);
@@ -867,7 +874,49 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         InitializeFromAtomicNumber();
     }
 
-    void Update() { }
+    /// <summary>World-space radius of the atom body for placing labels in front of the mesh (not inside it).</summary>
+    float GetAtomBodyRadiusWorld()
+    {
+        var sph = GetComponent<SphereCollider>();
+        if (sph != null)
+        {
+            Vector3 ls = transform.lossyScale;
+            float m = Mathf.Max(Mathf.Abs(ls.x), Mathf.Abs(ls.y), Mathf.Abs(ls.z));
+            return sph.radius * m;
+        }
+        var cap = GetComponent<CapsuleCollider>();
+        if (cap != null)
+        {
+            Vector3 ls = transform.lossyScale;
+            float rm = Mathf.Max(Mathf.Abs(ls.x), Mathf.Abs(ls.z));
+            float hm = Mathf.Abs(ls.y);
+            return Mathf.Max(cap.radius * rm, cap.height * 0.5f * hm);
+        }
+        var mr = GetComponent<MeshRenderer>();
+        if (mr != null)
+            return Mathf.Max(mr.bounds.extents.x, mr.bounds.extents.y, mr.bounds.extents.z);
+        return 0.42f;
+    }
+
+    void LateUpdate()
+    {
+        if (elementLabelTransform == null)
+            elementLabelTransform = transform.Find("ElementLabel");
+        if (elementLabelTransform == null) return;
+        var cam = Camera.main;
+        if (cam == null) return;
+        Vector3 labelAnchor = transform.position;
+        var toCam = cam.transform.position - labelAnchor;
+        if (toCam.sqrMagnitude < 1e-10f) return;
+        var toCamDir = toCam.normalized;
+        float camDist = toCam.magnitude;
+        float bodyRworld = GetAtomBodyRadiusWorld();
+        float radial = bodyRworld + elementLabelBeyondBodyMargin;
+        float offset = Mathf.Min(radial, camDist * 0.42f);
+        elementLabelTransform.position = labelAnchor + toCamDir * offset;
+        // TMP world quads are authored with the visible side opposite default LookRotation(toCam).
+        elementLabelTransform.rotation = Quaternion.LookRotation(toCam, cam.transform.up) * Quaternion.Euler(0f, 180f, 0f);
+    }
 
     void EnsureCollider()
     {
@@ -1007,11 +1056,18 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     [SerializeField] Vector2 chargeLabelOffset = new Vector2(0.5f, 0.33f); // Fraction of elementLabelSize (0.5 = right/top edge)
     [SerializeField] Vector2 elementLabelSize = new Vector2(1f, 1f);
     [SerializeField] Vector2 chargeLabelSize = new Vector2(0.5f, 0.5f);
+    [Tooltip("World units beyond the atom body radius along the view ray so element + charge TMP sit outside the sphere.")]
+    [SerializeField] float elementLabelBeyondBodyMargin = 0.035f;
 
     public static TMP_FontAsset GetDefaultFont()
     {
-        var font = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
-        return font != null ? font : TMP_Settings.defaultFontAsset;
+        var font = TMP_Settings.defaultFontAsset;
+        if (font != null)
+            return font;
+        font = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
+        if (font != null)
+            return font;
+        return Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF - Fallback");
     }
 
     void CreateElementLabel()
@@ -1028,7 +1084,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         tmp.alignment = TextAlignmentOptions.Center;
         if (tmp.rectTransform != null)
             tmp.rectTransform.sizeDelta = elementLabelSize;
-        var labelFg = ContrastingLabelColor(PeriodicTableUI.GetAtomSphereColor(atomicNumber));
+        var labelFg = atomicNumber == 1
+            ? Color.white
+            : ContrastingLabelColor(PeriodicTableUI.GetAtomSphereColor(atomicNumber));
         tmp.color = labelFg;
 
         var chargeObj = new GameObject("ChargeLabel");
@@ -1047,6 +1105,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         chargeTmp.alignment = TextAlignmentOptions.BottomLeft;
         chargeTmp.color = labelFg;
         RefreshChargeLabel();
+        elementLabelTransform = labelObj.transform;
     }
 
     public static string GetElementSymbol(int z)

@@ -5,7 +5,7 @@ using TMPro;
 
 /// <summary>
 /// Builds the molecule construction toolbar: Row 1 (H, C, N, O, S, F, Cl, Br, I, More),
-/// Row 2 (Cycloalkanes dropdown, Benzene). "More" opens the full periodic table.
+/// Row 2 (Cycloalkanes dropdown, Benzene, free-electron spawn). "More" opens the full periodic table.
 /// </summary>
 public class AtomQuickAddUI : MonoBehaviour
 {
@@ -294,7 +294,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var row = new GameObject("Row2");
         var rect = row.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(350, buttonSize);
+        rect.sizeDelta = new Vector2(520, buttonSize);
 
         var hLayout = row.AddComponent<HorizontalLayoutGroup>();
         hLayout.spacing = spacing;
@@ -309,6 +309,9 @@ public class AtomQuickAddUI : MonoBehaviour
 
         var benzeneBtn = CreateBenzeneButton();
         benzeneBtn.transform.SetParent(row.transform, false);
+
+        var electronTestBtn = CreateElectronTestButton();
+        electronTestBtn.transform.SetParent(row.transform, false);
 
         return row;
     }
@@ -521,6 +524,44 @@ public class AtomQuickAddUI : MonoBehaviour
         tmp.raycastTarget = false;
 
         return go;
+    }
+
+    GameObject CreateElectronTestButton()
+    {
+        var go = new GameObject("Btn_ElectronTest");
+        var rect = go.AddComponent<RectTransform>();
+        rect.sizeDelta = new Vector2(92, buttonSize);
+
+        var image = go.AddComponent<Image>();
+        image.color = new Color(0.35f, 0.42f, 0.55f);
+
+        var btn = go.AddComponent<Button>();
+        btn.onClick.AddListener(OnElectronTestClicked);
+
+        var labelGo = new GameObject("Label");
+        labelGo.transform.SetParent(go.transform, false);
+        var labelRect = labelGo.AddComponent<RectTransform>();
+        labelRect.anchorMin = Vector2.zero;
+        labelRect.anchorMax = Vector2.one;
+        labelRect.offsetMin = Vector2.zero;
+        labelRect.offsetMax = Vector2.zero;
+
+        var tmp = labelGo.AddComponent<TextMeshProUGUI>();
+        tmp.font = AtomFunction.GetDefaultFont();
+        // LiberationSans SDF has no U+207B (superscript minus); use rich-text sup + ASCII hyphen.
+        tmp.richText = true;
+        tmp.text = "e<sup>-</sup>";
+        tmp.fontSize = fontSize - 2;
+        tmp.alignment = TextAlignmentOptions.Center;
+        tmp.raycastTarget = false;
+
+        return go;
+    }
+
+    void OnElectronTestClicked()
+    {
+        if (moleculeBuilder != null)
+            moleculeBuilder.CreateFreeElectronAtViewport();
     }
 
     void OnElementClicked(int atomicNumber)
