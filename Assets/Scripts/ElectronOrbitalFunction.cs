@@ -414,6 +414,14 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
+    /// <summary>Snaps this orbital back to its original local position/rotation/scale (before any drag).</summary>
+    public void SnapToOriginal()
+    {
+        transform.localPosition = originalLocalPosition;
+        transform.localRotation = originalLocalRotation;
+        transform.localScale = originalLocalScale;
+    }
+
     [Tooltip("Step 1: Align molecule. Duration in seconds.")]
     [SerializeField] float bondAnimStep1Duration = 1.0f;
     [Tooltip("Step 2: Rearrange + Redistribute. Duration in seconds.")]
@@ -422,23 +430,35 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     [SerializeField] float bondAnimStep3Duration = 1.0f;
 
     /// <summary>Sigma bond: starts animated formation. Returns true if animation started.</summary>
-    bool FormCovalentBondSigmaStart(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition)
+    bool FormCovalentBondSigmaStart(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition, bool alreadyFlipped = false)
     {
         bool sourceAlreadyAligned = IsSourceOrbitalAlreadyAlignedWithTarget(sourceAtom, targetOrbital);
         bool cannotRearrangeSource = !sourceAlreadyAligned && (sourceAtom.GetPiBondCount() > 0 || IsSourceFlippedSideFilled(sourceAtom, targetAtom, targetOrbital));
         if (sourceAtom.CovalentBonds.Count > 0 && cannotRearrangeSource)
         {
-            var sourceOrbitalOriginalTip = sourceAtom.transform.TransformPoint(originalLocalPosition);
-            bool targetAlreadyAligned = IsOrbitalAlignedWithTargetPoint(targetOrbital, sourceOrbitalOriginalTip);
-            bool cannotRearrangeTarget = !targetAlreadyAligned && (targetAtom.GetPiBondCount() > 0 || IsSourceFlippedSideFilled(targetAtom, sourceAtom, this, sourceOrbitalOriginalTip));
-            if (targetAtom.CovalentBonds.Count > 0 && cannotRearrangeTarget)
+            if (alreadyFlipped)
                 return false;
+            return targetOrbital.FormCovalentBondSigmaStartAsSource(targetAtom, sourceAtom, this, dropPosition);
         }
-        sourceAtom.StartCoroutine(FormCovalentBondSigmaCoroutine(sourceAtom, targetAtom, targetOrbital, dropPosition));
+        sourceAtom.StartCoroutine(FormCovalentBondSigmaCoroutine(sourceAtom, targetAtom, targetOrbital, dropPosition, userDraggedOrbital: this));
         return true;
     }
 
-    IEnumerator FormCovalentBondSigmaCoroutine(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition)
+    /// <summary>Simulates "user dragged target orbital to source" by calling the same coroutine with swapped args. No flip logic needed.</summary>
+    bool FormCovalentBondSigmaStartAsSource(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition)
+    {
+        // Swap: targetOrbital is the one the user actually dragged - snap it back before bonding
+        targetOrbital.SnapToOriginal();
+        // Coroutine runs on this orbital (drop-site slot). It was not PointerDown'd for this gesture, so originalLocal*
+        // may still be prefab defaults — Step 1 would snap it to the atom center then slide with the molecule.
+        originalLocalPosition = transform.localPosition;
+        originalLocalScale = transform.localScale;
+        originalLocalRotation = transform.localRotation;
+        sourceAtom.StartCoroutine(FormCovalentBondSigmaCoroutine(sourceAtom, targetAtom, targetOrbital, dropPosition, userDraggedOrbital: targetOrbital));
+        return true;
+    }
+
+    IEnumerator FormCovalentBondSigmaCoroutine(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition, ElectronOrbitalFunction userDraggedOrbital)
     {
         var atomsToBlock = new HashSet<AtomFunction>();
         foreach (var a in sourceAtom.GetConnectedMolecule()) atomsToBlock.Add(a);
@@ -447,24 +467,27 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
         try
         {
+        ElectronOrbitalFunction sourceOrbital = this;
+        // Partner = lone pair on the other atom (not the one the user dragged). Coroutine args swap in AsSource, so infer explicitly.
+        ElectronOrbitalFunction partnerOrbital = ReferenceEquals(userDraggedOrbital, this) ? targetOrbital : this;
         int piBeforeSource = sourceAtom.GetPiBondCount();
         int piBeforeTarget = targetAtom.GetPiBondCount();
-        bool isFlip = sourceAtom.CovalentBonds.Count > 0 && !IsSourceOrbitalAlreadyAlignedWithTarget(sourceAtom, targetOrbital) && (sourceAtom.GetPiBondCount() > 0 || IsSourceFlippedSideFilled(sourceAtom, targetAtom, targetOrbital));
-        Vector3? targetPointOverride = isFlip ? sourceAtom.transform.TransformPoint(originalLocalPosition) : (Vector3?)null;
-
-        ElectronOrbitalFunction sourceOrbital = this;
+        bool isFlip = sourceAtom.CovalentBonds.Count > 0 && !IsSourceOrbitalAlreadyAlignedWithTarget(sourceAtom, partnerOrbital, userDraggedOrbital) && (sourceAtom.GetPiBondCount() > 0 || IsSourceFlippedSideFilled(sourceAtom, targetAtom, partnerOrbital));
+        // isFlip geometry must use the dragged orbital's home slot on its parent atom — not sourceOrbital's locals when AsSource swapped args (that was the drop site, i.e. step-2-facing side).
+        Transform draggedParent = userDraggedOrbital != null ? userDraggedOrbital.transform.parent : null;
+        Vector3? targetPointOverride = isFlip && draggedParent != null
+            ? draggedParent.TransformPoint(userDraggedOrbital.originalLocalPosition)
+            : (Vector3?)null;
         AtomFunction rearrangeSource = isFlip ? targetAtom : sourceAtom;
-        ElectronOrbitalFunction rearrangeTarget = isFlip ? this : targetOrbital;
+        ElectronOrbitalFunction rearrangeTarget = targetOrbital;
         AtomFunction alignSource = isFlip ? targetAtom : sourceAtom;
         var referenceAtom = isFlip ? sourceAtom : targetAtom;
         var referenceOrbitalTip = targetPointOverride ?? targetOrbital.transform.position;
 
         // Step 1: AlignSourceAtomNextToTarget
-        // First, snap source orbital back to its original position (before dragging), then animate molecule
         sourceOrbital.transform.localPosition = originalLocalPosition;
         sourceOrbital.transform.localRotation = originalLocalRotation;
         sourceOrbital.transform.localScale = originalLocalScale;
-
         var alignTargets = GetAlignTargetPositions(alignSource, referenceAtom, referenceOrbitalTip);
         const float alignPosThreshold = 0.05f;
         bool atomsAlreadyAligned = alignTargets.TrueForAll(t => Vector3.Distance(t.atom.transform.position, t.targetPos) < alignPosThreshold);
@@ -489,10 +512,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         foreach (var (atom, targetPos) in alignTargets)
             atom.transform.position = targetPos;
 
-        // Compute rearrange targets before bond creation (GetRearrangeTarget may use 'this')
         var rearrangeTargetInfo = GetRearrangeTarget(rearrangeSource, rearrangeTarget, targetPointOverride);
 
-        // Create bond (instant) - always keep source orbital (the one we dragged) so it stays visible through steps 2 and 3
+        // Create bond (instant) - source orbital (the one we dragged) stays visible through steps 2 and 3
         sourceOrbital.transform.localPosition = originalLocalPosition;
         sourceOrbital.transform.localRotation = originalLocalRotation;
         var bondOrbitalStartWorldPos = sourceOrbital.transform.position;
@@ -503,22 +525,19 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         targetAtom.UnbondOrbital(targetOrbital);
         var bond = CovalentBond.Create(isFlip ? targetAtom : sourceAtom, isFlip ? sourceAtom : targetAtom, sourceOrbital, sourceAtom, animateOrbitalToBond: true);
         if (isFlip) targetAtom.transform.SetParent(null);
-        var survivingOrbital = sourceOrbital;
-        // Reparent target orbital to bond so it's not counted in target's lone orbitals (avoids double-count charge bug)
         targetOrbital.transform.SetParent(bond.transform, worldPositionStays: true);
-        bond.SetOrbitalBeingFaded(targetOrbital); // Use merged count for charge during animation
+        bond.SetOrbitalBeingFaded(targetOrbital);
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
 
         var bondOrbitalEnd = bond.GetOrbitalTargetWorldState();
         float sigmaDiff = LogSigmaBondAngles(sourceAtom, bondOrbitalEnd.worldPos, bondOrbitalEnd.worldRot);
-        bool sigmaNeedsFlip = Mathf.Abs(sigmaDiff) > 90f; // Source opposite to bond → flip so electrons don't overlap
+        bool sigmaNeedsFlip = Mathf.Abs(sigmaDiff) > 90f;
         if (sigmaNeedsFlip)
         {
             bond.orbitalRotationFlipped = true;
             bondOrbitalEnd = bond.GetOrbitalTargetWorldState(); // Re-fetch with flip applied
         }
-
         // Step 2: Rearrange + Redistribute + animate bonding orbital to bond position (skip if no actual movement)
         var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom);
         var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom);
@@ -551,7 +570,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             }
         bool needsRedistribute = hasRedistributeMovement;
 
-        bool orbitalAlreadyAtBond = Vector3.Distance(bondOrbitalStartWorldPos, bondOrbitalEnd.worldPos) < alignThreshold;
+        // Must check rotation too: position can match while quaternions differ (e.g. 180° flip); direction-only angle can still match both.
+        bool orbitalAlreadyAtBond = Vector3.Distance(bondOrbitalStartWorldPos, bondOrbitalEnd.worldPos) < alignThreshold
+            && Quaternion.Angle(bondOrbitalStartWorldRot, bondOrbitalEnd.worldRot) < rotThreshold;
         bool skipStep2 = !needsRearrange && !needsRedistribute && orbitalAlreadyAtBond;
 
         var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
@@ -577,8 +598,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             s = s * s * (3f - 2f * s); // smoothstep for position
             float rotT = 1f - (1f - s) * (1f - s); // ease-out quad - rotation leads, expresses orbital rotation visibly
 
-            survivingOrbital.transform.position = Vector3.Lerp(bondOrbitalStartWorldPos, bondOrbitalEnd.worldPos, s);
-            survivingOrbital.transform.rotation = Quaternion.Slerp(bondOrbitalStartWorldRot, bondOrbitalEnd.worldRot, rotT);
+            sourceOrbital.transform.position = Vector3.Lerp(bondOrbitalStartWorldPos, bondOrbitalEnd.worldPos, s);
+            sourceOrbital.transform.rotation = Quaternion.Slerp(bondOrbitalStartWorldRot, bondOrbitalEnd.worldRot, rotT);
 
             if (rearrangeTargetInfo.HasValue)
             {
@@ -623,6 +644,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
         sourceAtom.ApplyRedistributeTargets(redistA);
         targetAtom.ApplyRedistributeTargets(redistB);
+        sourceOrbital.transform.SetParent(bond.transform, worldPositionStays: true); // Reparent now (orbital was left on source atom so it could animate)
         bond.UpdateBondTransformToCurrentAtoms(); // Bond may be stale (atoms moved in step 1)
         bond.SnapOrbitalToBondPosition(); // Match step 3 start position (prevents teleport)
         bond.animatingOrbitalToBondPosition = false;
@@ -631,7 +653,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (bond != null)
         {
             yield return bond.AnimateOrbitalToLine(bondAnimStep3Duration, targetOrbital);
-            survivingOrbital.ElectronCount = merged; // Show merged electrons only after step 3
+            sourceOrbital.ElectronCount = merged; // Show merged electrons only after step 3
         }
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
@@ -675,7 +697,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
         if (orbToMove == null) return null;
         float freedSlotAngle = targetPointOverride.HasValue
-            ? OrbitalAngleUtility.DirectionToAngleWorld((targetPointOverride.Value - sourceAtom.transform.position).normalized)
+            ? OrbitalAngleUtility.NormalizeAngle(OrbitalAngleUtility.DirectionToAngleWorld((targetPointOverride.Value - sourceAtom.transform.position).normalized) + 180f)
             : NormalizeAngle(originalLocalRotation.eulerAngles.z);
         var slotPos = GetCanonicalSlotPosition(freedSlotAngle, sourceAtom.BondRadius);
         return (orbToMove, slotPos.position, slotPos.rotation);
@@ -862,6 +884,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         // Snap both orbitals to exact position step 3 expects (prevents teleport)
         if (bond != null)
         {
+            targetOrbital.transform.SetParent(bond.transform, worldPositionStays: true); // Reparent now (orbital was left on target atom so it could animate)
             bond.UpdateBondTransformToCurrentAtoms(); // Bond may be stale
             bond.SnapOrbitalToBondPosition();
             if (sourceOrbital != null)
@@ -928,11 +951,16 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             targetAtom.RedistributeOrbitals();
     }
 
-    bool IsSourceOrbitalAlreadyAlignedWithTarget(AtomFunction sourceAtom, ElectronOrbitalFunction targetOrbital)
+    /// <param name="partnerOrbital">Lone pair on the partner atom (receptor direction reference).</param>
+    /// <param name="draggedOrbital">Orbital the user dragged; defaults to this when null (normal sigma start).</param>
+    bool IsSourceOrbitalAlreadyAlignedWithTarget(AtomFunction sourceAtom, ElectronOrbitalFunction partnerOrbital, ElectronOrbitalFunction draggedOrbital = null)
     {
-        float targetAngleWorld = OrbitalAngleUtility.GetOrbitalAngleWorld(targetOrbital.transform);
+        var dragged = draggedOrbital != null ? draggedOrbital : this;
+        var dragParent = dragged.transform.parent;
+        if (dragParent == null || partnerOrbital == null) return false;
+        float targetAngleWorld = OrbitalAngleUtility.GetOrbitalAngleWorld(partnerOrbital.transform);
         float oppositeAngleWorld = OrbitalAngleUtility.NormalizeAngle(targetAngleWorld + 180f);
-        float draggedAngleWorld = OrbitalAngleUtility.LocalRotationToAngleWorld(sourceAtom.transform, originalLocalRotation);
+        float draggedAngleWorld = OrbitalAngleUtility.LocalRotationToAngleWorld(dragParent, dragged.originalLocalRotation);
         const float tolerance = 45f;
         return Mathf.Abs(OrbitalAngleUtility.NormalizeAngle(draggedAngleWorld - oppositeAngleWorld)) < tolerance;
     }

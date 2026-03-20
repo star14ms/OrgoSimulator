@@ -58,7 +58,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public int GetOrbitalSlotCount()
     {
-        if (atomicNumber == 1 || atomicNumber == 2) return 1;
+        if (atomicNumber == 2) return 1; // He: 1s² only
+        int group = GetGroupFromAtomicNumber(atomicNumber);
+        if (group == 1) return 1;
+        if (group == 2) return 2;
+        if (group == 3 || group == 13) return 3;
         return 4;
     }
 
@@ -1047,8 +1051,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     void CreateOrbitalsWithValence(int valence)
     {
         if (orbitalPrefab == null) return;
-        int orbitalCount = (atomicNumber == 1 || atomicNumber == 2) ? 1 : 4; // H, He: s orbital only
-        Vector3[] dirs = { Vector3.up, Vector3.down, Vector3.right, Vector3.left };
+        int orbitalCount = GetOrbitalSlotCount();
+        float[] angles = GetSlotAnglesForCount(orbitalCount);
         float offset = bondRadius * 0.6f;
 
         // Distribute electrons: prefer 1 per orbital first (for sigma bonding), then fill to 2
@@ -1069,11 +1073,12 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         for (int i = 0; i < orbitalCount; i++)
         {
             var orbital = Instantiate(orbitalPrefab, transform);
-            Vector3 dir = dirs[i];
+            float angleDeg = angles[i];
+            float rad = angleDeg * Mathf.Deg2Rad;
+            Vector3 dir = new Vector3(Mathf.Cos(rad), Mathf.Sin(rad), 0f);
             orbital.transform.localPosition = dir * offset;
             orbital.transform.localScale = Vector3.one * 0.6f;
-            float angle = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg;
-            orbital.transform.localRotation = Quaternion.Euler(0, 0, angle);
+            orbital.transform.localRotation = Quaternion.Euler(0, 0, angleDeg);
             orbital.ElectronCount = electronsPerOrbital[i];
             orbital.SetBondedAtom(this);
             BondOrbital(orbital);

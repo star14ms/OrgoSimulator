@@ -144,7 +144,9 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         orbital.SetBond(this);
         orbital.SetBondedAtom(null);
         PositionBondTransform(); // Set bond position BEFORE reparenting so orbital keeps correct world pos
-        orbital.transform.SetParent(transform);
+        if (!animateOrbitalToBond)
+            orbital.transform.SetParent(transform);
+        // When animating: defer reparent until after step 2 so orbital keeps its current rotation and can animate to bond
         animatingOrbitalToBondPosition = animateOrbitalToBond;
 
         atomA.SetupIgnoreCollisions();
