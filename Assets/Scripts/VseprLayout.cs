@@ -116,6 +116,20 @@ public static class VseprLayout
     }
 
     /// <summary>
+    /// sp² center with two σ axes (from center toward neighbors, world): third σ direction in the same plane,
+    /// ~120° from each (e.g. aromatic C—H radially outward from a regular ring when the two C—C axes are 120° apart).
+    /// </summary>
+    public static Vector3 TrigonalPlanarThirdDirectionFromTwoBondsWorld(Vector3 toNeighbor1World, Vector3 toNeighbor2World)
+    {
+        Vector3 u1 = toNeighbor1World.normalized;
+        Vector3 u2 = toNeighbor2World.normalized;
+        Vector3 sum = u1 + u2;
+        if (sum.sqrMagnitude < 1e-10f)
+            return Vector3.up;
+        return (-sum).normalized;
+    }
+
+    /// <summary>
     /// sp³ carbon with three σ substituents already placed: approximate direction for the fourth (e.g. one H)
     /// opposite the umbrella of the three bond vectors (from C toward neighbors, world).
     /// </summary>

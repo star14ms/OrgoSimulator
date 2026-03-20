@@ -111,6 +111,68 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         return col != null && col.bounds.Contains(worldPos);
     }
 
+    const float ViewOverlapScreenPaddingPx = 14f;
+
+    /// <summary>World bounds used to project an orbital silhouette to the screen (collider preferred, then renderer).</summary>
+    public Bounds GetOrbitalBoundsForView()
+    {
+        var col = GetComponent<Collider>();
+        if (col != null) return col.bounds;
+        var col2D = GetComponent<Collider2D>();
+        if (col2D != null) return col2D.bounds;
+        var r = GetComponent<Renderer>();
+        if (r != null) return r.bounds;
+        return new Bounds(transform.position, Vector3.one * 0.25f);
+    }
+
+    /// <summary>
+    /// True if the screen-space axis-aligned bounds of two orbitals overlap. Depth along the view axis is ignored
+    /// so bonding matches what the player sees in the 2D window in perspective mode.
+    /// </summary>
+    public static bool OrbitalViewOverlaps(Camera cam, ElectronOrbitalFunction a, ElectronOrbitalFunction b, float expandPixels = ViewOverlapScreenPaddingPx)
+    {
+        if (cam == null || a == null || b == null) return false;
+        if (!TryProjectOrbitalToScreenRect(cam, a, expandPixels, out var ra)) return false;
+        if (!TryProjectOrbitalToScreenRect(cam, b, expandPixels, out var rb)) return false;
+        return ra.Overlaps(rb);
+    }
+
+    static bool TryProjectOrbitalToScreenRect(Camera cam, ElectronOrbitalFunction o, float padPixels, out Rect rect)
+    {
+        return TryProjectWorldBoundsToScreenRect(cam, o.GetOrbitalBoundsForView(), padPixels, out rect);
+    }
+
+    static bool TryProjectWorldBoundsToScreenRect(Camera cam, Bounds b, float padPixels, out Rect rect)
+    {
+        rect = default;
+        if (cam == null) return false;
+        Vector3 c = b.center;
+        Vector3 e = b.extents;
+        bool any = false;
+        float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+        for (int ix = -1; ix <= 1; ix += 2)
+        {
+            for (int iy = -1; iy <= 1; iy += 2)
+            {
+                for (int iz = -1; iz <= 1; iz += 2)
+                {
+                    Vector3 w = c + new Vector3(e.x * ix, e.y * iy, e.z * iz);
+                    Vector3 s = cam.WorldToScreenPoint(w);
+                    if (s.z < cam.nearClipPlane) continue;
+                    any = true;
+                    minX = Mathf.Min(minX, s.x);
+                    minY = Mathf.Min(minY, s.y);
+                    maxX = Mathf.Max(maxX, s.x);
+                    maxY = Mathf.Max(maxY, s.y);
+                }
+            }
+        }
+
+        if (!any) return false;
+        rect = Rect.MinMaxRect(minX - padPixels, minY - padPixels, maxX + padPixels, maxY + padPixels);
+        return true;
+    }
+
     public void SetPointerBlocked(bool blocked)
     {
         var col = GetComponent<Collider>();
@@ -763,13 +825,32 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     ElectronOrbitalFunction TryFindSwapTarget(AtomFunction atom, Vector3 tip)
     {
         if (atom == null || bond != null) return null;
+        var cam = Camera.main;
         var orbitals = atom.GetComponentsInChildren<ElectronOrbitalFunction>();
+        ElectronOrbitalFunction best = null;
+        float bestD = float.MaxValue;
         foreach (var orb in orbitals)
         {
-            if (orb != this && orb.Bond == null && orb.ContainsPoint(tip))
+            if (orb == this || orb.Bond != null) continue;
+            bool hit3d = orb.ContainsPoint(tip);
+            bool hitView = cam != null && OrbitalViewOverlaps(cam, this, orb);
+            if (!hit3d && !hitView) continue;
+            if (cam == null)
                 return orb;
+
+            Vector3 st = cam.WorldToScreenPoint(tip);
+            Vector3 so = cam.WorldToScreenPoint(orb.transform.position);
+            float d = st.z >= cam.nearClipPlane && so.z >= cam.nearClipPlane
+                ? ((Vector2)st - (Vector2)so).sqrMagnitude
+                : (hit3d ? 0f : float.MaxValue);
+            if (d < bestD)
+            {
+                bestD = d;
+                best = orb;
+            }
         }
-        return null;
+
+        return best;
     }
 
     void SwapPositionsWith(ElectronOrbitalFunction other)

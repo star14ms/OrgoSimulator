@@ -2,7 +2,6 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 using System.Collections.Generic;
-using System.Text;
 
 /// <summary>
 /// Manages edit mode: selection (click atom to select, background to deselect), add-atom-to-selected,
@@ -28,6 +27,12 @@ public class EditModeManager : MonoBehaviour
 
     MoleculeBuilder moleculeBuilder;
 
+    [Tooltip("Edit-mode deselect plane is placed this far past the molecule work plane (along the camera view) so it sorts behind atoms/orbitals/bonds in the physics raycast.")]
+    [SerializeField] float deselectBackgroundPastWorkPlane = 22f;
+
+    GameObject deselectBackgroundRoot;
+    BoxCollider deselectBackgroundCollider;
+
     void Start()
     {
         moleculeBuilder = FindFirstObjectByType<MoleculeBuilder>();
@@ -40,16 +45,19 @@ public class EditModeManager : MonoBehaviour
         if (cam == null) return;
 
         var go = new GameObject("EditModeBackground");
-        go.transform.position = cam.transform.position + cam.transform.forward * 15f;
+        deselectBackgroundRoot = go;
         go.transform.rotation = cam.transform.rotation;
         go.transform.localScale = new Vector3(100f, 100f, 0.01f);
 
-        var collider = go.AddComponent<BoxCollider>();
-        collider.size = Vector3.one;
-        collider.isTrigger = true;
+        deselectBackgroundCollider = go.AddComponent<BoxCollider>();
+        deselectBackgroundCollider.size = Vector3.one;
+        deselectBackgroundCollider.isTrigger = true;
+        deselectBackgroundCollider.enabled = editModeActive;
 
         var handler = go.AddComponent<BackgroundClickHandler>();
         handler.editModeManager = this;
+
+        RepositionDeselectBackground();
     }
 
     void Update()
@@ -85,6 +93,8 @@ public class EditModeManager : MonoBehaviour
     {
         if (editModeActive == on) return;
         editModeActive = on;
+        if (deselectBackgroundCollider != null)
+            deselectBackgroundCollider.enabled = on;
         if (!on)
         {
             if (selectedOrbital != null) selectedOrbital.SetHighlighted(false);
@@ -94,6 +104,7 @@ public class EditModeManager : MonoBehaviour
             return;
         }
 
+        RepositionDeselectBackground();
         if (selectedAtom != null)
         {
             selectedOrbital = selectedAtom.GetOrbitalClosestToAngle(0f);
@@ -210,15 +221,42 @@ public class EditModeManager : MonoBehaviour
         if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
     }
 
+    /// <summary>
+    /// Keeps the deselect collider behind the molecule work plane. A fixed near depth (previously 15) sat
+    /// between the camera and the sheet whenever the work plane was farther than that, so the background
+    /// won the raycast and clicks never reached atoms, orbitals, or bonds.
+    /// </summary>
     public void RepositionDeselectBackground()
     {
         var cam = Camera.main;
         if (cam == null) return;
-        var bg = GameObject.Find("EditModeBackground");
+        var bg = deselectBackgroundRoot != null ? deselectBackgroundRoot : GameObject.Find("EditModeBackground");
         if (bg == null) return;
-        bg.transform.position = cam.transform.position + cam.transform.forward * 15f;
+        bg.transform.position = ComputeDeselectBackgroundWorldPosition(cam);
         bg.transform.rotation = cam.transform.rotation;
     }
+
+    static Vector3 ComputeDeselectBackgroundWorldPosition(Camera cam, float pastPlaneMargin)
+    {
+        Vector3 f = cam.transform.forward;
+        if (f.sqrMagnitude < 1e-10f)
+            f = Vector3.forward;
+        else
+            f.Normalize();
+
+        var wp = MoleculeWorkPlane.Instance;
+        if (wp != null)
+        {
+            float d = Vector3.Dot(wp.WorldPlanePoint - cam.transform.position, f);
+            if (d > 0.05f)
+                return cam.transform.position + f * (d + pastPlaneMargin);
+        }
+
+        return cam.transform.position + f * 15f;
+    }
+
+    Vector3 ComputeDeselectBackgroundWorldPosition(Camera cam) =>
+        ComputeDeselectBackgroundWorldPosition(cam, deselectBackgroundPastWorkPlane);
 
     public void RefreshEditSelectionHighlights()
     {
@@ -522,26 +560,27 @@ public class EditModeManager : MonoBehaviour
         atom.ForceInitialize();
         float bondLength = GetBondLength();
 
-        int step = 0;
-        var orb = atom.GetLoneOrbitalWithOneElectron(Vector3.right);
-        int pending0 = 0;
-        foreach (var o in atom.GetComponentsInChildren<ElectronOrbitalFunction>())
+        while (true)
         {
-            if (o == null || o.transform.parent != atom.transform || o.Bond != null || o.ElectronCount != 1) continue;
-            pending0++;
-        }
-        Debug.Log($"[H-auto] SaturateWithHydrogen start target Z={atom.AtomicNumber} use3D={OrbitalAngleUtility.UseFull3DOrbitalGeometry} lone-1e count≈{pending0} bondLength={bondLength:F3}");
+            ElectronOrbitalFunction orb;
+            Vector3 dirN;
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
+                var sigmaWorld = CollectSigmaBondNeighborDirectionsWorld(atom);
+                dirN = ComputeNextHydrogenDirectionWorldForSaturate(atom, sigmaWorld);
+                orb = atom.GetLoneOrbitalWithOneElectron(dirN);
+            }
+            else
+            {
+                orb = atom.GetLoneOrbitalWithOneElectron(Vector3.right);
+                if (orb == null) break;
+                Vector3 dir = orb.transform.TransformDirection(Vector3.right);
+                dirN = dir.sqrMagnitude > 1e-8f ? dir.normalized : Vector3.right;
+            }
 
-        while (orb != null)
-        {
-            Vector3 dir = orb.transform.TransformDirection(Vector3.right);
-            Vector3 dirN = dir.sqrMagnitude > 1e-8f ? dir.normalized : Vector3.right;
+            if (orb == null) break;
+
             Vector3 hPos = atom.transform.position + dirN * bondLength;
-
-            var sbBefore = new StringBuilder();
-            sbBefore.Append($"[H-auto] step {step} BEFORE bond: orbital→world dir={dirN} (mag={dir.magnitude:F3}) angles vs existing σ neighbors at C:");
-            LogAnglesFromDirToBondedNeighbors(atom, null, dirN, sbBefore);
-            Debug.Log(sbBefore.ToString());
 
             var hGo = Instantiate(atomPrefab, hPos, Quaternion.identity);
             if (!hGo.TryGetComponent<AtomFunction>(out var hAtom))
@@ -568,74 +607,57 @@ public class EditModeManager : MonoBehaviour
                 atom.RedistributeOrbitals(piBondAngleOverride: bondAngle);
             }
             AtomFunction.SetupGlobalIgnoreCollisions();
-
-            Vector3 actualDir = (hAtom.transform.position - atom.transform.position).normalized;
-            var sbAfter = new StringBuilder();
-            sbAfter.Append($"[H-auto] step {step} AFTER bond + redistribute: C→H dir={actualDir} | angles X–C–H (target=C):");
-            LogAnglesFromDirToBondedNeighbors(atom, hAtom, actualDir, sbAfter);
-            Debug.Log(sbAfter.ToString());
-
-            step++;
-            orb = atom.GetLoneOrbitalWithOneElectron(Vector3.right);
         }
-
-        if (step > 0)
-            DebugLogFullNeighborAngleMatrix(atom, step);
     }
 
-    static void LogAnglesFromDirToBondedNeighbors(AtomFunction center, AtomFunction excludeNeighbor, Vector3 dirFromCenterToNewBond, StringBuilder sb)
+    /// <summary>Unit vectors from <paramref name="center"/> toward each bonded neighbor (one entry per neighbor atom).</summary>
+    static List<Vector3> CollectSigmaBondNeighborDirectionsWorld(AtomFunction center)
     {
-        int n = 0;
+        var list = new List<Vector3>();
+        if (center == null) return list;
+        var seen = new HashSet<AtomFunction>();
         foreach (var b in center.CovalentBonds)
         {
             if (b == null) continue;
             var other = b.AtomA == center ? b.AtomB : b.AtomA;
-            if (other == null || other == excludeNeighbor) continue;
-            Vector3 d = (other.transform.position - center.transform.position).normalized;
-            if (d.sqrMagnitude < 1e-8f) continue;
-            float ang = Vector3.Angle(dirFromCenterToNewBond, d);
-            string sym = AtomFunction.GetElementSymbol(other.AtomicNumber);
-            sb.Append($" ∠({sym}–C–new)={ang:F1}°");
-            n++;
+            if (other == null || !seen.Add(other)) continue;
+            Vector3 d = other.transform.position - center.transform.position;
+            if (d.sqrMagnitude < 1e-10f) continue;
+            list.Add(d.normalized);
         }
-        if (n == 0) sb.Append(" (no other neighbors)");
+
+        return list;
     }
 
-    static void DebugLogFullNeighborAngleMatrix(AtomFunction center, int hAdded)
+    /// <summary>
+    /// Next H direction for incremental saturation. Uses tetrahedral (~109.5°) when there is no π on the center;
+    /// when π is already present (e.g. benzene built σ then π then H), uses trigonal planar (~120° in the σ plane)
+    /// so C—H stays in the ring plane instead of CH₂-style pucker.
+    /// </summary>
+    static Vector3 ComputeNextHydrogenDirectionWorldForSaturate(AtomFunction center, List<Vector3> existingSigmaWorld)
     {
-        var neighbors = new List<AtomFunction>();
-        foreach (var b in center.CovalentBonds)
+        int n = existingSigmaWorld.Count;
+        bool piPresent = center != null && center.GetPiBondCount() > 0;
+
+        if (n == 0)
+            return VseprLayout.GetIdealLocalDirections(4)[0].normalized;
+
+        if (n == 1)
         {
-            if (b == null) continue;
-            var other = b.AtomA == center ? b.AtomB : b.AtomA;
-            if (other == null) continue;
-            bool dup = false;
-            foreach (var e in neighbors)
-                if (e == other) { dup = true; break; }
-            if (!dup) neighbors.Add(other);
-        }
-        var dirs = new List<Vector3>(neighbors.Count);
-        foreach (var o in neighbors)
-        {
-            Vector3 d = (o.transform.position - center.transform.position).normalized;
-            dirs.Add(d.sqrMagnitude > 1e-8f ? d : Vector3.zero);
+            var ideal = piPresent ? VseprLayout.GetIdealLocalDirections(3) : VseprLayout.GetIdealLocalDirections(4);
+            return VseprLayout.AlignFirstDirectionTo(ideal, existingSigmaWorld[0])[1].normalized;
         }
 
-        var sb = new StringBuilder();
-        sb.Append($"[H-auto] END saturated target Z={center.AtomicNumber} added {hAdded} H | pairwise angles at C (degrees):");
-        for (int i = 0; i < neighbors.Count; i++)
+        if (n == 2)
         {
-            string si = AtomFunction.GetElementSymbol(neighbors[i].AtomicNumber);
-            for (int j = i + 1; j < neighbors.Count; j++)
-            {
-                if (dirs[i].sqrMagnitude < 1e-8f || dirs[j].sqrMagnitude < 1e-8f) continue;
-                float a = Vector3.Angle(dirs[i], dirs[j]);
-                string sj = AtomFunction.GetElementSymbol(neighbors[j].AtomicNumber);
-                sb.Append($" ∠({si}–C–{sj})={a:F1}");
-            }
+            if (piPresent)
+                return VseprLayout.TrigonalPlanarThirdDirectionFromTwoBondsWorld(existingSigmaWorld[0], existingSigmaWorld[1]);
+            VseprLayout.TwoHydrogenDirectionsFromBonds(existingSigmaWorld[0], existingSigmaWorld[1], out var h1, out var _);
+            return h1.normalized;
         }
-        sb.Append($" | tetrahedral ref≈109.47°");
-        Debug.Log(sb.ToString());
+
+        return VseprLayout.OneHydrogenDirectionFromThreeBondsWorld(
+            existingSigmaWorld[0], existingSigmaWorld[1], existingSigmaWorld[2]);
     }
 
     float GetBondLength() => atomPrefab != null && atomPrefab.TryGetComponent<AtomFunction>(out var a) ? 1.2f * a.BondRadius : 0.96f;

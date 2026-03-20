@@ -1011,16 +1011,40 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return null;
     }
 
-    public ElectronOrbitalFunction GetAvailableLoneOrbitalForBond(ElectronOrbitalFunction excludeOrbital, int sourceElectronCount, Vector3 hitPosition)
+    public ElectronOrbitalFunction GetAvailableLoneOrbitalForBond(ElectronOrbitalFunction excludeOrbital, int sourceElectronCount, Vector3 hitPosition, Camera viewCamera = null)
     {
+        var cam = viewCamera != null ? viewCamera : Camera.main;
+        ElectronOrbitalFunction best = null;
+        float bestScore = float.MaxValue;
+
         foreach (var orb in bondedOrbitals)
         {
             if (orb == null || orb.Bond != null || orb == excludeOrbital) continue;
             if (orb.ElectronCount + sourceElectronCount != ElectronOrbitalFunction.MaxElectrons) continue;
-            if (orb.ContainsPoint(hitPosition))
+
+            bool hit3d = orb.ContainsPoint(hitPosition);
+            bool hitView = cam != null && excludeOrbital != null &&
+                           ElectronOrbitalFunction.OrbitalViewOverlaps(cam, excludeOrbital, orb);
+            if (!hit3d && !hitView) continue;
+
+            float score;
+            if (cam == null)
                 return orb;
+            Vector3 sh = cam.WorldToScreenPoint(hitPosition);
+            Vector3 so = cam.WorldToScreenPoint(orb.transform.position);
+            if (sh.z >= cam.nearClipPlane && so.z >= cam.nearClipPlane)
+                score = ((Vector2)sh - (Vector2)so).sqrMagnitude;
+            else
+                score = hit3d ? 0f : float.MaxValue;
+
+            if (score < bestScore)
+            {
+                bestScore = score;
+                best = orb;
+            }
         }
-        return null;
+
+        return best;
     }
 
     /// <summary>Returns a lone orbital with exactly 1 electron, preferring the one closest to preferredDirection. For programmatic bonding.</summary>
@@ -1291,17 +1315,40 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public static AtomFunction FindBondPartner(AtomFunction sourceAtom, Vector3 tipPosition, ElectronOrbitalFunction sourceOrbital)
     {
-        if (sourceAtom == null) return null;
-        float radius = sourceAtom.BondRadius * 1.5f;
+        if (sourceAtom == null || sourceOrbital == null) return null;
+        var cam = Camera.main;
         var atoms = Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
+        AtomFunction best = null;
+        float bestMetric = float.MaxValue;
+
         foreach (var a in atoms)
         {
             if (a == sourceAtom) continue;
             if (!a.HasAvailableLoneOrbitalForBond(sourceOrbital, sourceOrbital.ElectronCount)) continue;
-            if (Vector3.Distance(a.transform.position, tipPosition) > radius) continue;
-            return a;
+
+            var orb = a.GetAvailableLoneOrbitalForBond(sourceOrbital, sourceOrbital.ElectronCount, tipPosition, cam);
+            if (orb == null) continue;
+
+            float metric;
+            if (cam != null)
+            {
+                Vector3 st = cam.WorldToScreenPoint(tipPosition);
+                Vector3 so = cam.WorldToScreenPoint(orb.transform.position);
+                metric = st.z >= cam.nearClipPlane && so.z >= cam.nearClipPlane
+                    ? ((Vector2)st - (Vector2)so).sqrMagnitude
+                    : Vector3.SqrMagnitude(a.transform.position - tipPosition);
+            }
+            else
+                metric = Vector3.SqrMagnitude(a.transform.position - tipPosition);
+
+            if (metric < bestMetric)
+            {
+                bestMetric = metric;
+                best = a;
+            }
         }
-        return null;
+
+        return best;
     }
 
     public void SetupIgnoreCollisions()

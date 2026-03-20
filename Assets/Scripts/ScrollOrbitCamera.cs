@@ -75,6 +75,7 @@ public sealed class ScrollOrbitCamera : MonoBehaviour
         if (cam == null || cam.orthographic) return;
         if (MoleculeWorkPlane.Instance == null) return;
         MoleculeWorkPlane.Instance.SyncToPerspectiveOrbit(cam, focusPoint, moleculeWorkPlaneDepthMin, moleculeWorkPlaneDepthMax);
+        Object.FindFirstObjectByType<EditModeManager>()?.RepositionDeselectBackground();
     }
 
     /// <summary>
