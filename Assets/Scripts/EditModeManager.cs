@@ -69,6 +69,9 @@ public class EditModeManager : MonoBehaviour
                 remove.Add(o);
         }
 
+        AtomFunction keeperAtom = null;
+        ElectronOrbitalFunction orbitalTowardRemoved = null;
+
         for (int guard = 0; guard < 64; guard++)
         {
             CovalentBond bridge = null;
@@ -89,18 +92,29 @@ public class EditModeManager : MonoBehaviour
                 if (bridge != null) break;
             }
             if (bridge == null) break;
+            keeperAtom = keeper;
+            orbitalTowardRemoved = bridge.Orbital;
             bridge.BreakBond(keeper);
         }
 
         DestroyMolecule(remove);
 
-        if (selectedAtom != null && remove.Contains(selectedAtom))
+        if (keeperAtom != null && orbitalTowardRemoved != null)
         {
             ClearSelectionHighlights();
-            selectedAtom = null;
-            selectedOrbital = null;
-            selectedMolecule = null;
-            orbitalExplicitlySelected = false;
+            selectedAtom = keeperAtom;
+            selectedMolecule = keeperAtom.GetConnectedMolecule();
+            if (editModeActive)
+            {
+                selectedOrbital = orbitalTowardRemoved;
+                orbitalExplicitlySelected = true;
+            }
+            else
+            {
+                selectedOrbital = null;
+                orbitalExplicitlySelected = false;
+            }
+            ApplySelectionHighlights();
         }
         else if (selectedAtom != null)
             RefreshSelectedMoleculeAfterBondChange();

@@ -24,9 +24,6 @@ public class AtomQuickAddUI : MonoBehaviour
     [SerializeField] int fontSize = 18;
     [Tooltip("H (square element) button side = min(Screen.width, Screen.height) × this (default 1/16).")]
     [SerializeField] float hudHShortSideFraction = 1f / 16f;
-    [HideInInspector] [SerializeField] float hudReferenceShortSide = 1080f;
-    [HideInInspector] [SerializeField] float hudScaleMin = 0.85f;
-    [HideInInspector] [SerializeField] float hudScaleMax = 2.75f;
 
     float hudScale = 1f;
     float layoutButtonSize;

@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Rendering;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using TMPro;
@@ -22,6 +23,10 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     bool atomDragPlaneValid;
     HashSet<AtomFunction> moleculeAtoms;
     Transform elementLabelTransform;
+    Coroutine chargeLabelInvalidDragFlashRoutine;
+
+    /// <summary>Set by MoleculeBuilder during functional-group attach debugging. Logs RedistributeOrbitals / 3D matching to the Console.</summary>
+    public static bool DebugLogRedistributeOrbitalsSteps;
 
     public float BondRadius => bondRadius;
     public ElectronOrbitalFunction OrbitalPrefab => orbitalPrefab;
@@ -209,6 +214,38 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         chargeLabel.gameObject.SetActive(charge != 0);
     }
 
+    /// <summary>
+    /// Bond drag blocked (electrons cannot move to a less electronegative atom): flash charge label red, then fade to its normal color over 1 second.
+    /// </summary>
+    public void FlashChargeLabelInvalidDragFade()
+    {
+        if (chargeLabelInvalidDragFlashRoutine != null)
+            StopCoroutine(chargeLabelInvalidDragFlashRoutine);
+        chargeLabelInvalidDragFlashRoutine = StartCoroutine(ChargeLabelInvalidDragFadeCoroutine());
+    }
+
+    IEnumerator ChargeLabelInvalidDragFadeCoroutine()
+    {
+        var chargeLabel = transform.Find("ElementLabel/ChargeLabel");
+        if (chargeLabel == null) yield break;
+        var tmp = chargeLabel.GetComponent<TMP_Text>();
+        if (tmp == null) yield break;
+        Color original = tmp.color;
+        bool wasActive = chargeLabel.gameObject.activeSelf;
+        if (!wasActive) chargeLabel.gameObject.SetActive(true);
+        tmp.color = Color.red;
+        const float duration = 1f;
+        for (float t = 0; t < duration; t += Time.deltaTime)
+        {
+            float u = Mathf.Clamp01(t / duration);
+            tmp.color = Color.Lerp(Color.red, original, u);
+            yield return null;
+        }
+        tmp.color = original;
+        RefreshChargeLabel();
+        chargeLabelInvalidDragFlashRoutine = null;
+    }
+
     /// <summary>Block or unblock pointer interaction on this atom and all its orbitals and electrons. Used during bond formation.</summary>
     public void SetInteractionBlocked(bool blocked)
     {
@@ -283,12 +320,18 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return false;
     }
 
-    /// <summary>Redistributes orbital directions when pi count or bonding changed. In 3D (perspective), uses VSEPR (linear … octahedral). <paramref name="refBondWorldDirection"/> overrides reference axis when set (e.g. bond break).</summary>
-    public void RedistributeOrbitals(float? piBondAngleOverride = null, Vector3? refBondWorldDirection = null)
+    /// <summary>Redistributes orbital directions when pi count or bonding changed. In 3D (perspective), uses VSEPR (linear … octahedral). <paramref name="refBondWorldDirection"/> overrides reference axis when set (e.g. bond break). <paramref name="relaxCoplanarSigmaToTetrahedral"/> (e.g. after σ-only break from a π system) moves coplanar 3σ+1-lone neighbors toward tetrahedral; leave false for normal builds (sp² trigonal FG centers also match 3σ+1 lone before π).</summary>
+    public void RedistributeOrbitals(float? piBondAngleOverride = null, Vector3? refBondWorldDirection = null, bool relaxCoplanarSigmaToTetrahedral = false)
     {
+        if (DebugLogRedistributeOrbitalsSteps)
+        {
+            int lone1e = GetLoneOrbitalsWithOneElectronSortedByAngle().Count;
+            Debug.Log($"[FG-OrbDist] RedistributeOrbitals enter Z={atomicNumber} id={GetInstanceID()} use3D={OrbitalAngleUtility.UseFull3DOrbitalGeometry} π={GetPiBondCount()} σBondObjects={covalentBonds.Count} bondedOrbSlots={bondedOrbitals.Count} lone1e={lone1e}");
+        }
+
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
         {
-            RedistributeOrbitals3D(piBondAngleOverride, refBondWorldDirection);
+            RedistributeOrbitals3D(piBondAngleOverride, refBondWorldDirection, relaxCoplanarSigmaToTetrahedral);
             return;
         }
 
@@ -458,45 +501,341 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return Mathf.Min(domains, maxSlots);
     }
 
-    void RedistributeOrbitals3D(float? piBondAngleOverride, Vector3? refBondWorldDirection)
+    /// <summary>One σ bond per distinct neighbor (merged double/triple count as one axis).</summary>
+    List<AtomFunction> GetDistinctSigmaNeighborAtoms()
+    {
+        var seen = new HashSet<AtomFunction>();
+        var list = new List<AtomFunction>();
+        foreach (var b in covalentBonds)
+        {
+            if (b?.AtomA == null || b?.AtomB == null) continue;
+            var other = b.AtomA == this ? b.AtomB : b.AtomA;
+            if (other == null || !seen.Add(other)) continue;
+            list.Add(other);
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Atoms reachable from <paramref name="sigmaNeighbor"/> when the σ edge (this, sigmaNeighbor) is removed.
+    /// Does not include <c>this</c>. Used to rotate whole substituents with σ-relax (acyclic chains); ring-linked neighbors overlap → fallback.
+    /// </summary>
+    public List<AtomFunction> GetAtomsOnSideOfSigmaBond(AtomFunction sigmaNeighbor)
+    {
+        var result = new List<AtomFunction>();
+        if (sigmaNeighbor == null) return result;
+        var visited = new HashSet<AtomFunction>();
+        var q = new Queue<AtomFunction>();
+        q.Enqueue(sigmaNeighbor);
+        visited.Add(sigmaNeighbor);
+        while (q.Count > 0)
+        {
+            var u = q.Dequeue();
+            result.Add(u);
+            foreach (var b in u.CovalentBonds)
+            {
+                if (b?.AtomA == null || b?.AtomB == null) continue;
+                var v = b.AtomA == u ? b.AtomB : b.AtomA;
+                if (v == null) continue;
+                if (IsPivotSigmaEdge(u, v, sigmaNeighbor)) continue;
+                if (visited.Add(v)) q.Enqueue(v);
+            }
+        }
+        return result;
+    }
+
+    bool IsPivotSigmaEdge(AtomFunction u, AtomFunction v, AtomFunction neighborFromPivot)
+    {
+        return (u == this && v == neighborFromPivot) || (u == neighborFromPivot && v == this);
+    }
+
+    /// <summary>
+    /// Rigid rotation about <paramref name="pivotWorld"/> maps each σ axis oldDir[i]→newDir[i]. If substituents (fragments beyond each σ bond)
+    /// are disjoint, every atom in each fragment rotates; if any fragment shares atoms (rings), only immediate σ neighbors move.
+    /// </summary>
+    static void BuildSigmaNeighborTargetsWithFragmentRigidRotation(
+        Vector3 pivotWorld,
+        IReadOnlyList<AtomFunction> sigmaNeighbors,
+        IReadOnlyList<Vector3> oldUnitDirs,
+        IReadOnlyList<Vector3> newUnitDirs,
+        AtomFunction pivot,
+        out List<(AtomFunction atom, Vector3 targetWorld)> targets)
+    {
+        targets = new List<(AtomFunction, Vector3)>();
+        int n = sigmaNeighbors.Count;
+        if (n != oldUnitDirs.Count || n != newUnitDirs.Count) return;
+
+        var fragments = new List<List<AtomFunction>>(n);
+        for (int i = 0; i < n; i++)
+            fragments.Add(pivot.GetAtomsOnSideOfSigmaBond(sigmaNeighbors[i]));
+
+        bool overlap = false;
+        var seenAcross = new HashSet<AtomFunction>();
+        for (int i = 0; i < n; i++)
+        {
+            foreach (var a in fragments[i])
+            {
+                if (!seenAcross.Add(a))
+                {
+                    overlap = true;
+                    break;
+                }
+            }
+            if (overlap) break;
+        }
+
+        if (overlap)
+        {
+            for (int i = 0; i < n; i++)
+            {
+                var neighbor = sigmaNeighbors[i];
+                float dist = Vector3.Distance(pivotWorld, neighbor.transform.position);
+                targets.Add((neighbor, pivotWorld + newUnitDirs[i].normalized * dist));
+            }
+            return;
+        }
+
+        for (int i = 0; i < n; i++)
+        {
+            Vector3 o = oldUnitDirs[i].normalized;
+            Vector3 nd = newUnitDirs[i].normalized;
+            if (o.sqrMagnitude < 1e-12f || nd.sqrMagnitude < 1e-12f) continue;
+            Quaternion R = Quaternion.FromToRotation(o, nd);
+            foreach (var a in fragments[i])
+            {
+                Vector3 newPos = pivotWorld + R * (a.transform.position - pivotWorld);
+                targets.Add((a, newPos));
+            }
+        }
+    }
+
+    static bool AreThreeDirectionsCoplanar(IReadOnlyList<Vector3> unitDirsFromCenter)
+    {
+        if (unitDirsFromCenter == null || unitDirsFromCenter.Count != 3) return false;
+        var a = unitDirsFromCenter[0];
+        var b = unitDirsFromCenter[1];
+        var c = unitDirsFromCenter[2];
+        float vol = Mathf.Abs(Vector3.Dot(Vector3.Cross(a, b), c));
+        return vol < 0.12f;
+    }
+
+    /// <summary>Reference axis for VSEPR / σ-relax (π bond toward partner, else override / first σ).</summary>
+    public Vector3 GetRedistributeReferenceLocal(float? piBondAngleOverride = null, Vector3? refBondWorldDirection = null) =>
+        ResolveReferenceBondDirectionLocal(piBondAngleOverride, refBondWorldDirection);
+
+    /// <summary>
+    /// AX₃E with coplanar σ axes (e.g. after π bond break): σ neighbors should move onto three tetrahedral vertices.
+    /// Used for animated bond-break; instant apply uses <see cref="TryRelaxCoplanarSigmaNeighborsToTetrahedral3D"/>.
+    /// </summary>
+    public bool TryComputeCoplanarTetrahedralSigmaNeighborRelaxTargets(Vector3 refLocalNormalized,
+        out List<(AtomFunction neighbor, Vector3 targetWorld)> targets)
+    {
+        targets = null;
+        var sigmaNeighbors = GetDistinctSigmaNeighborAtoms();
+        var loneOrbitals = bondedOrbitals.Where(orb => orb != null && orb.Bond == null).ToList();
+        if (sigmaNeighbors.Count != 3 || loneOrbitals.Count != 1) return false;
+        if (sigmaNeighbors.Count + loneOrbitals.Count != 4) return false;
+
+        var worldDirs = new List<Vector3>(3);
+        foreach (var n in sigmaNeighbors)
+        {
+            var d = n.transform.position - transform.position;
+            if (d.sqrMagnitude < 1e-10f) return false;
+            worldDirs.Add(d.normalized);
+        }
+        if (!AreThreeDirectionsCoplanar(worldDirs)) return false;
+
+        var idealLocal = VseprLayout.GetIdealLocalDirections(4);
+        var aligned = VseprLayout.AlignFirstDirectionTo(idealLocal, refLocalNormalized);
+        var idealWorld = new Vector3[4];
+        for (int i = 0; i < 4; i++)
+            idealWorld[i] = transform.TransformDirection(aligned[i]).normalized;
+
+        var lone = loneOrbitals[0];
+        Vector3 loneTip = transform.TransformDirection(OrbitalTipLocalDirection(lone)).normalized;
+        int loneIdealIdx = 0;
+        float bestDot = -2f;
+        for (int i = 0; i < 4; i++)
+        {
+            float dot = Vector3.Dot(idealWorld[i], loneTip);
+            if (dot > bestDot)
+            {
+                bestDot = dot;
+                loneIdealIdx = i;
+            }
+        }
+
+        var remaining = new List<Vector3>(3);
+        for (int i = 0; i < 4; i++)
+            if (i != loneIdealIdx) remaining.Add(idealWorld[i]);
+
+        var mapping = FindBestDirectionMapping(worldDirs, remaining);
+        if (mapping == null || mapping.Count != 3)
+        {
+            if (DebugLogRedistributeOrbitalsSteps)
+                Debug.Log($"[FG-OrbDist] TryRelaxCoplanarTet skip Z={atomicNumber} (FindBestDirectionMapping failed)");
+            return false;
+        }
+
+        var newDirs = new List<Vector3>(3);
+        for (int i = 0; i < 3; i++)
+            newDirs.Add(mapping[i].newDir.normalized);
+        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets);
+        return targets != null && targets.Count > 0;
+    }
+
+    /// <summary>
+    /// AX₃E with coplanar σ axes (e.g. after π bond break): move σ neighbors onto three vertices of a tetrahedron so lone pair + σ bonds can adopt sp³-like angles. Bond σ orbitals (on CovalentBond) follow atom positions in LateUpdate.
+    /// </summary>
+    void TryRelaxCoplanarSigmaNeighborsToTetrahedral3D(Vector3 refLocalNormalized)
+    {
+        if (!TryComputeCoplanarTetrahedralSigmaNeighborRelaxTargets(refLocalNormalized, out var targets) || targets == null) return;
+
+        var moved = new HashSet<AtomFunction>();
+        foreach (var (atom, targetWorld) in targets)
+        {
+            atom.transform.position = targetWorld;
+            moved.Add(atom);
+        }
+
+        if (DebugLogRedistributeOrbitalsSteps)
+            Debug.Log($"[FG-OrbDist] TryRelaxCoplanarTet APPLIED Z={atomicNumber} id={GetInstanceID()} (3σ+1e coplanar → rigid substituent rotation or σ-only fallback)");
+
+        RefreshCharge();
+        foreach (var a in moved)
+            a.RefreshCharge();
+        SetupGlobalIgnoreCollisions();
+    }
+
+    /// <summary>
+    /// After π re-forms: sp² centers with three σ neighbors + π should be trigonal planar; if σ directions are not coplanar,
+    /// targets move neighbors onto 120° in-plane. Used for π step-2 animation; instant apply uses <see cref="TryRelaxSigmaNeighborsToTrigonalPlanar3D"/>.
+    /// </summary>
+    public bool TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(Vector3 refLocalNormalized,
+        out List<(AtomFunction neighbor, Vector3 targetWorld)> targets)
+    {
+        targets = null;
+        if (GetPiBondCount() < 1) return false;
+        var sigmaNeighbors = GetDistinctSigmaNeighborAtoms();
+        if (sigmaNeighbors.Count != 3) return false;
+
+        var worldDirs = new List<Vector3>(3);
+        foreach (var n in sigmaNeighbors)
+        {
+            var d = n.transform.position - transform.position;
+            if (d.sqrMagnitude < 1e-10f) return false;
+            worldDirs.Add(d.normalized);
+        }
+        if (AreThreeDirectionsCoplanar(worldDirs)) return false;
+
+        var idealLocal = VseprLayout.GetIdealLocalDirections(3);
+        var aligned = VseprLayout.AlignFirstDirectionTo(idealLocal, refLocalNormalized);
+        var idealWorld = new List<Vector3>(3);
+        for (int i = 0; i < 3; i++)
+            idealWorld.Add(transform.TransformDirection(aligned[i]).normalized);
+
+        var mapping = FindBestDirectionMapping(worldDirs, idealWorld);
+        if (mapping == null || mapping.Count != 3) return false;
+
+        var newDirs = new List<Vector3>(3);
+        for (int i = 0; i < 3; i++)
+            newDirs.Add(mapping[i].newDir.normalized);
+        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets);
+        return targets != null && targets.Count > 0;
+    }
+
+    /// <summary>
+    /// After a π bond re-forms, σ neighbors may still sit at ~tetrahedral positions (from bond-break relax). sp² centers with
+    /// three σ neighbors + π should be trigonal planar; if σ directions are not coplanar, snap neighbors onto 120° in-plane.
+    /// Skips when already coplanar (FG builds, undistorted sp²).
+    /// </summary>
+    void TryRelaxSigmaNeighborsToTrigonalPlanar3D(Vector3 refLocalNormalized)
+    {
+        if (!TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(refLocalNormalized, out var targets) || targets == null) return;
+
+        var moved = new HashSet<AtomFunction>();
+        foreach (var (atom, targetWorld) in targets)
+        {
+            atom.transform.position = targetWorld;
+            moved.Add(atom);
+        }
+
+        if (ElectronOrbitalFunction.DebugPiOrbitalRedistribution)
+            ElectronOrbitalFunction.LogPiRedistDebug($"TryRelaxTrigonalPlanar APPLIED Z={atomicNumber} id={GetInstanceID()} (3σ non-coplanar + π → 120°, rigid substituents or σ-only fallback)");
+
+        RefreshCharge();
+        foreach (var a in moved)
+            a.RefreshCharge();
+        SetupGlobalIgnoreCollisions();
+    }
+
+    void RedistributeOrbitals3D(float? piBondAngleOverride, Vector3? refBondWorldDirection, bool relaxCoplanarSigmaToTetrahedral = false)
     {
         int maxSlots = GetOrbitalSlotCount();
         if (maxSlots <= 1) return;
 
         float mergeToleranceDeg = 360f / (2f * maxSlots);
         Vector3 refLocal = ResolveReferenceBondDirectionLocal(piBondAngleOverride, refBondWorldDirection);
+        if (refLocal.sqrMagnitude < 1e-8f) refLocal = Vector3.right;
+        else refLocal.Normalize();
+
+        // sp² σ framework can stay coplanar after π break while the center should be sp³ (AX₃E). Only from bond-break
+        // redistribution — not during FG construction, where trigonal sp² centers also have 3σ + 1 lone lobe before π forms.
+        if (relaxCoplanarSigmaToTetrahedral)
+            TryRelaxCoplanarSigmaNeighborsToTetrahedral3D(refLocal);
+        else
+            TryRelaxSigmaNeighborsToTrigonalPlanar3D(refLocal);
 
         var loneOrbitals = bondedOrbitals.Where(orb => orb != null && orb.Bond == null).ToList();
-        if (loneOrbitals.Count == 0) return;
+        if (loneOrbitals.Count == 0)
+        {
+            if (DebugLogRedistributeOrbitalsSteps)
+                Debug.Log($"[FG-OrbDist] RedistributeOrbitals3D skip (no lone lobes) Z={atomicNumber} id={GetInstanceID()}");
+            return;
+        }
 
         var bondAxes = CollectSigmaBondAxesLocalMerged(mergeToleranceDeg);
-        int slotCount = GetVseprSlotCount3D(bondAxes.Count, loneOrbitals.Count);
+        int baseSlotCount = GetVseprSlotCount3D(bondAxes.Count, loneOrbitals.Count);
 
-        var idealRaw = VseprLayout.GetIdealLocalDirections(slotCount);
-        var newDirs = new List<Vector3>(VseprLayout.AlignFirstDirectionTo(idealRaw, refLocal));
+        if (DebugLogRedistributeOrbitalsSteps)
+            Debug.Log($"[FG-OrbDist] RedistributeOrbitals3D Z={atomicNumber} id={GetInstanceID()} lone={loneOrbitals.Count} mergedσAxes={bondAxes.Count} baseSlots={baseSlotCount} maxSlots={maxSlots}");
 
-        float matchToleranceDeg = 360f / (2f * slotCount);
-        if (!TryMatchLoneOrbitalsToFreeIdealDirections(refLocal, slotCount, bondAxes, loneOrbitals, newDirs, out var bestMapping) ||
-            bestMapping == null)
-            return;
-
-        var moved = new HashSet<ElectronOrbitalFunction>();
-        foreach (var (oldDir, newDir) in bestMapping)
+        // A single VSEPR vertex count can yield free-slot count ≠ lone-orbital count; retry up to maxSlots so bond-break / multi-domain cases still get a layout.
+        bool layoutApplied = false;
+        for (int trySlots = baseSlotCount; trySlots <= maxSlots; trySlots++)
         {
-            var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(newDir, bondRadius);
-            foreach (var orb in loneOrbitals)
+            var idealRaw = VseprLayout.GetIdealLocalDirections(trySlots);
+            var newDirs = new List<Vector3>(VseprLayout.AlignFirstDirectionTo(idealRaw, refLocal));
+
+            float matchToleranceDeg = 360f / (2f * trySlots);
+            if (!TryMatchLoneOrbitalsToFreeIdealDirections(refLocal, trySlots, bondAxes, loneOrbitals, newDirs, out var bestMapping) ||
+                bestMapping == null)
+                continue;
+
+            var moved = new HashSet<ElectronOrbitalFunction>();
+            foreach (var (oldDir, newDir) in bestMapping)
             {
-                if (moved.Contains(orb)) continue;
-                Vector3 oDir = OrbitalTipLocalDirection(orb);
-                if (DirectionsWithinTolerance(oDir, oldDir, matchToleranceDeg))
+                var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(newDir, bondRadius);
+                foreach (var orb in loneOrbitals)
                 {
-                    orb.transform.localPosition = pos;
-                    orb.transform.localRotation = rot;
-                    moved.Add(orb);
-                    break;
+                    if (moved.Contains(orb)) continue;
+                    Vector3 oDir = OrbitalTipLocalDirection(orb);
+                    if (DirectionsWithinTolerance(oDir, oldDir, matchToleranceDeg))
+                    {
+                        orb.transform.localPosition = pos;
+                        orb.transform.localRotation = rot;
+                        moved.Add(orb);
+                        break;
+                    }
                 }
             }
+            layoutApplied = true;
+            if (DebugLogRedistributeOrbitalsSteps)
+                Debug.Log($"[FG-OrbDist] RedistributeOrbitals3D applied trySlots={trySlots} movedLone={moved.Count}/{loneOrbitals.Count} Z={atomicNumber}");
+            break;
         }
+        if (DebugLogRedistributeOrbitalsSteps && !layoutApplied)
+            Debug.Log($"[FG-OrbDist] RedistributeOrbitals3D NO MATCH (all trySlots failed) Z={atomicNumber} id={GetInstanceID()} lone={loneOrbitals.Count}");
     }
 
     Vector3 ResolveReferenceBondDirectionLocal(float? piBondAngleOverride, Vector3? refBondWorldDirection)

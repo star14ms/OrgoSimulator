@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
 
 /// <summary>Edit-mode toolbar functional groups: attach to a free orbital or replace selected hydrogen.</summary>
@@ -20,8 +21,36 @@ public enum FunctionalGroupKind
 /// </summary>
 public class MoleculeBuilder : MonoBehaviour
 {
+    /// <summary>Console logs tagged [FG-OrbDist] for Nitro / Carboxyl attach (orbital redistribution path). Set false to silence.</summary>
+    public static bool DebugFunctionalGroupOrbitalDistribution = true;
+
     [SerializeField] GameObject atomPrefab;
     [SerializeField] float viewportMargin = 0.1f;
+
+    static void LogFgOrbit(string msg)
+    {
+        if (!DebugFunctionalGroupOrbitalDistribution) return;
+        Debug.Log($"[FG-OrbDist] {msg}");
+    }
+
+    static string DescribeConnectedFragment(AtomFunction anchor)
+    {
+        if (anchor == null) return "anchor=null\n";
+        var sb = new StringBuilder();
+        foreach (var a in anchor.GetConnectedMolecule())
+        {
+            if (a == null) continue;
+            int loneLobes = 0;
+            foreach (var o in a.GetComponentsInChildren<ElectronOrbitalFunction>())
+            {
+                if (o.transform.parent != a.transform) continue;
+                if (o.Bond == null) loneLobes++;
+            }
+            sb.AppendLine(
+                $"  Z={a.AtomicNumber} id={a.GetInstanceID()} π={a.GetPiBondCount()} bondObjs={a.CovalentBonds.Count} loneLobes(Bond==null)={loneLobes} 1eOrbs={a.GetLoneOrbitalsWithOneElectronSortedByAngle().Count}");
+        }
+        return sb.ToString();
+    }
 
     /// <summary>Bond length matches manual bonding: 2 * (bondRadius * 0.6) = 1.2 * bondRadius, from GetCanonicalSlotPosition in ElectronOrbitalFunction.</summary>
     float GetBondLength() => atomPrefab != null && atomPrefab.TryGetComponent<AtomFunction>(out var a) ? 1.2f * a.BondRadius : 0.96f;
@@ -466,15 +495,28 @@ public class MoleculeBuilder : MonoBehaviour
         return a;
     }
 
-    bool BondSigmaNoRedist(AtomFunction a, AtomFunction b)
+    /// <summary>σ bond with immediate RedistributeOrbitals on both atoms so the next bond from the same center picks correct lone lobes (VSEPR, no FG-specific hardcoding).</summary>
+    bool BondSigma(AtomFunction a, AtomFunction b)
     {
         Vector3 dAB = (b.transform.position - a.transform.position).normalized;
         Vector3 dBA = -dAB;
         var oa = a.GetLoneOrbitalForBondFormation(dAB);
         var ob = b.GetLoneOrbitalWithOneElectron(dBA);
         if (oa == null || ob == null) return false;
-        FormSigmaBondInstant(a, b, oa, ob, false);
+        FormSigmaBondInstant(a, b, oa, ob, redistributeEndpoints: true);
         return true;
+    }
+
+    static void RedistributeOrbitalsOnConnectedMolecule(AtomFunction anyAtomInFragment)
+    {
+        if (anyAtomInFragment == null) return;
+        if (AtomFunction.DebugLogRedistributeOrbitalsSteps)
+        {
+            int n = anyAtomInFragment.GetConnectedMolecule().Count;
+            LogFgOrbit($"RedistributeOrbitalsOnConnectedMolecule: calling RedistributeOrbitals on {n} atom(s)");
+        }
+        foreach (var atom in anyAtomInFragment.GetConnectedMolecule())
+            if (atom != null) atom.RedistributeOrbitals();
     }
 
     /// <summary>
@@ -492,6 +534,8 @@ public class MoleculeBuilder : MonoBehaviour
         int reserved = GetMinReservedBondOrderForPiPass(center);
         int initialOneE = center.GetLoneOrbitalsWithOneElectronSortedByAngle().Count;
         int maxPiBonds = Mathf.Min(initialOneE, Mathf.Max(0, v - s0 - reserved));
+        LogFgOrbit(
+            $"TryFormPiBonds center Z={center.AtomicNumber} id={center.GetInstanceID()}: valenceCap={v} sumBO={s0} reservedπ={reserved} 1eLone={initialOneE} maxPiForm={maxPiBonds} πNow={center.GetPiBondCount()}");
         if (maxPiBonds <= 0) return;
 
         for (int round = 0; round < 8; round++)
@@ -521,9 +565,9 @@ public class MoleculeBuilder : MonoBehaviour
 
                 int piBefore = center.GetPiBondCount();
                 if (bo == 1)
-                    FormPiBondInstant(center, other, false);
+                    FormPiBondInstant(center, other, redistributeEndpoints: true);
                 else if (bo == 2)
-                    FormSecondPiBondInstant(center, other, false);
+                    FormSecondPiBondInstant(center, other, redistributeEndpoints: true);
 
                 if (center.GetPiBondCount() != piBefore)
                     progress = true;
@@ -582,6 +626,15 @@ public class MoleculeBuilder : MonoBehaviour
         if (dirOut.sqrMagnitude < 1e-10f) return false;
         dirOut.Normalize();
 
+        bool traceNitroOrCarboxyl = DebugFunctionalGroupOrbitalDistribution
+            && (kind == FunctionalGroupKind.Nitro || kind == FunctionalGroupKind.Carboxyl);
+        if (traceNitroOrCarboxyl)
+            AtomFunction.DebugLogRedistributeOrbitalsSteps = true;
+        try
+        {
+            if (traceNitroOrCarboxyl)
+                LogFgOrbit($"BuildFunctionalGroup BEGIN kind={kind} use3D={OrbitalAngleUtility.UseFull3DOrbitalGeometry}");
+
         int z0 = kind switch
         {
             FunctionalGroupKind.AmineNH2 => 7,
@@ -600,7 +653,7 @@ public class MoleculeBuilder : MonoBehaviour
         int anchorFormalCharge = kind == FunctionalGroupKind.Nitro ? 1 : 0;
         var anchor = SpawnAtomElement(z0, anchorWorldPos, anchorFormalCharge);
         if (anchor == null) return false;
-        if (!BondSigmaNoRedist(parent, anchor))
+        if (!BondSigma(parent, anchor))
         {
             Destroy(anchor.gameObject);
             return false;
@@ -626,7 +679,7 @@ public class MoleculeBuilder : MonoBehaviour
                 var c = SpawnAtomElement(6, oc);
                 if (c == null) { ok = false; break; }
                 touched.Add(c);
-                ok = BondSigmaNoRedist(anchor, c);
+                ok = BondSigma(anchor, c);
                 break;
             }
             case FunctionalGroupKind.Aldehyde:
@@ -637,7 +690,7 @@ public class MoleculeBuilder : MonoBehaviour
                 var o = SpawnAtomElement(8, cPos + dirCarbonylO * L);
                 if (o == null) { ok = false; break; }
                 touched.Add(o);
-                ok = BondSigmaNoRedist(anchor, o);
+                ok = BondSigma(anchor, o);
                 // C=O π from TryFormPiBondsForFunctionalGroupCenter after σ.
                 // Aldehyde C—H from saturation pass after π (third σ ~120° from R—C and C=O).
                 break;
@@ -652,7 +705,7 @@ public class MoleculeBuilder : MonoBehaviour
                 if (oC == null || oH == null) { ok = false; break; }
                 touched.Add(oC);
                 touched.Add(oH);
-                ok = BondSigmaNoRedist(anchor, oC) && BondSigmaNoRedist(anchor, oH);
+                ok = BondSigma(anchor, oC) && BondSigma(anchor, oH);
                 // C=O π from TryFormPiBondsForFunctionalGroupCenter.
                 // Carboxylic O—H from saturation pass.
                 break;
@@ -668,7 +721,7 @@ public class MoleculeBuilder : MonoBehaviour
                 touched.Add(o1);
                 touched.Add(o2);
                 touched.Add(o3);
-                ok = BondSigmaNoRedist(anchor, o1) && BondSigmaNoRedist(anchor, o2) && BondSigmaNoRedist(anchor, o3);
+                ok = BondSigma(anchor, o1) && BondSigma(anchor, o2) && BondSigma(anchor, o3);
                 // S=O π bonds from TryFormPiBondsForFunctionalGroupCenter; O—H from saturation pass.
                 break;
             }
@@ -677,7 +730,7 @@ public class MoleculeBuilder : MonoBehaviour
                 var n = SpawnAtomElement(7, anchor.transform.position + dirOut * L);
                 if (n == null) { ok = false; break; }
                 touched.Add(n);
-                ok = BondSigmaNoRedist(anchor, n);
+                ok = BondSigma(anchor, n);
                 // C≡N: two π from TryFormPiBondsForFunctionalGroupCenter.
                 break;
             }
@@ -692,7 +745,7 @@ public class MoleculeBuilder : MonoBehaviour
                 if (o1 == null || o2 == null) { ok = false; break; }
                 touched.Add(o1);
                 touched.Add(o2);
-                ok = BondSigmaNoRedist(anchor, o1) && BondSigmaNoRedist(anchor, o2);
+                ok = BondSigma(anchor, o1) && BondSigma(anchor, o2);
                 break;
             }
             case FunctionalGroupKind.PhosphateDihydrogen:
@@ -707,7 +760,7 @@ public class MoleculeBuilder : MonoBehaviour
                 touched.Add(o1);
                 touched.Add(o2);
                 touched.Add(o3);
-                ok = BondSigmaNoRedist(anchor, o1) && BondSigmaNoRedist(anchor, o2) && BondSigmaNoRedist(anchor, o3);
+                ok = BondSigma(anchor, o1) && BondSigma(anchor, o2) && BondSigma(anchor, o3);
                 // P=O π from TryFormPiBondsForFunctionalGroupCenter; two P—OH: O—H from saturation pass.
                 break;
             }
@@ -719,26 +772,52 @@ public class MoleculeBuilder : MonoBehaviour
             return false;
         }
 
-        foreach (var a in touched)
-            if (a != null) a.RedistributeOrbitals();
+            if (traceNitroOrCarboxyl)
+            {
+                LogFgOrbit($"After σ framework (before π): anchorZ={anchor.AtomicNumber} parentZ={parent.AtomicNumber}");
+                LogFgOrbit($"Connected fragment snapshot:\n{DescribeConnectedFragment(anchor)}");
+            }
 
-        TryFormPiBondsForFunctionalGroupCenter(anchor, parent);
+            TryFormPiBondsForFunctionalGroupCenter(anchor, parent);
 
-        foreach (var a in touched)
-            if (a != null) a.RedistributeOrbitals();
+            if (traceNitroOrCarboxyl)
+            {
+                LogFgOrbit($"After TryFormPiBonds: anchor π={anchor.GetPiBondCount()} sumBO={anchor.GetSumBondOrderToNeighbors()}");
+                LogFgOrbit($"Fragment before RedistributeOrbitals (post-π):\n{DescribeConnectedFragment(anchor)}");
+            }
 
-        if (edit != null)
-        {
-            var fgOnly = new List<AtomFunction>();
-            foreach (var a in touched)
-                if (a != null && a != parent)
-                    fgOnly.Add(a);
-            if (fgOnly.Count > 0)
-                edit.SaturateAtomsWithHydrogenPass(fgOnly);
-        }
+            // Whole fragment (parent + FG): π changes lone/σ layout on atoms not always in `touched` ordering.
+            RedistributeOrbitalsOnConnectedMolecule(anchor);
+
+            if (traceNitroOrCarboxyl)
+                LogFgOrbit($"After RedistributeOrbitals #1:\n{DescribeConnectedFragment(anchor)}");
+
+            if (edit != null)
+            {
+                var fgOnly = new List<AtomFunction>();
+                foreach (var a in touched)
+                    if (a != null && a != parent)
+                        fgOnly.Add(a);
+                if (fgOnly.Count > 0)
+                    edit.SaturateAtomsWithHydrogenPass(fgOnly);
+            }
+
+            RedistributeOrbitalsOnConnectedMolecule(anchor);
+
+            if (traceNitroOrCarboxyl)
+            {
+                LogFgOrbit($"After RedistributeOrbitals #2 (post H-saturation):\n{DescribeConnectedFragment(anchor)}");
+                LogFgOrbit("BuildFunctionalGroup END");
+            }
 
         AtomFunction.SetupGlobalIgnoreCollisions();
         return true;
+        }
+        finally
+        {
+            if (traceNitroOrCarboxyl)
+                AtomFunction.DebugLogRedistributeOrbitalsSteps = false;
+        }
     }
 
     /// <summary>~120° coplanar σ directions for two substituents (e.g. nitro O—N—O, aldehyde/carbonyl O vs hydroxyl O) given center→parent bond.</summary>

@@ -790,7 +790,21 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         else if (db <= rB)
             returnTo = b;
         if (returnTo != null)
-            bond.BreakBond(returnTo);
+        {
+            var other = returnTo == a ? b : a;
+            float enDrag = AtomFunction.GetElectronegativity(returnTo.AtomicNumber);
+            float enOther = AtomFunction.GetElectronegativity(other.AtomicNumber);
+            if (enDrag < enOther)
+            {
+                returnTo.FlashChargeLabelInvalidDragFade();
+                transform.localPosition = originalLocalPosition;
+                transform.localScale = originalLocalScale;
+                transform.localRotation = originalLocalRotation;
+                bond.ReturnToLineView();
+                return;
+            }
+            bond.BreakBond(returnTo, userDragBondCylinderBreak: true);
+        }
         else
         {
             transform.localPosition = originalLocalPosition;
@@ -1179,6 +1193,24 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         foreach (var entry in redistB)
             redistBStarts.Add(entry.orb != null ? (entry.orb.transform.localPosition, entry.orb.transform.localRotation) : (Vector3.zero, Quaternion.identity));
 
+        // σ-neighbor trigonal planar relax (sp² after tetrahedral break): animate in step 2 alongside lone orbitals / π lobes.
+        var neighborTrigonalMoves = new Dictionary<AtomFunction, (Vector3 start, Vector3 end)>();
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            void AddTrigonalMoves(AtomFunction a)
+            {
+                if (a == null) return;
+                Vector3 refL = a.GetRedistributeReferenceLocal(null, null);
+                if (a.TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(refL, out var t) && t != null)
+                {
+                    foreach (var (n, end) in t)
+                        neighborTrigonalMoves[n] = (n.transform.position, end);
+                }
+            }
+            AddTrigonalMoves(sourceAtom);
+            AddTrigonalMoves(targetAtom);
+        }
+
         // Pi bond: animate both orbitals to bond center. Flip source or target so electrons align in a row.
         Vector3 bondTargetPos = Vector3.zero;
         Quaternion bondTargetRot = Quaternion.identity;
@@ -1228,6 +1260,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                     && (Vector3.Distance(entry.orb.transform.localPosition, entry.pos) > piPosThreshold || Quaternion.Angle(entry.orb.transform.localRotation, entry.rot) > piRotThreshold))
                 { hasRedistMovement = true; break; }
             }
+        if (!hasRedistMovement && neighborTrigonalMoves.Count > 0)
+            hasRedistMovement = true;
         bool skipPiStep2 = sourceAtBond && targetAtBond && !hasRedistMovement;
         LogPiRedistDebug($"AnimateRedistribute motion: skipStep2={skipPiStep2} sourceAtBond={sourceAtBond} targetAtBond={targetAtBond} hasRedistMovement={hasRedistMovement}");
 
@@ -1269,8 +1303,13 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                     entry.orb.transform.localRotation = Quaternion.Slerp(sr, entry.rot, rotT);
                 }
             }
+            foreach (var kv in neighborTrigonalMoves)
+                kv.Key.transform.position = Vector3.Lerp(kv.Value.start, kv.Value.end, s);
             yield return null;
         }
+        foreach (var kv in neighborTrigonalMoves)
+            kv.Key.transform.position = kv.Value.end;
+
         sourceAtom.ApplyRedistributeTargets(redistA);
         targetAtom.ApplyRedistributeTargets(redistB);
 
@@ -1340,11 +1379,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     {
         int piSrcNow = sourceAtom != null ? sourceAtom.GetPiBondCount() : -1;
         int piTgtNow = targetAtom != null ? targetAtom.GetPiBondCount() : -1;
-        bool redistSrc = sourceAtom != null && piSrcNow != piBeforeSource;
-        bool redistTgt = targetAtom != null && piTgtNow != piBeforeTarget;
-        LogPiRedistDebug($"TryRedistributeOrbitalsAfterBondChange: source Z={sourceAtom?.AtomicNumber} π {piBeforeSource}→{piSrcNow} → RedistributeOrbitals={(redistSrc ? "call" : "skip")}; target Z={targetAtom?.AtomicNumber} π {piBeforeTarget}→{piTgtNow} → RedistributeOrbitals={(redistTgt ? "call" : "skip")}");
-        if (redistSrc) sourceAtom.RedistributeOrbitals();
-        if (redistTgt) targetAtom.RedistributeOrbitals();
+        LogPiRedistDebug($"TryRedistributeOrbitalsAfterBondChange: source Z={sourceAtom?.AtomicNumber} π {piBeforeSource}→{piSrcNow}; target Z={targetAtom?.AtomicNumber} π {piBeforeTarget}→{piTgtNow} → RedistributeOrbitals on both endpoints");
+        if (sourceAtom != null) sourceAtom.RedistributeOrbitals();
+        if (targetAtom != null) targetAtom.RedistributeOrbitals();
     }
 
     /// <param name="partnerOrbital">Lone pair on the partner atom (receptor direction reference).</param>
