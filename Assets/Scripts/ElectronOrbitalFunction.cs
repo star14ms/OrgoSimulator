@@ -14,7 +14,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     [SerializeField] Sprite stretchSprite; // Optional: single sprite for stretch. If null, uses procedural triangle+circle composite.
     [SerializeField] [Range(0.05f, 1f)] float orbitalVisualAlpha = 0.05f;
     [Tooltip("Edit-mode selected orbital: body alpha (higher than orbitalVisualAlpha so the lobe reads brighter).")]
-    [SerializeField] [Range(0.05f, 1f)] float orbitalHighlightAlpha = 0.05f;
+    [SerializeField] [Range(0.05f, 1f)] float orbitalHighlightAlpha = 0.14f;
     [Tooltip("3D drag stretch only: scales hemisphere diameter and cone base (XZ) vs idle orbital sizing.")]
     [SerializeField] [Range(0.35f, 1f)] float dragStretch3DCrossSectionScale = 0.65f;
     [Tooltip("3D drag: offset from flat seam into the hemispherical bulk along the tip axis, as a fraction of cap radius (keeps electrons under the dome, not on the outer shell).")]
@@ -519,9 +519,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
+    /// <summary>Prefer URP Unlit so WebGL builds keep a working transparent mesh (Lit transparent variants are often stripped).</summary>
     static Shader TryFindUrplShader()
     {
-        var sh = Shader.Find("Universal Render Pipeline/Lit");
+        var sh = Shader.Find("Universal Render Pipeline/Unlit");
+        if (sh == null) sh = Shader.Find("Universal Render Pipeline/Lit");
         if (sh == null) sh = Shader.Find("Universal Render Pipeline/Simple Lit");
         return sh;
     }

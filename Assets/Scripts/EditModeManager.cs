@@ -783,6 +783,30 @@ public class EditModeManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// H-auto-style saturation on <paramref name="atoms"/> only (same logic as <see cref="SaturateWithHydrogen"/>, repeated until no progress).
+    /// Used after functional-group attachment so substituent OH / NH₂ / etc. fill without touching the rest of the molecule or the anchor atom.
+    /// </summary>
+    public void SaturateAtomsWithHydrogenPass(IReadOnlyList<AtomFunction> atoms)
+    {
+        if (atoms == null || atoms.Count == 0 || atomPrefab == null || Camera.main == null) return;
+        for (int round = 0; round < 16; round++)
+        {
+            bool anyProgress = false;
+            foreach (var a in atoms)
+            {
+                if (a == null) continue;
+                int before = a.GetLoneOrbitalsWithOneElectronSortedByAngle().Count;
+                if (before == 0) continue;
+                SaturateWithHydrogen(a);
+                int after = a.GetLoneOrbitalsWithOneElectronSortedByAngle().Count;
+                if (after < before) anyProgress = true;
+            }
+            if (!anyProgress) break;
+        }
+        AtomFunction.SetupGlobalIgnoreCollisions();
+    }
+
     /// <summary>Unit vectors from <paramref name="center"/> toward each bonded neighbor (one entry per neighbor atom).</summary>
     static List<Vector3> CollectSigmaBondNeighborDirectionsWorld(AtomFunction center)
     {

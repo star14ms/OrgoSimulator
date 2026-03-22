@@ -109,6 +109,11 @@ MonoBehaviour:
   electronPrefab: {fileID: 3536562787249427365, guid: 8a491930dc6f5480980ccbc98378b9ff, type: 3}
   electronSpacing: 0.5
   stretchSprite: {fileID: 0}
+  orbitalVisualAlpha: 0.05
+  orbitalHighlightAlpha: 0.14
+  dragStretch3DCrossSectionScale: 0.65
+  drag3DElectronDepthInCapFraction: 0.32
+  debugDraw3DElectronDrag: 0
   apexPadding: 0.3
   orbitalColliderSize: {x: 1, y: 0.15}
   bondAnimStep1Duration: 0.5

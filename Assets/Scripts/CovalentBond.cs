@@ -134,7 +134,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     static Material GetOrCreateBondCylinderMaterial()
     {
         if (bondCylinderMaterial != null) return bondCylinderMaterial;
-        Shader sh = Shader.Find("Universal Render Pipeline/Lit");
+        Shader sh = Shader.Find("Universal Render Pipeline/Unlit");
+        if (sh == null) sh = Shader.Find("Universal Render Pipeline/Lit");
         if (sh == null) sh = Shader.Find("Universal Render Pipeline/Simple Lit");
         if (sh == null) sh = Shader.Find("Standard");
         bondCylinderMaterial = sh != null ? new Material(sh) : null;

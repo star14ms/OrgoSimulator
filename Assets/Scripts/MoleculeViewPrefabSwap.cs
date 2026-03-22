@@ -199,8 +199,8 @@ public static class MoleculeViewPrefabSwap
         var dirAtoB = (atomB.transform.position - atomA.transform.position).normalized;
         var dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
 
-        var orbA = atomA.GetLoneOrbitalWithOneElectron(dirAtoB);
-        var orbB = atomB.GetLoneOrbitalWithOneElectron(dirBtoA);
+        var orbA = atomA.GetLoneOrbitalForBondFormation(dirAtoB);
+        var orbB = atomB.GetLoneOrbitalForBondFormation(dirBtoA);
         if (orbA == null || orbB == null) return;
 
         int merged = orbA.ElectronCount + orbB.ElectronCount;
