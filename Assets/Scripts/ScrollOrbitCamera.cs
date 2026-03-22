@@ -33,6 +33,15 @@ public sealed class ScrollOrbitCamera : MonoBehaviour
 
     void Awake() => _focusPointInitial = focusPoint;
 
+    /// <summary>
+    /// True when orbit pivot matches the initial focus (default world origin), i.e. not snapped to the selected atom on the last scroll gesture.
+    /// </summary>
+    public bool IsOrbitFocusAtInitialPivot(float epsilon = 0.05f)
+    {
+        float e2 = epsilon * epsilon;
+        return (focusPoint - _focusPointInitial).sqrMagnitude <= e2;
+    }
+
     void OnEnable()
     {
         _cam = GetComponent<Camera>();
@@ -88,6 +97,46 @@ public sealed class ScrollOrbitCamera : MonoBehaviour
         Object.FindFirstObjectByType<EditModeManager>()?.RepositionDeselectBackground();
     }
 
+    /// <summary>Distance along camera forward from lens to the orbit focus projection (same axis used for the work plane depth).</summary>
+    public float GetDepthAlongView()
+    {
+        var cam = _cam != null ? _cam : GetComponent<Camera>();
+        if (cam == null || cam.orthographic) return 0f;
+        Vector3 f = cam.transform.forward;
+        if (f.sqrMagnitude < 1e-10f) return 0f;
+        f.Normalize();
+        return Vector3.Dot(focusPoint - cam.transform.position, f);
+    }
+
+    public void GetDepthClampRange(out float lo, out float hi)
+    {
+        lo = Mathf.Min(moleculeWorkPlaneDepthMin, moleculeWorkPlaneDepthMax);
+        hi = Mathf.Max(moleculeWorkPlaneDepthMin, moleculeWorkPlaneDepthMax);
+    }
+
+    public float GetDepthAlongViewClamped()
+    {
+        GetDepthClampRange(out float lo, out float hi);
+        return Mathf.Clamp(GetDepthAlongView(), lo, hi);
+    }
+
+    /// <summary>
+    /// Moves the camera along its forward axis so the depth along view matches <paramref name="targetDepthAlongView"/> (clamped).
+    /// The work plane anchor in world space stays fixed (dolly zoom toward/away from the sheet).
+    /// </summary>
+    public void ApplyDollyToTargetDepthAlongView(float targetDepthAlongView)
+    {
+        var cam = _cam != null ? _cam : GetComponent<Camera>();
+        if (cam == null || cam.orthographic) return;
+        GetDepthClampRange(out float lo, out float hi);
+        float tD = Mathf.Clamp(targetDepthAlongView, lo, hi);
+        Vector3 f = cam.transform.forward;
+        if (f.sqrMagnitude < 1e-10f) return;
+        f.Normalize();
+        float d = Vector3.Dot(focusPoint - cam.transform.position, f);
+        cam.transform.position += f * (d - tD);
+    }
+
     /// <summary>
     /// Only skip over scrollable UI (e.g. periodic table list), not the whole HUD.
     /// </summary>
@@ -102,7 +151,9 @@ public sealed class ScrollOrbitCamera : MonoBehaviour
         es.RaycastAll(ped, results);
         if (results.Count == 0) return false;
 
-        return results[0].gameObject.GetComponentInParent<ScrollRect>() != null;
+        var go = results[0].gameObject;
+        return go.GetComponentInParent<ScrollRect>() != null
+            || go.GetComponentInParent<Scrollbar>() != null;
     }
 
     void ApplyOrbitFocusForNewScrollGesture()

@@ -1180,6 +1180,14 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     GameObject selectionHighlight;
     GameObject selectionHighlight3D;
 
+    /// <summary>Opaque RGB matching the edit-mode selection ring (2D vs 3D path).</summary>
+    public static Color GetSelectionHighlightRingColorRgb()
+    {
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            return new Color(0.25f, 0.98f, 0.42f, 1f);
+        return new Color(0.3f, 0.9f, 0.4f, 1f);
+    }
+
     public void SetSelectionHighlight(bool on)
     {
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)

@@ -18,13 +18,15 @@ public class AtomQuickAddUI : MonoBehaviour
     [Tooltip("HUD “Main 3D” 2D/3D camera toggle. Off: control stays visible but does not respond (re-enable here when bringing the feature back).")]
     [SerializeField] bool enableMain3DCameraToggleButton = false;
     [SerializeField] float viewportMargin = 0.1f;
+    [Tooltip("Design reference: H button side length in px. Actual H = min(screen)×hudHShortSideFraction; hudScale = actual H / this.")]
     [SerializeField] float buttonSize = 36f;
     [SerializeField] float spacing = 4f;
     [SerializeField] int fontSize = 18;
-    [Tooltip("min(Screen.width,height) at which buttonSize/fontSize match the values above.")]
-    [SerializeField] float hudReferenceShortSide = 1080f;
-    [SerializeField] float hudScaleMin = 0.85f;
-    [SerializeField] float hudScaleMax = 2.75f;
+    [Tooltip("H (square element) button side = min(Screen.width, Screen.height) × this (default 1/16).")]
+    [SerializeField] float hudHShortSideFraction = 1f / 16f;
+    [HideInInspector] [SerializeField] float hudReferenceShortSide = 1080f;
+    [HideInInspector] [SerializeField] float hudScaleMin = 0.85f;
+    [HideInInspector] [SerializeField] float hudScaleMax = 2.75f;
 
     float hudScale = 1f;
     float layoutButtonSize;
@@ -84,9 +86,9 @@ public class AtomQuickAddUI : MonoBehaviour
     void RefreshHudLayoutMetrics()
     {
         float shortSide = Mathf.Min(Screen.width, Screen.height);
-        float reference = Mathf.Max(320f, hudReferenceShortSide);
-        hudScale = Mathf.Clamp(shortSide / reference, hudScaleMin, hudScaleMax);
-        layoutButtonSize = buttonSize * hudScale;
+        float frac = Mathf.Clamp(hudHShortSideFraction, 1f / 64f, 1f / 4f);
+        layoutButtonSize = shortSide * frac;
+        hudScale = layoutButtonSize / Mathf.Max(1e-6f, buttonSize);
         layoutSpacing = spacing * hudScale;
         layoutFontSize = Mathf.Max(10, Mathf.RoundToInt(fontSize * hudScale));
     }
@@ -94,6 +96,9 @@ public class AtomQuickAddUI : MonoBehaviour
     float Px(float designPixels) => designPixels * hudScale;
 
     int PxI(float designPixels) => Mathf.Max(0, Mathf.RoundToInt(designPixels * hudScale));
+
+    /// <summary>HUD layout pixels scaled like toolbar (same as internal <see cref="Px"/>).</summary>
+    public float HudPx(float designPixels) => Px(designPixels);
 
     void Update()
     {
@@ -174,6 +179,16 @@ public class AtomQuickAddUI : MonoBehaviour
         BuildToolbar();
         BuildDisposalZone();
         HideCreateAtomButton();
+
+        if (GetComponent<WorkPlaneDistanceScrollbar>() == null)
+            gameObject.AddComponent<WorkPlaneDistanceScrollbar>();
+
+        if (FindFirstObjectByType<WorldOriginMarker>() == null)
+        {
+            var originGo = new GameObject("WorldOriginMarker");
+            originGo.transform.position = Vector3.zero;
+            originGo.AddComponent<WorldOriginMarker>();
+        }
 
         OnCameraViewModeChanged();
     }

@@ -25,7 +25,7 @@ public class PeriodicTableUI : MonoBehaviour
 
     /// <summary>Match toolbar scaling from AtomQuickAddUI (1 = design resolution).</summary>
     public void SetHudLayoutScale(float scale) =>
-        hudLayoutScale = Mathf.Clamp(scale, 0.5f, 3f);
+        hudLayoutScale = Mathf.Clamp(scale, 0.5f, 12f);
 
     void RefreshTableLayoutMetrics()
     {
