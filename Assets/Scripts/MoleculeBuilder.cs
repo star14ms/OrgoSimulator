@@ -418,6 +418,13 @@ public class MoleculeBuilder : MonoBehaviour
         if (atomA == null || atomB == null) return;
         if (atomA.GetBondsTo(atomB) != 2) return;
 
+        // Period-2 C–O: carbonyl is double (C=O); triple (C≡O) would consume the σ slot needed for C—H / R—C.
+        if (atomA.AtomicNumber <= 10 && atomB.AtomicNumber <= 10)
+        {
+            bool co = (atomA.AtomicNumber == 6 && atomB.AtomicNumber == 8) || (atomA.AtomicNumber == 8 && atomB.AtomicNumber == 6);
+            if (co) return;
+        }
+
         var dirAtoB = (atomB.transform.position - atomA.transform.position).normalized;
         var dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
 
@@ -444,7 +451,8 @@ public class MoleculeBuilder : MonoBehaviour
         }
     }
 
-    AtomFunction SpawnAtomElement(int z, Vector3 pos)
+    /// <param name="formalCharge">Lewis formal charge before bonding; affects valence e⁻ count at init (e.g. nitro N⁺ → 4 e⁻, all 1e⁻ orbitals).</param>
+    AtomFunction SpawnAtomElement(int z, Vector3 pos, int formalCharge = 0)
     {
         var go = Instantiate(atomPrefab, pos, Quaternion.identity);
         if (!go.TryGetComponent<AtomFunction>(out var a))
@@ -453,6 +461,7 @@ public class MoleculeBuilder : MonoBehaviour
             return null;
         }
         a.AtomicNumber = z;
+        a.Charge = formalCharge;
         a.ForceInitialize();
         return a;
     }
@@ -469,15 +478,26 @@ public class MoleculeBuilder : MonoBehaviour
     }
 
     /// <summary>
-    /// After σ framework: if the center is still electronically unsaturated (has a lone orbital usable for bond formation),
-    /// add π bonds toward neighbors that still have a 1e orbital along the bond axis (typical for terminal O after σ).
-    /// Repeated passes until no progress (e.g. R—S(=O)(=O)—OH, P(=O)(OH)₂).
+    /// After σ framework: add π bonds toward FG-internal neighbors (not <paramref name="attachmentRoot"/>).
+    /// Caps π by (1) octet / valence headroom: max total bond-order sum around the center minus current σ/π sum minus σ
+    /// still needed (e.g. period-2 C with an O neighbor at single-bond order reserves one unit for the eventual C—H),
+    /// (2) half-filled lone orbitals available before this pass, and (3) FormSecondPiBondInstant blocks period-2 C≡O
+    /// (carbonyl stays C=O). Ethers stay π-free when headroom is 0.
     /// </summary>
-    void TryFormPiBondsForFunctionalGroupCenter(AtomFunction center)
+    void TryFormPiBondsForFunctionalGroupCenter(AtomFunction center, AtomFunction attachmentRoot)
     {
         if (center == null) return;
+        int v = center.GetMaxBondOrderSumAroundAtom();
+        int s0 = center.GetSumBondOrderToNeighbors();
+        int reserved = GetMinReservedBondOrderForPiPass(center);
+        int initialOneE = center.GetLoneOrbitalsWithOneElectronSortedByAngle().Count;
+        int maxPiBonds = Mathf.Min(initialOneE, Mathf.Max(0, v - s0 - reserved));
+        if (maxPiBonds <= 0) return;
+
         for (int round = 0; round < 8; round++)
         {
+            if (center.GetPiBondCount() >= maxPiBonds) break;
+
             bool progress = false;
             var neighbors = new List<AtomFunction>();
             var seen = new HashSet<AtomFunction>();
@@ -491,6 +511,11 @@ public class MoleculeBuilder : MonoBehaviour
 
             foreach (var other in neighbors)
             {
+                if (center.GetPiBondCount() >= maxPiBonds) break;
+
+                if (attachmentRoot != null && other == attachmentRoot)
+                    continue;
+
                 int bo = center.GetBondsTo(other);
                 if (bo <= 0 || bo >= 3) continue;
 
@@ -506,6 +531,26 @@ public class MoleculeBuilder : MonoBehaviour
 
             if (!progress) break;
         }
+    }
+
+    /// <summary>
+    /// Bond-order units to leave for σ bonds that will form after the π pass (e.g. aldehyde C: one half-filled orbital pairs with H).
+    /// Nitrile C has no O neighbor with σ-only to carbon, so reserve stays 0 (both 1e lobes can go into π toward N).
+    /// </summary>
+    static int GetMinReservedBondOrderForPiPass(AtomFunction center)
+    {
+        if (center == null) return 0;
+        if (center.AtomicNumber != 6 || center.AtomicNumber > 10) return 0;
+        int oneE = center.GetLoneOrbitalsWithOneElectronSortedByAngle().Count;
+        if (oneE < 2) return 0;
+        foreach (var b in center.CovalentBonds)
+        {
+            if (b?.AtomA == null || b?.AtomB == null) continue;
+            var other = b.AtomA == center ? b.AtomB : b.AtomA;
+            if (other == null || other.AtomicNumber != 8) continue;
+            if (center.GetBondsTo(other) == 1) return 1;
+        }
+        return 0;
     }
 
     static void GetAttachBasis(Vector3 dirParentToAnchor, out Vector3 right, out Vector3 up)
@@ -551,7 +596,9 @@ public class MoleculeBuilder : MonoBehaviour
             _ => 6
         };
 
-        var anchor = SpawnAtomElement(z0, anchorWorldPos);
+        // Nitro R—NO₂: nitrogen is modeled as N⁺ (one valence e⁻ removed) → 4 e⁻ in 4 orbitals, all single-electron (no 2e lone pair).
+        int anchorFormalCharge = kind == FunctionalGroupKind.Nitro ? 1 : 0;
+        var anchor = SpawnAtomElement(z0, anchorWorldPos, anchorFormalCharge);
         if (anchor == null) return false;
         if (!BondSigmaNoRedist(parent, anchor))
         {
@@ -636,6 +683,8 @@ public class MoleculeBuilder : MonoBehaviour
             }
             case FunctionalGroupKind.Nitro:
             {
+                // Planar nitro: trigonal σ framework (~120°) in the R—N plane; one N=O π from TryFormPiBondsForFunctionalGroupCenter.
+                // N⁺ was spawned with +1 formal charge → four 1e⁻ orbitals (no lone pair lobe).
                 Vector3 nPos = anchor.transform.position;
                 ComputeTrigonalDirsTowardParentForFunctionalGroup(nPos, parent.transform.position, out Vector3 dirO1, out Vector3 dirO2);
                 var o1 = SpawnAtomElement(8, nPos + dirO1 * L);
@@ -644,7 +693,6 @@ public class MoleculeBuilder : MonoBehaviour
                 touched.Add(o1);
                 touched.Add(o2);
                 ok = BondSigmaNoRedist(anchor, o1) && BondSigmaNoRedist(anchor, o2);
-                // N=O π from TryFormPiBondsForFunctionalGroupCenter (one pass adds first eligible O—N π).
                 break;
             }
             case FunctionalGroupKind.PhosphateDihydrogen:
@@ -671,7 +719,10 @@ public class MoleculeBuilder : MonoBehaviour
             return false;
         }
 
-        TryFormPiBondsForFunctionalGroupCenter(anchor);
+        foreach (var a in touched)
+            if (a != null) a.RedistributeOrbitals();
+
+        TryFormPiBondsForFunctionalGroupCenter(anchor, parent);
 
         foreach (var a in touched)
             if (a != null) a.RedistributeOrbitals();
@@ -690,7 +741,7 @@ public class MoleculeBuilder : MonoBehaviour
         return true;
     }
 
-    /// <summary>~120° σ directions for two substituents (e.g. nitro O—N—O) given center→parent bond.</summary>
+    /// <summary>~120° coplanar σ directions for two substituents (e.g. nitro O—N—O, aldehyde/carbonyl O vs hydroxyl O) given center→parent bond.</summary>
     static void ComputeTrigonalDirsTowardParentForFunctionalGroup(Vector3 centerWorld, Vector3 parentWorld, out Vector3 dirSubA, out Vector3 dirSubB)
     {
         Vector3 uR = parentWorld - centerWorld;
@@ -715,7 +766,7 @@ public class MoleculeBuilder : MonoBehaviour
         }
     }
 
-    /// <summary>Three tetrahedral σ directions for sulfonate / phosphonate oxygens (avoids colinear R—S—O / R—P—O).</summary>
+    /// <summary>Three σ directions from a tetrahedral frame aligned to center→parent (first arm); for sulfo/phosphate O placement.</summary>
     static void ComputeTetraThreeOxyDirsTowardParentForSulfo(Vector3 centerWorld, Vector3 parentWorld, out Vector3 d1, out Vector3 d2, out Vector3 d3)
     {
         Vector3 uR = parentWorld - centerWorld;

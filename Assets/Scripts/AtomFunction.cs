@@ -62,6 +62,34 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return pi;
     }
 
+    /// <summary>
+    /// Sum of bond-order edges to all neighbors (each covalent σ or π is one edge; a double bond counts as 2).
+    /// Used to cap π formation so total bond order around an atom stays within valence limits.
+    /// </summary>
+    public int GetSumBondOrderToNeighbors()
+    {
+        var seen = new HashSet<AtomFunction>();
+        int sum = 0;
+        foreach (var b in covalentBonds)
+        {
+            if (b?.AtomA == null || b?.AtomB == null) continue;
+            var other = b.AtomA == this ? b.AtomB : b.AtomA;
+            if (other == null || !seen.Add(other)) continue;
+            sum += GetBondsTo(other);
+        }
+        return sum;
+    }
+
+    /// <summary>
+    /// Maximum total bond-order sum around this atom (octet-style for period 2; orbital slots for period 3+ expanded octet).
+    /// </summary>
+    public int GetMaxBondOrderSumAroundAtom()
+    {
+        if (atomicNumber <= 2) return atomicNumber == 1 ? 1 : 0;
+        if (atomicNumber <= 10) return 4; // period 2 octet
+        return GetOrbitalSlotCount();
+    }
+
     public int GetOrbitalSlotCount()
     {
         if (atomicNumber == 2) return 1; // He: 1s² only
