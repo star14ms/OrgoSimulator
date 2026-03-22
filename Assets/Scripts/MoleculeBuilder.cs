@@ -387,8 +387,9 @@ public class MoleculeBuilder : MonoBehaviour
         var dirAtoB = (atomB.transform.position - atomA.transform.position).normalized;
         var dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
 
-        var orbA = atomA.GetLoneOrbitalWithOneElectron(dirAtoB);
-        var orbB = atomB.GetLoneOrbitalWithOneElectron(dirBtoA);
+        // Use bond-formation helper so O (and similar) can donate π from a 2e lone pair after σ is already in place.
+        var orbA = atomA.GetLoneOrbitalForBondFormation(dirAtoB);
+        var orbB = atomB.GetLoneOrbitalForBondFormation(dirBtoA);
         if (orbA == null || orbB == null) return;
 
         int merged = orbA.ElectronCount + orbB.ElectronCount;
@@ -420,8 +421,8 @@ public class MoleculeBuilder : MonoBehaviour
         var dirAtoB = (atomB.transform.position - atomA.transform.position).normalized;
         var dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
 
-        var orbA = atomA.GetLoneOrbitalWithOneElectron(dirAtoB);
-        var orbB = atomB.GetLoneOrbitalWithOneElectron(dirBtoA);
+        var orbA = atomA.GetLoneOrbitalForBondFormation(dirAtoB);
+        var orbB = atomB.GetLoneOrbitalForBondFormation(dirBtoA);
         if (orbA == null || orbB == null) return;
 
         int merged = orbA.ElectronCount + orbB.ElectronCount;
@@ -467,46 +468,44 @@ public class MoleculeBuilder : MonoBehaviour
         return true;
     }
 
-    /// <param name="refBondWorldForRedist">If set, orients lone orbitals after σ bond (matches <see cref="EditModeManager.AddHydrogenAtDirection"/>).</param>
-    bool TryBondHydrogen(AtomFunction heavy, Vector3 dirHeavyToH, Vector3? refBondWorldForRedist = null)
+    /// <summary>
+    /// After σ framework: if the center is still electronically unsaturated (has a lone orbital usable for bond formation),
+    /// add π bonds toward neighbors that still have a 1e orbital along the bond axis (typical for terminal O after σ).
+    /// Repeated passes until no progress (e.g. R—S(=O)(=O)—OH, P(=O)(OH)₂).
+    /// </summary>
+    void TryFormPiBondsForFunctionalGroupCenter(AtomFunction center)
     {
-        if (heavy == null || dirHeavyToH.sqrMagnitude < 1e-10f) return false;
-        dirHeavyToH.Normalize();
-        float L = GetBondLength();
-        var ho = heavy.GetLoneOrbitalWithOneElectron(dirHeavyToH);
-        if (ho == null) return false;
-        var h = SpawnAtomElement(1, heavy.transform.position + dirHeavyToH * L);
-        if (h == null) return false;
-        var hOrb = h.GetLoneOrbitalWithOneElectron(-dirHeavyToH);
-        if (hOrb == null)
+        if (center == null) return;
+        for (int round = 0; round < 8; round++)
         {
-            Destroy(h.gameObject);
-            return false;
-        }
-        FormSigmaBondInstant(heavy, h, ho, hOrb, false);
-        if (refBondWorldForRedist.HasValue)
-        {
-            Vector3 refd = refBondWorldForRedist.Value.normalized;
-            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-                heavy.RedistributeOrbitals(refBondWorldDirection: refd);
-            else
-                heavy.RedistributeOrbitals(piBondAngleOverride: Mathf.Atan2(refd.y, refd.x) * Mathf.Rad2Deg);
-        }
-        return true;
-    }
+            bool progress = false;
+            var neighbors = new List<AtomFunction>();
+            var seen = new HashSet<AtomFunction>();
+            foreach (var b in center.CovalentBonds)
+            {
+                if (b == null) continue;
+                var other = b.AtomA == center ? b.AtomB : b.AtomA;
+                if (other == null || !seen.Add(other)) continue;
+                neighbors.Add(other);
+            }
 
-    /// <summary>One H on a center that already has one σ to a heavy neighbor (e.g. alcohol O): bent ~109°, not colinear with that bond.</summary>
-    bool TryBondHydrogenBent(AtomFunction center, Vector3 dirCenterToHeavyNeighbor)
-    {
-        if (center == null || dirCenterToHeavyNeighbor.sqrMagnitude < 1e-10f) return false;
-        Vector3 u1 = dirCenterToHeavyNeighbor.normalized;
-        GetAttachBasis(u1, out var perp, out _);
-        Vector3 hd1, hd2;
-        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-            VseprLayout.TwoHydrogenDirectionsFromBonds(u1, perp, out hd1, out hd2);
-        else
-            VseprLayout.TwoHydrogenDirectionsFromBondsPlanarXY(u1, perp, out hd1, out hd2);
-        return TryBondHydrogen(center, hd1, refBondWorldForRedist: hd1);
+            foreach (var other in neighbors)
+            {
+                int bo = center.GetBondsTo(other);
+                if (bo <= 0 || bo >= 3) continue;
+
+                int piBefore = center.GetPiBondCount();
+                if (bo == 1)
+                    FormPiBondInstant(center, other, false);
+                else if (bo == 2)
+                    FormSecondPiBondInstant(center, other, false);
+
+                if (center.GetPiBondCount() != piBefore)
+                    progress = true;
+            }
+
+            if (!progress) break;
+        }
     }
 
     static void GetAttachBasis(Vector3 dirParentToAnchor, out Vector3 right, out Vector3 up)
@@ -569,18 +568,10 @@ public class MoleculeBuilder : MonoBehaviour
         switch (kind)
         {
             case FunctionalGroupKind.AmineNH2:
-            {
-                Vector3 u1 = (parent.transform.position - anchor.transform.position).normalized;
-                Vector3 hd1, hd2;
-                if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-                    VseprLayout.TwoHydrogenDirectionsFromBonds(u1, right, out hd1, out hd2);
-                else
-                    VseprLayout.TwoHydrogenDirectionsFromBondsPlanarXY(u1, right, out hd1, out hd2);
-                ok = TryBondHydrogen(anchor, hd1) && TryBondHydrogen(anchor, hd2);
+                // Two N—H from SaturateAtomsWithHydrogenPass (FG atoms only) after σ + redistribute.
                 break;
-            }
             case FunctionalGroupKind.Hydroxyl:
-                ok = TryBondHydrogenBent(anchor, parent.transform.position - anchor.transform.position);
+                // O—H from saturation pass.
                 break;
             case FunctionalGroupKind.Methoxy:
             {
@@ -589,29 +580,19 @@ public class MoleculeBuilder : MonoBehaviour
                 if (c == null) { ok = false; break; }
                 touched.Add(c);
                 ok = BondSigmaNoRedist(anchor, c);
-                if (ok && edit != null) edit.SaturateWithHydrogen(c);
                 break;
             }
             case FunctionalGroupKind.Aldehyde:
             {
+                // Place C=O along trigonal 120° layout (not GetAttachBasis "right", which is ~90° to R—C and breaks sp² angles).
                 Vector3 cPos = anchor.transform.position;
-                var o = SpawnAtomElement(8, cPos + right * L);
+                ComputeTrigonalDirsTowardParentForFunctionalGroup(cPos, parent.transform.position, out Vector3 dirCarbonylO, out _);
+                var o = SpawnAtomElement(8, cPos + dirCarbonylO * L);
                 if (o == null) { ok = false; break; }
                 touched.Add(o);
                 ok = BondSigmaNoRedist(anchor, o);
-                if (ok)
-                    FormPiBondInstant(anchor, o, false);
-                if (ok)
-                {
-                    Vector3 uR = (parent.transform.position - anchor.transform.position).normalized;
-                    Vector3 uO = (o.transform.position - anchor.transform.position).normalized;
-                    Vector3 hd1, hd2;
-                    if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-                        VseprLayout.TwoHydrogenDirectionsFromBonds(uR, uO, out hd1, out hd2);
-                    else
-                        VseprLayout.TwoHydrogenDirectionsFromBondsPlanarXY(uR, uO, out hd1, out hd2);
-                    ok = TryBondHydrogen(anchor, hd1, refBondWorldForRedist: hd1);
-                }
+                // C=O π from TryFormPiBondsForFunctionalGroupCenter after σ.
+                // Aldehyde C—H from saturation pass after π (third σ ~120° from R—C and C=O).
                 break;
             }
             case FunctionalGroupKind.Carboxyl:
@@ -625,11 +606,8 @@ public class MoleculeBuilder : MonoBehaviour
                 touched.Add(oC);
                 touched.Add(oH);
                 ok = BondSigmaNoRedist(anchor, oC) && BondSigmaNoRedist(anchor, oH);
-                if (ok)
-                {
-                    FormPiBondInstant(anchor, oC, false);
-                    ok = TryBondHydrogenBent(oH, anchor.transform.position - oH.transform.position);
-                }
+                // C=O π from TryFormPiBondsForFunctionalGroupCenter.
+                // Carboxylic O—H from saturation pass.
                 break;
             }
             case FunctionalGroupKind.Sulfo:
@@ -644,8 +622,7 @@ public class MoleculeBuilder : MonoBehaviour
                 touched.Add(o2);
                 touched.Add(o3);
                 ok = BondSigmaNoRedist(anchor, o1) && BondSigmaNoRedist(anchor, o2) && BondSigmaNoRedist(anchor, o3);
-                if (ok)
-                    ok = TryBondHydrogenBent(o3, anchor.transform.position - o3.transform.position);
+                // S=O π bonds from TryFormPiBondsForFunctionalGroupCenter; O—H from saturation pass.
                 break;
             }
             case FunctionalGroupKind.Nitrile:
@@ -654,11 +631,7 @@ public class MoleculeBuilder : MonoBehaviour
                 if (n == null) { ok = false; break; }
                 touched.Add(n);
                 ok = BondSigmaNoRedist(anchor, n);
-                if (ok)
-                {
-                    FormPiBondInstant(anchor, n, false);
-                    FormSecondPiBondInstant(anchor, n, false);
-                }
+                // C≡N: two π from TryFormPiBondsForFunctionalGroupCenter.
                 break;
             }
             case FunctionalGroupKind.Nitro:
@@ -671,6 +644,7 @@ public class MoleculeBuilder : MonoBehaviour
                 touched.Add(o1);
                 touched.Add(o2);
                 ok = BondSigmaNoRedist(anchor, o1) && BondSigmaNoRedist(anchor, o2);
+                // N=O π from TryFormPiBondsForFunctionalGroupCenter (one pass adds first eligible O—N π).
                 break;
             }
             case FunctionalGroupKind.PhosphateDihydrogen:
@@ -686,11 +660,7 @@ public class MoleculeBuilder : MonoBehaviour
                 touched.Add(o2);
                 touched.Add(o3);
                 ok = BondSigmaNoRedist(anchor, o1) && BondSigmaNoRedist(anchor, o2) && BondSigmaNoRedist(anchor, o3);
-                if (ok)
-                    FormPiBondInstant(anchor, o3, false);
-                if (ok)
-                    ok = TryBondHydrogenBent(o1, anchor.transform.position - o1.transform.position)
-                        && TryBondHydrogenBent(o2, anchor.transform.position - o2.transform.position);
+                // P=O π from TryFormPiBondsForFunctionalGroupCenter; two P—OH: O—H from saturation pass.
                 break;
             }
         }
@@ -701,9 +671,20 @@ public class MoleculeBuilder : MonoBehaviour
             return false;
         }
 
+        TryFormPiBondsForFunctionalGroupCenter(anchor);
+
         foreach (var a in touched)
             if (a != null) a.RedistributeOrbitals();
-        parent.RedistributeOrbitals();
+
+        if (edit != null)
+        {
+            var fgOnly = new List<AtomFunction>();
+            foreach (var a in touched)
+                if (a != null && a != parent)
+                    fgOnly.Add(a);
+            if (fgOnly.Count > 0)
+                edit.SaturateAtomsWithHydrogenPass(fgOnly);
+        }
 
         AtomFunction.SetupGlobalIgnoreCollisions();
         return true;

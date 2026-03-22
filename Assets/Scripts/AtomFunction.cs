@@ -69,6 +69,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (group == 1) return 1;
         if (group == 2) return 2;
         if (group == 3 || group == 13) return 3;
+        // Period 3+ N-group / O-group: expanded octet so σ + π (e.g. SO₃, PO₄) can form after four σ bonds.
+        if (atomicNumber > 10 && (group == 15 || group == 16)) return 6;
         return 4;
     }
 
