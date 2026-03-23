@@ -22,12 +22,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     [Tooltip("Draw seam → target → electron paths in Scene view while dragging a 3D orbital.")]
     [SerializeField] bool debugDraw3DElectronDrag;
 
-    /// <summary>Unity Console logs for π-bond orbital redistribution (tag <c>[π-redist]</c>). Off in non-editor release builds.</summary>
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
-    public static bool DebugPiOrbitalRedistribution = true;
-#else
-    public static bool DebugPiOrbitalRedistribution = false;
-#endif
+    /// <summary>Unity Console logs for π-bond orbital redistribution (tag <c>[π-redist]</c>).</summary>
+    public static bool DebugPiOrbitalRedistribution;
 
     public static void LogPiRedistDebug(string message)
     {
@@ -140,6 +136,28 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         return ra.Overlaps(rb);
     }
 
+    /// <summary>
+    /// True when the orbital’s screen-space AABB overlaps the atom’s, using the same world acceptance radius as
+    /// <see cref="TryBreakBond"/> (BondRadius×1.2) and the same padding as <see cref="OrbitalViewOverlaps"/>.
+    /// Lets perspective players break a bond when the lobe visibly covers the atom, even without true 3D overlap.
+    /// </summary>
+    public static bool OrbitalViewOverlapsAtom(Camera cam, ElectronOrbitalFunction orbital, AtomFunction atom, float expandPixels = ViewOverlapScreenPaddingPx)
+    {
+        if (cam == null || orbital == null || atom == null) return false;
+        if (!TryProjectOrbitalToScreenRect(cam, orbital, expandPixels, out var ro)) return false;
+        if (!TryProjectAtomAcceptanceBoundsToScreenRect(cam, atom, expandPixels, out var ra)) return false;
+        return ro.Overlaps(ra);
+    }
+
+    static bool TryProjectAtomAcceptanceBoundsToScreenRect(Camera cam, AtomFunction atom, float padPixels, out Rect rect)
+    {
+        rect = default;
+        if (cam == null || atom == null) return false;
+        float r = atom.BondRadius * 1.2f;
+        var b = new Bounds(atom.transform.position, Vector3.one * (r * 2f));
+        return TryProjectWorldBoundsToScreenRect(cam, b, padPixels, out rect);
+    }
+
     static bool TryProjectOrbitalToScreenRect(Camera cam, ElectronOrbitalFunction o, float padPixels, out Rect rect)
     {
         return TryProjectWorldBoundsToScreenRect(cam, o.GetOrbitalBoundsForView(), padPixels, out rect);
@@ -184,6 +202,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (col2D != null) col2D.enabled = !blocked;
     }
 
+    /// <summary>Re-spawns/repositions electron children after lobe layout settles (e.g. after VSEPR redistribution).</summary>
+    public void RefreshElectronSyncAfterLayout() => SyncElectronObjects();
+
     static void ConfigureUnlitTransparent(Material mat)
     {
         if (mat == null) return;
@@ -223,11 +244,21 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
+    void EnsureOriginalColorFromRenderer()
+    {
+        if (originalColor.a >= 0.01f) return;
+        var sr = GetComponent<SpriteRenderer>();
+        var mr = GetComponent<MeshRenderer>();
+        if (sr != null) originalColor = sr.color;
+        else if (mr != null && mr.sharedMaterial != null) originalColor = GetMaterialTint(mr.sharedMaterial);
+    }
+
     void ApplyOrbitalEditSelectionVisual(bool selected)
     {
         var sr = GetComponent<SpriteRenderer>();
         var mr = GetComponent<MeshRenderer>();
         if (sr == null && mr == null) return;
+        EnsureOriginalColorFromRenderer();
         if (!selected)
         {
             ApplyOrbitalVisualOpacity(sr, mr);
@@ -782,13 +813,39 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         float rB = b.BondRadius * 1.2f;
         float da = Vector3.Distance(tip, a.transform.position);
         float db = Vector3.Distance(tip, b.transform.position);
+        var cam = Camera.main;
+        bool hit3dA = da <= rA;
+        bool hit3dB = db <= rB;
+        bool hitViewA = cam != null && OrbitalViewOverlapsAtom(cam, this, a);
+        bool hitViewB = cam != null && OrbitalViewOverlapsAtom(cam, this, b);
+        bool hitA = hit3dA || hitViewA;
+        bool hitB = hit3dB || hitViewB;
+
         AtomFunction returnTo = null;
-        if (da <= rA && db <= rB)
-            returnTo = da <= db ? a : b;
-        else if (da <= rA)
+        if (hitA && hitB)
+        {
+            if (cam != null)
+            {
+                Vector3 st = cam.WorldToScreenPoint(tip);
+                Vector3 sa = cam.WorldToScreenPoint(a.transform.position);
+                Vector3 sb = cam.WorldToScreenPoint(b.transform.position);
+                if (st.z >= cam.nearClipPlane && sa.z >= cam.nearClipPlane && sb.z >= cam.nearClipPlane)
+                {
+                    float scoreA = ((Vector2)st - (Vector2)sa).sqrMagnitude;
+                    float scoreB = ((Vector2)st - (Vector2)sb).sqrMagnitude;
+                    returnTo = scoreA <= scoreB ? a : b;
+                }
+                else
+                    returnTo = da <= db ? a : b;
+            }
+            else
+                returnTo = da <= db ? a : b;
+        }
+        else if (hitA)
             returnTo = a;
-        else if (db <= rB)
+        else if (hitB)
             returnTo = b;
+
         if (returnTo != null)
         {
             var other = returnTo == a ? b : a;
@@ -939,6 +996,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             bondOrbitalEnd = bond.GetOrbitalTargetWorldState(); // Re-fetch with flip applied
         }
         // Step 2: Rearrange + Redistribute + animate bonding orbital to bond position (skip if no actual movement)
+        sourceAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
+        targetAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
+        sourceAtom.RefreshCharge();
+        targetAtom.RefreshCharge();
         var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom);
         var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom);
         const float alignThreshold = 0.05f;
@@ -1137,7 +1198,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         int piBeforeSource = sourceAtom.GetPiBondCount();
         int piBeforeTarget = targetAtom.GetPiBondCount();
         int mergedElectrons = electronCount + targetOrbital.ElectronCount;
-        LogPiRedistDebug($"FormCovalentBondPiCoroutine start: source Z={sourceAtom.AtomicNumber} π={piBeforeSource}, target Z={targetAtom.AtomicNumber} π={piBeforeTarget}, use3D={OrbitalAngleUtility.UseFull3DOrbitalGeometry}");
 
         // Snap source orbital to original position (like sigma bond) before animating to bond center
         transform.localPosition = originalLocalPosition;
@@ -1150,14 +1210,12 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, targetAtom, animateOrbitalToBond: true);
         transform.SetParent(null); // Detach source orbital but keep visible for step 2 animation (preserves world pos from snap)
         bond.SetOrbitalBeingFaded(this); // Use merged count for charge during animation (source orbital is being faded)
+        sourceAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
+        targetAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
 
-        LogPiRedistDebug($"After CovalentBond.Create (π): source π={sourceAtom.GetPiBondCount()} target π={targetAtom.GetPiBondCount()} bonds A↔B={sourceAtom.GetBondsTo(targetAtom)}");
-
         yield return AnimateRedistributeOrbitals(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget, this, targetOrbital, bond);
-
-        LogPiRedistDebug($"After AnimateRedistributeOrbitals + TryRedistribute: source π={sourceAtom.GetPiBondCount()} target π={targetAtom.GetPiBondCount()}");
 
         if (bond != null)
         {
@@ -1184,7 +1242,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     {
         var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom);
         var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom);
-        LogPiRedistDebug($"AnimateRedistribute step2: GetRedistributeTargets counts source={redistA.Count} target={redistB.Count} (use3D={OrbitalAngleUtility.UseFull3DOrbitalGeometry}). If 0/0 after π, see following per-atom lines: lone orbitals may all be bonded, so only π orbitals animate in step 2.");
 
         var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
         var redistBStarts = new List<(Vector3 pos, Quaternion rot)>();
@@ -1193,7 +1250,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         foreach (var entry in redistB)
             redistBStarts.Add(entry.orb != null ? (entry.orb.transform.localPosition, entry.orb.transform.localRotation) : (Vector3.zero, Quaternion.identity));
 
-        // σ-neighbor trigonal planar relax (sp² after tetrahedral break): animate in step 2 alongside lone orbitals / π lobes.
+        // σ-neighbor relax: trigonal planar (3 σ + π) or linear (2 σ + triple, no lone on center); animate in step 2 with lone / π lobes.
         var neighborTrigonalMoves = new Dictionary<AtomFunction, (Vector3 start, Vector3 end)>();
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
         {
@@ -1207,8 +1264,20 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                         neighborTrigonalMoves[n] = (n.transform.position, end);
                 }
             }
+            void AddLinearMoves(AtomFunction a)
+            {
+                if (a == null) return;
+                Vector3 refL = a.GetRedistributeReferenceLocal(null, null);
+                if (a.TryComputeLinearSigmaNeighborRelaxTargets(refL, out var t) && t != null)
+                {
+                    foreach (var (n, end) in t)
+                        neighborTrigonalMoves[n] = (n.transform.position, end);
+                }
+            }
             AddTrigonalMoves(sourceAtom);
             AddTrigonalMoves(targetAtom);
+            AddLinearMoves(sourceAtom);
+            AddLinearMoves(targetAtom);
         }
 
         // Pi bond: animate both orbitals to bond center. Flip source or target so electrons align in a row.
@@ -1263,7 +1332,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (!hasRedistMovement && neighborTrigonalMoves.Count > 0)
             hasRedistMovement = true;
         bool skipPiStep2 = sourceAtBond && targetAtBond && !hasRedistMovement;
-        LogPiRedistDebug($"AnimateRedistribute motion: skipStep2={skipPiStep2} sourceAtBond={sourceAtBond} targetAtBond={targetAtBond} hasRedistMovement={hasRedistMovement}");
 
         if (!skipPiStep2)
         for (float t = 0; t < bondAnimStep2Duration; t += Time.deltaTime)
@@ -1377,9 +1445,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
     static void TryRedistributeOrbitalsAfterBondChange(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget)
     {
-        int piSrcNow = sourceAtom != null ? sourceAtom.GetPiBondCount() : -1;
-        int piTgtNow = targetAtom != null ? targetAtom.GetPiBondCount() : -1;
-        LogPiRedistDebug($"TryRedistributeOrbitalsAfterBondChange: source Z={sourceAtom?.AtomicNumber} π {piBeforeSource}→{piSrcNow}; target Z={targetAtom?.AtomicNumber} π {piBeforeTarget}→{piTgtNow} → RedistributeOrbitals on both endpoints");
         if (sourceAtom != null) sourceAtom.RedistributeOrbitals();
         if (targetAtom != null) targetAtom.RedistributeOrbitals();
     }
@@ -1846,7 +1911,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (Use3DOrbitalPresentation())
             Setup3DOrbitalVisual(mf, mr);
 
-        ApplyOrbitalVisualOpacity(sr, mr);
+        if (editSelectionHighlightActive)
+            ApplyOrbitalEditSelectionVisual(true);
+        else
+            ApplyOrbitalVisualOpacity(sr, mr);
         EnsureCollider();
         SyncElectronObjects();
         IgnoreCollisionsWithChildren();

@@ -12,6 +12,13 @@ using UnityEngine.Rendering;
 /// </summary>
 public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IPointerUpHandler
 {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    /// <summary>Console: <c>[bond-break]</c> logs for newly formed lone orbitals (tip direction / euler) after σ-break animation vs after redistribute.</summary>
+    public static bool DebugLogBreakBondOrbitalAngles = true;
+#else
+    public static bool DebugLogBreakBondOrbitalAngles;
+#endif
+
     [SerializeField] AtomFunction atomA;
     [SerializeField] AtomFunction atomB;
     ElectronOrbitalFunction orbital;
@@ -295,7 +302,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
             lineCollider3D = lineVisual.AddComponent<BoxCollider>();
             lineCollider3D.isTrigger = true;
-            lineCollider3D.size = new Vector3(1f, 2f, 1f);
+            lineCollider3D.size = new Vector3(2f, 2f, 2f);
             lineCollider3D.center = Vector3.zero;
         }
         else
@@ -420,7 +427,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         {
             if (useCylinderBondVisual)
             {
-                lineCollider3D.size = new Vector3(1f, 2f, 1f);
+                // Wider than the visible cylinder so raycasts are easier to land; Y matches default cylinder mesh height.
+                lineCollider3D.size = new Vector3(2f, 2f, 2f);
                 lineCollider3D.center = Vector3.zero;
             }
             else
@@ -464,7 +472,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         if (orbitalVisible) return;
         if (atomA == null || atomB == null) return;
-        var clickWorld = PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
         var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
         var second = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomB : atomA;
         var delta = second.transform.position - first.transform.position;
@@ -478,7 +485,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var lineCenter = (atomA.transform.position + atomB.transform.position) * 0.5f + right * offset;
         var lineStart = lineCenter - dir * (distance * 0.5f);
         var lineEnd = lineCenter + dir * (distance * 0.5f);
-        if (DistanceToLineSegment(clickWorld, lineStart, lineEnd) > 0.25f)
+        if (!PassesBondPointerSlop(eventData, lineStart, lineEnd))
             return;
         orbitalVisible = true;
         forwardedPressToOrbital = false;
@@ -493,6 +500,48 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var t = Mathf.Clamp01(Vector3.Dot(ap, ab) / (ab.sqrMagnitude + 0.0001f));
         var nearest = a + t * ab;
         return Vector3.Distance(p, nearest);
+    }
+
+    /// <summary>
+    /// 2D bonds: click must be near the segment on the work plane. 3D cylinder: planar projection is wrong for
+    /// out-of-plane bonds — trust the physics hit on this bond's line mesh, or measure ray vs segment in 3D.
+    /// </summary>
+    bool PassesBondPointerSlop(PointerEventData eventData, Vector3 lineStart, Vector3 lineEnd)
+    {
+        if (useCylinderBondVisual)
+        {
+            var hitGo = eventData.pointerCurrentRaycast.gameObject;
+            if (lineVisual != null && hitGo != null &&
+                (hitGo == lineVisual || hitGo.transform == lineVisual.transform))
+                return true;
+            var cam = Camera.main;
+            if (cam != null && !cam.orthographic)
+            {
+                var ray = cam.ScreenPointToRay(eventData.position);
+                if (ApproxDistanceRayToSegment(ray, lineStart, lineEnd) <= 0.45f)
+                    return true;
+            }
+            return false;
+        }
+
+        var clickWorld = PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
+        return DistanceToLineSegment(clickWorld, lineStart, lineEnd) <= 0.25f;
+    }
+
+    static float ApproxDistanceRayToSegment(Ray ray, Vector3 a, Vector3 b)
+    {
+        float best = float.MaxValue;
+        for (int i = 0; i <= 12; i++)
+        {
+            float t = i / 12f;
+            var p = Vector3.Lerp(a, b, t);
+            float proj = Vector3.Dot(p - ray.origin, ray.direction);
+            if (proj < 0f) proj = 0f;
+            var onRay = ray.origin + ray.direction * proj;
+            float d = Vector3.Distance(onRay, p);
+            if (d < best) best = d;
+        }
+        return best;
     }
 
     public void OnDrag(PointerEventData eventData)
@@ -557,6 +606,11 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomA?.UnregisterBond(this);
         atomB?.UnregisterBond(this);
 
+        // π break (σ remains): keep the two centers fixed; σ-relax moves substituents only.
+        HashSet<AtomFunction> sigmaRelaxPins = null;
+        if (atomA != null && atomB != null && atomA.GetBondsTo(atomB) > 0)
+            sigmaRelaxPins = new HashSet<AtomFunction> { atomA, atomB };
+
         int totalElectrons = orbital.ElectronCount;
         var otherAtom = returnOrbitalTo == atomA ? atomB : atomA;
         var prefab = returnOrbitalTo.OrbitalPrefab ?? otherAtom?.OrbitalPrefab;
@@ -605,11 +659,28 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             otherAtom.BondOrbital(newOrbital);
         }
 
-        // Perspective: start both lone orbitals at the bond-line pose, then animate to angular slots (see coroutine).
+        atomA?.TryTransferElectronFromLonePairToEmptyOrbitals();
+        atomB?.TryTransferElectronFromLonePairToEmptyOrbitals();
+        atomA?.RefreshCharge();
+        atomB?.RefreshCharge();
+
+        int piAfterA = atomA != null ? atomA.GetPiBondCount() : 0;
+        int piAfterB = atomB != null ? atomB.GetPiBondCount() : 0;
+        Vector3? refWorldA = dirAtoB.sqrMagnitude >= 0.01f ? dirAtoB : (Vector3?)null;
+        Vector3? refWorldB = dirBtoA.sqrMagnitude >= 0.01f ? dirBtoA : (Vector3?)null;
+
+        // Perspective: animation targets = full VSEPR lone layout (preview), not GetSlotForNewOrbital alone.
+        // Orbitals must be at the bond-line world pose before preview: Redistribute / σ-relax can depend on that pose,
+        // and CoAnimate builds σ moves after this snap — mismatch caused preview sumEnd vs final and C lone newDir drift.
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
         {
             orbital.transform.SetPositionAndRotation(bondOrbitalWorldPos, bondOrbitalWorldRot);
             newOrbital.transform.SetPositionAndRotation(bondOrbitalWorldPos, bondOrbitalWorldRot);
+            if (TryPreviewVseprSlotsForBreakBond(atomA, atomB, orbital, newOrbital, piAfterA, piAfterB, piBondAngleFromA, piBondAngleFromB, refWorldA, refWorldB, sigmaRelaxPins, out var vseprSlotA, out var vseprSlotB))
+            {
+                slotA = vseprSlotA;
+                slotB = vseprSlotB;
+            }
         }
         else
         {
@@ -626,81 +697,319 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomA?.SetInteractionBlocked(false);
         atomB?.SetInteractionBlocked(false);
 
-        int piAfterA = atomA != null ? atomA.GetPiBondCount() : 0;
-        int piAfterB = atomB != null ? atomB.GetPiBondCount() : 0;
-        Vector3? refWorldA = dirAtoB.sqrMagnitude >= 0.01f ? dirAtoB : (Vector3?)null;
-        Vector3? refWorldB = dirBtoA.sqrMagnitude >= 0.01f ? dirBtoA : (Vector3?)null;
-
         // Perspective: animate σ neighbors + bond→slot orbital motion, then lone-orbital redistribution.
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && (atomA != null || atomB != null))
         {
             var runner = atomA != null ? atomA : atomB;
             runner.StartCoroutine(CoAnimateBreakBondRedistribution(
                 atomA, atomB,
+                piBeforeA, piBeforeB,
                 piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, piAfterA,
                 piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, piAfterB,
                 orbital, newOrbital,
                 returnOrbitalTo, otherAtom,
                 slotA, slotB,
-                bondOrbitalWorldPos, bondOrbitalWorldRot));
+                bondOrbitalWorldPos, bondOrbitalWorldRot,
+                sigmaRelaxPins));
         }
         else
         {
-            atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true);
-            atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true);
+            atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins);
+            atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins);
         }
 
         orbital = null;
         Destroy(gameObject);
     }
 
-    /// <summary>Duration for σ-neighbor + orbital motion after a bond break (3D); full RedistributeOrbitals runs after.</summary>
+    /// <summary>Duration for σ-neighbor + orbital motion after a bond break (3D); σ-neighbor relax + optional lone layout after.</summary>
     const float BreakRedistributionDuration = 0.55f;
 
-    static IEnumerator CoAnimateBreakBondRedistribution(
+    static List<(AtomFunction atom, Vector3 pos, Quaternion rot)> SnapshotMoleculeAtoms(IEnumerable<AtomFunction> atoms)
+    {
+        var list = new List<(AtomFunction, Vector3, Quaternion)>();
+        foreach (var a in atoms)
+            if (a != null) list.Add((a, a.transform.position, a.transform.rotation));
+        return list;
+    }
+
+    static void RestoreMoleculeAtoms(List<(AtomFunction atom, Vector3 pos, Quaternion rot)> snap)
+    {
+        foreach (var (atom, pos, rot) in snap)
+            if (atom != null) atom.transform.SetPositionAndRotation(pos, rot);
+    }
+
+    static void CollectMoleculeAtoms(AtomFunction atom, HashSet<AtomFunction> dst)
+    {
+        if (atom == null) return;
+        foreach (var a in atom.GetConnectedMolecule())
+            if (a != null) dst.Add(a);
+    }
+
+    static List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> FilterRedistExcludingBreakOrbitals(
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> list,
+        ElectronOrbitalFunction orbA,
+        ElectronOrbitalFunction orbB)
+    {
+        var r = new List<(ElectronOrbitalFunction, Vector3, Quaternion)>();
+        foreach (var e in list)
+        {
+            if (e.orb != null && e.orb != orbA && e.orb != orbB)
+                r.Add(e);
+        }
+        return r;
+    }
+
+    /// <summary>σ-relax end poses for bond-break animation: tet (AX₃E) first, then trigonal / linear / open-from-linear — same order as <see cref="AtomFunction.RedistributeOrbitals"/> with <c>relaxCoplanarSigmaToTetrahedral</c>.</summary>
+    static Dictionary<AtomFunction, (Vector3 start, Vector3 end)> BuildSigmaRelaxMovesForBreakBond(
         AtomFunction atomA,
         AtomFunction atomB,
         float? piAngleA, Vector3? refA, int piAfterA,
         float? piAngleB, Vector3? refB, int piAfterB,
-        ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB,
-        AtomFunction parentA, AtomFunction parentB,
-        (Vector3 position, Quaternion rotation) slotLocalA,
-        (Vector3 position, Quaternion rotation) slotLocalB,
-        Vector3 bondWorldPos, Quaternion bondWorldRot)
+        HashSet<AtomFunction> pinSigmaRelaxAtoms)
     {
         var moves = new Dictionary<AtomFunction, (Vector3 start, Vector3 end)>();
         void Collect(AtomFunction atom, float? piAngle, Vector3? refWorld, int piAfter)
         {
             if (atom == null) return;
             Vector3 refLocal = atom.GetRedistributeReferenceLocal(piAfter == 0 ? piAngle : null, piAfter == 0 ? refWorld : null);
-            if (atom.TryComputeCoplanarTetrahedralSigmaNeighborRelaxTargets(refLocal, out var targets) && targets != null)
+            if (atom.TryComputeCoplanarTetrahedralSigmaNeighborRelaxTargets(refLocal, out var targets, pinSigmaRelaxAtoms) && targets != null)
             {
                 foreach (var (n, end) in targets)
+                    moves[n] = (n.transform.position, end);
+            }
+            if (atom.TryComputeLinearSigmaNeighborRelaxTargets(refLocal, out var lin, pinSigmaRelaxAtoms) && lin != null)
+            {
+                foreach (var (n, end) in lin)
+                    moves[n] = (n.transform.position, end);
+            }
+            if (atom.TryComputeOpenedTrigonalSigmaNeighborRelaxTargetsFromLinear(refLocal, out var opened, pinSigmaRelaxAtoms) && opened != null)
+            {
+                foreach (var (n, end) in opened)
+                    moves[n] = (n.transform.position, end);
+            }
+            if (atom.TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(refLocal, out var trig) && trig != null)
+            {
+                foreach (var (n, end) in trig)
                     moves[n] = (n.transform.position, end);
             }
         }
         Collect(atomA, piAngleA, refA, piAfterA);
         Collect(atomB, piAngleB, refB, piAfterB);
+        return moves;
+    }
 
-        Vector3 endWorldA = parentA != null && orbA != null
+    /// <summary>Runs full <see cref="AtomFunction.RedistributeOrbitals"/> on both endpoints, then restores atom transforms.
+    /// σ-relax can move neighbor atoms during preview; reading <c>localPosition</c> before restore would bake parent displacement into locals,
+    /// so the animation lerp would aim at the wrong world pose until the final redistribute. We capture world pose before restore and convert
+    /// back to locals using the restored parent so targets match the pre-break molecule layout.</summary>
+    static bool TryPreviewVseprSlotsForBreakBond(
+        AtomFunction atomA,
+        AtomFunction atomB,
+        ElectronOrbitalFunction orbA,
+        ElectronOrbitalFunction orbB,
+        int piAfterA,
+        int piAfterB,
+        float? piBondAngleFromA,
+        float? piBondAngleFromB,
+        Vector3? refWorldA,
+        Vector3? refWorldB,
+        HashSet<AtomFunction> pinSigmaRelaxAtoms,
+        out (Vector3 position, Quaternion rotation) slotA,
+        out (Vector3 position, Quaternion rotation) slotB)
+    {
+        slotA = default;
+        slotB = default;
+        if (orbA == null || orbB == null) return false;
+
+        var atoms = new HashSet<AtomFunction>();
+        CollectMoleculeAtoms(atomA, atoms);
+        CollectMoleculeAtoms(atomB, atoms);
+        var snap = SnapshotMoleculeAtoms(atoms);
+
+        // Apply the same σ-relax end poses the animation will use, then lone VSEPR only. Sequential atomA→atomB
+        // Redistribute with built-in σ-relax used different intermediate geometry than applying both relax targets first.
+        bool sigmaRelaxPreApplied;
+        Dictionary<AtomFunction, (Vector3 start, Vector3 end)> sigmaMoves;
+        void ApplyFreshSigmaRelaxMoves()
+        {
+            sigmaMoves = BuildSigmaRelaxMovesForBreakBond(
+                atomA, atomB,
+                piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, piAfterA,
+                piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, piAfterB,
+                pinSigmaRelaxAtoms);
+            foreach (var kv in sigmaMoves)
+                kv.Key.transform.position = kv.Value.end;
+            sigmaRelaxPreApplied = sigmaMoves.Count > 0;
+        }
+
+        ApplyFreshSigmaRelaxMoves();
+
+        // Pass 1: same as before — estimates lone layout from σ-relaxed geometry while new lone orbitals still sit at
+        // the bond-break pose (orbitals not yet at animation slot locals).
+        atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: false, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreApplied);
+        atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: false, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreApplied);
+
+        Vector3 worldA = orbA.transform.position;
+        Quaternion rotWorldA = orbA.transform.rotation;
+        Vector3 worldB = orbB.transform.position;
+        Quaternion rotWorldB = orbB.transform.rotation;
+
+        RestoreMoleculeAtoms(snap);
+
+        Transform parentA = orbA.transform.parent;
+        Transform parentB = orbB.transform.parent;
+        if (parentA == null || parentB == null) return false;
+
+        slotA = (parentA.InverseTransformPoint(worldA), Quaternion.Inverse(parentA.rotation) * rotWorldA);
+        slotB = (parentB.InverseTransformPoint(worldB), Quaternion.Inverse(parentB.rotation) * rotWorldB);
+
+        // Pass 2: match CoAnimateBreakBondRedistribution — σ ends applied, orbitals snapped to pass-1 slot locals, then
+        // lone VSEPR only. Rebuild σ moves here: preview pass 1 can change neighbor geometry so stale end targets
+        // would disagree with CoAnimate's BuildSigmaRelaxMovesForBreakBond (sumEnd / lone layout mismatch).
+        ApplyFreshSigmaRelaxMoves();
+        if (orbA != null && parentA != null)
+        {
+            orbA.transform.localPosition = slotA.position;
+            orbA.transform.localRotation = slotA.rotation;
+        }
+        if (orbB != null && parentB != null)
+        {
+            orbB.transform.localPosition = slotB.position;
+            orbB.transform.localRotation = slotB.rotation;
+        }
+        atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: false, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreApplied);
+        atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: false, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreApplied);
+
+        RestoreMoleculeAtoms(snap);
+        return true;
+    }
+
+    static Vector3 BreakBondOrbitalTipLocal(ElectronOrbitalFunction orb) =>
+        orb != null ? (orb.transform.localRotation * Vector3.right).normalized : Vector3.zero;
+
+    static void LogBreakBondNewOrbitals(string phase, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, AtomFunction parentA, AtomFunction parentB)
+    {
+        if (!DebugLogBreakBondOrbitalAngles) return;
+        void One(string label, ElectronOrbitalFunction o, AtomFunction p)
+        {
+            if (o == null)
+            {
+                Debug.Log($"[bond-break] {phase} {label}: (null)");
+                return;
+            }
+            Vector3 tipL = BreakBondOrbitalTipLocal(o);
+            Vector3 tipW = p != null ? p.transform.TransformDirection(tipL) : o.transform.TransformDirection(tipL);
+            if (tipW.sqrMagnitude > 1e-8f) tipW.Normalize();
+            Debug.Log(
+                $"[bond-break] {phase} {label}: orbId={o.GetInstanceID()} parentZ={p?.AtomicNumber} localEuler={o.transform.localEulerAngles} tipLocal={tipL} tipWorld={tipW}");
+        }
+        One("orbA", orbA, parentA);
+        One("orbB", orbB, parentB);
+    }
+
+    static IEnumerator CoAnimateBreakBondRedistribution(
+        AtomFunction atomA,
+        AtomFunction atomB,
+        int piBeforeA,
+        int piBeforeB,
+        float? piAngleA, Vector3? refA, int piAfterA,
+        float? piAngleB, Vector3? refB, int piAfterB,
+        ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB,
+        AtomFunction parentA, AtomFunction parentB,
+        (Vector3 position, Quaternion rotation) slotLocalA,
+        (Vector3 position, Quaternion rotation) slotLocalB,
+        Vector3 bondWorldPos, Quaternion bondWorldRot,
+        HashSet<AtomFunction> pinSigmaRelaxAtoms)
+    {
+        var moves = BuildSigmaRelaxMovesForBreakBond(atomA, atomB, piAngleA, refA, piAfterA, piAngleB, refB, piAfterB, pinSigmaRelaxAtoms);
+        bool sigmaRelaxPreApplied = moves.Count > 0;
+
+        // Slot targets at t=0 (parent may move during σ-neighbor relaxation — lerp must use per-frame slot world pose).
+        Vector3 endWorldA0 = parentA != null && orbA != null
             ? parentA.transform.TransformPoint(slotLocalA.position)
             : bondWorldPos;
-        Quaternion endRotA = parentA != null && orbA != null
+        Quaternion endRotA0 = parentA != null && orbA != null
             ? parentA.transform.rotation * slotLocalA.rotation
             : bondWorldRot;
-        Vector3 endWorldB = parentB != null && orbB != null
+        Vector3 endWorldB0 = parentB != null && orbB != null
             ? parentB.transform.TransformPoint(slotLocalB.position)
             : bondWorldPos;
-        Quaternion endRotB = parentB != null && orbB != null
+        Quaternion endRotB0 = parentB != null && orbB != null
             ? parentB.transform.rotation * slotLocalB.rotation
             : bondWorldRot;
 
         const float posEps = 0.0004f;
         const float rotEps = 0.35f;
         bool animOrbA = orbA != null && parentA != null &&
-            (Vector3.SqrMagnitude(bondWorldPos - endWorldA) > posEps * posEps || Quaternion.Angle(bondWorldRot, endRotA) > rotEps);
+            (Vector3.SqrMagnitude(bondWorldPos - endWorldA0) > posEps * posEps || Quaternion.Angle(bondWorldRot, endRotA0) > rotEps);
         bool animOrbB = orbB != null && parentB != null &&
-            (Vector3.SqrMagnitude(bondWorldPos - endWorldB) > posEps * posEps || Quaternion.Angle(bondWorldRot, endRotB) > rotEps);
+            (Vector3.SqrMagnitude(bondWorldPos - endWorldB0) > posEps * posEps || Quaternion.Angle(bondWorldRot, endRotB0) > rotEps);
+
+        // π count changed on an atom → use normal GetRedistributeTargets π check; σ-only break → bypass so layout still runs.
+        bool topologyBypassA = piBeforeA == piAfterA;
+        bool topologyBypassB = piBeforeB == piAfterB;
+
+        var snapAtoms = new HashSet<AtomFunction>();
+        CollectMoleculeAtoms(atomA, snapAtoms);
+        CollectMoleculeAtoms(atomB, snapAtoms);
+        foreach (var kv in moves)
+            if (kv.Key != null) snapAtoms.Add(kv.Key);
+        var moleculeSnap = SnapshotMoleculeAtoms(snapAtoms);
+
+        foreach (var kv in moves)
+            kv.Key.transform.position = kv.Value.end;
+        if (orbA != null && parentA != null)
+        {
+            orbA.transform.localPosition = slotLocalA.position;
+            orbA.transform.localRotation = slotLocalA.rotation;
+        }
+        if (orbB != null && parentB != null)
+        {
+            orbB.transform.localPosition = slotLocalB.position;
+            orbB.transform.localRotation = slotLocalB.rotation;
+        }
+
+        var redistA = atomA != null ? atomA.GetRedistributeTargets(piBeforeA, null, topologyBypassA) : new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
+        var redistB = atomB != null ? atomB.GetRedistributeTargets(piBeforeB, null, topologyBypassB) : new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
+        redistA = FilterRedistExcludingBreakOrbitals(redistA, orbA, orbB);
+        redistB = FilterRedistExcludingBreakOrbitals(redistB, orbA, orbB);
+
+        RestoreMoleculeAtoms(moleculeSnap);
+        if (orbA != null)
+            orbA.transform.SetPositionAndRotation(bondWorldPos, bondWorldRot);
+        if (orbB != null)
+            orbB.transform.SetPositionAndRotation(bondWorldPos, bondWorldRot);
+
+        var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
+        var redistBStarts = new List<(Vector3 pos, Quaternion rot)>();
+        foreach (var e in redistA)
+            redistAStarts.Add(e.orb != null ? (e.orb.transform.localPosition, e.orb.transform.localRotation) : (Vector3.zero, Quaternion.identity));
+        foreach (var e in redistB)
+            redistBStarts.Add(e.orb != null ? (e.orb.transform.localPosition, e.orb.transform.localRotation) : (Vector3.zero, Quaternion.identity));
+
+        const float lonePosThreshold = 0.01f;
+        const float loneRotThreshold = 1f;
+        bool HasRedistMovement()
+        {
+            for (int i = 0; i < redistA.Count; i++)
+            {
+                var e = redistA[i];
+                if (e.orb == null || e.orb.transform.parent != atomA.transform) continue;
+                if (Vector3.Distance(redistAStarts[i].pos, e.pos) > lonePosThreshold || Quaternion.Angle(redistAStarts[i].rot, e.rot) > loneRotThreshold)
+                    return true;
+            }
+            for (int i = 0; i < redistB.Count; i++)
+            {
+                var e = redistB[i];
+                if (e.orb == null || e.orb.transform.parent != atomB.transform) continue;
+                if (Vector3.Distance(redistBStarts[i].pos, e.pos) > lonePosThreshold || Quaternion.Angle(redistBStarts[i].rot, e.rot) > loneRotThreshold)
+                    return true;
+            }
+            return false;
+        }
+
+        bool hasRedistAnim = HasRedistMovement();
 
         var atomsToBlock = new HashSet<AtomFunction>();
         if (atomA != null) atomsToBlock.Add(atomA);
@@ -712,8 +1021,12 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             a.SetInteractionBlocked(true);
         if (orbA != null) orbA.SetPointerBlocked(true);
         if (orbB != null) orbB.SetPointerBlocked(true);
+        foreach (var e in redistA)
+            if (e.orb != null) e.orb.SetPointerBlocked(true);
+        foreach (var e in redistB)
+            if (e.orb != null) e.orb.SetPointerBlocked(true);
 
-        bool runStep = moves.Count > 0 || animOrbA || animOrbB;
+        bool runStep = moves.Count > 0 || animOrbA || animOrbB || hasRedistAnim;
         if (runStep)
         {
             for (float t = 0; t < BreakRedistributionDuration; t += Time.deltaTime)
@@ -723,15 +1036,38 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 float rotS = 1f - (1f - s) * (1f - s); // ease-out quad (matches π step 2)
                 foreach (var kv in moves)
                     kv.Key.transform.position = Vector3.Lerp(kv.Value.start, kv.Value.end, s);
-                if (animOrbA)
+                if (animOrbA && parentA != null && orbA != null)
                 {
-                    orbA.transform.position = Vector3.Lerp(bondWorldPos, endWorldA, s);
-                    orbA.transform.rotation = Quaternion.Slerp(bondWorldRot, endRotA, rotS);
+                    Vector3 endWA = parentA.transform.TransformPoint(slotLocalA.position);
+                    Quaternion endRA = parentA.transform.rotation * slotLocalA.rotation;
+                    orbA.transform.position = Vector3.Lerp(bondWorldPos, endWA, s);
+                    orbA.transform.rotation = Quaternion.Slerp(bondWorldRot, endRA, rotS);
                 }
-                if (animOrbB)
+                if (animOrbB && parentB != null && orbB != null)
                 {
-                    orbB.transform.position = Vector3.Lerp(bondWorldPos, endWorldB, s);
-                    orbB.transform.rotation = Quaternion.Slerp(bondWorldRot, endRotB, rotS);
+                    Vector3 endWB = parentB.transform.TransformPoint(slotLocalB.position);
+                    Quaternion endRB = parentB.transform.rotation * slotLocalB.rotation;
+                    orbB.transform.position = Vector3.Lerp(bondWorldPos, endWB, s);
+                    orbB.transform.rotation = Quaternion.Slerp(bondWorldRot, endRB, rotS);
+                }
+                if (hasRedistAnim)
+                {
+                    for (int i = 0; i < redistA.Count; i++)
+                    {
+                        var e = redistA[i];
+                        if (e.orb == null || e.orb.transform.parent != atomA.transform) continue;
+                        var (sp, sr) = redistAStarts[i];
+                        e.orb.transform.localPosition = Vector3.Lerp(sp, e.pos, s);
+                        e.orb.transform.localRotation = Quaternion.Slerp(sr, e.rot, rotS);
+                    }
+                    for (int i = 0; i < redistB.Count; i++)
+                    {
+                        var e = redistB[i];
+                        if (e.orb == null || e.orb.transform.parent != atomB.transform) continue;
+                        var (sp, sr) = redistBStarts[i];
+                        e.orb.transform.localPosition = Vector3.Lerp(sp, e.pos, s);
+                        e.orb.transform.localRotation = Quaternion.Slerp(sr, e.rot, rotS);
+                    }
                 }
                 yield return null;
             }
@@ -749,9 +1085,45 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbB.transform.localPosition = slotLocalB.position;
             orbB.transform.localRotation = slotLocalB.rotation;
         }
+        if (hasRedistAnim)
+        {
+            for (int i = 0; i < redistA.Count; i++)
+            {
+                var e = redistA[i];
+                if (e.orb != null && e.orb.transform.parent == atomA.transform)
+                {
+                    e.orb.transform.localPosition = e.pos;
+                    e.orb.transform.localRotation = e.rot;
+                }
+            }
+            for (int i = 0; i < redistB.Count; i++)
+            {
+                var e = redistB[i];
+                if (e.orb != null && e.orb.transform.parent == atomB.transform)
+                {
+                    e.orb.transform.localPosition = e.pos;
+                    e.orb.transform.localRotation = e.rot;
+                }
+            }
+        }
 
-        atomA?.RedistributeOrbitals(piAfterA == 0 ? piAngleA : null, piAfterA == 0 ? refA : null, relaxCoplanarSigmaToTetrahedral: true);
-        atomB?.RedistributeOrbitals(piAfterB == 0 ? piAngleB : null, piAfterB == 0 ? refB : null, relaxCoplanarSigmaToTetrahedral: true);
+        LogBreakBondNewOrbitals("afterAnimSnap (before Redistribute)", orbA, orbB, parentA, parentB);
+
+        foreach (var e in redistA)
+            if (e.orb != null) e.orb.SetPointerBlocked(false);
+        foreach (var e in redistB)
+            if (e.orb != null) e.orb.SetPointerBlocked(false);
+
+        // Lone VSEPR only: σ neighbors already at post-relax positions after the lerp above (same as preview path).
+        atomA?.RedistributeOrbitals(piAfterA == 0 ? piAngleA : null, piAfterA == 0 ? refA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: false, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreApplied);
+        atomB?.RedistributeOrbitals(piAfterB == 0 ? piAngleB : null, piAfterB == 0 ? refB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: false, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreApplied);
+
+        atomA?.RefreshCharge();
+        atomB?.RefreshCharge();
+        atomA?.RefreshElectronSyncOnBondedOrbitals();
+        atomB?.RefreshElectronSyncOnBondedOrbitals();
+
+        LogBreakBondNewOrbitals("afterRedistribute fullVsepr", orbA, orbB, parentA, parentB);
 
         if (orbA != null) orbA.SetPointerBlocked(false);
         if (orbB != null) orbB.SetPointerBlocked(false);

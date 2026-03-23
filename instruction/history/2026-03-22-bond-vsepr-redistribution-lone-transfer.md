@@ -1,0 +1,7 @@
+# Summary (since last /compact)
+
+3D VSEPR and bond workflows were expanded: `GetVseprSlotCount3D` no longer clamps domains to max valence slots (fixing free≠lone TryMatch failures). `TryMatchLoneOrbitalsToFreeIdealDirections` and σ-axis merging use stable ordering and deterministic ideal-vertex picks. Added σ-neighbor relax paths (trigonal, linear for π≥2, open-from-linear when π drops) with optional `pinWorld` for bond-break centers; `RedistributeOrbitals` gained `skipLoneLobeLayout`, `pinAtomsForSigmaRelax`, and `skipSigmaNeighborRelax` for preview/final bond-break alignment.
+
+`CovalentBond.BreakBond`: two-pass VSEPR preview aligned with animation; bond-line orbital pose before preview; unified single-duration animation (σ neighbors + break orbitals + other lobes) via snapshot/restore for targets; `GetRedistributeTargets` uses per-atom topology bypass only when π count unchanged (σ break); `FilterRedistExcludingBreakOrbitals` avoids double-animating the two new lobes; `BuildSigmaRelaxMovesForBreakBond` collects tet + linear + opened + trigonal like full redistribute.
+
+`TryTransferElectronFromLonePairToEmptyOrbitals` runs before redistribution on bond break and σ/π formation so 0e lobes can take 1e from a 2e lone pair; empty lobes are included again in VSEPR layout (except AX₃E coplanar-tet path, which requires one 2e lone pair). `RefreshElectronSyncOnBondedOrbitals` after bond-break animations. `[vsepr3d]` debug toggles under `DebugLogVseprRedistribute3D`. Smaller touches: `MoleculeBuilder`, `EditModeManager`, `AtomQuickAddUI`, `PeriodicTableUI`.

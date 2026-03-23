@@ -448,6 +448,14 @@ public class EditModeManager : MonoBehaviour
         selectedMolecule = selectedAtom.GetConnectedMolecule();
     }
 
+    /// <summary>Periodic table / toolbar: replace a selected terminal hydrogen with another element (unchanged behavior).</summary>
+    public bool TryReplaceSelectedHydrogenWithAtom(int atomicNumber)
+    {
+        if (selectedAtom == null || atomPrefab == null || Camera.main == null) return false;
+        if (selectedAtom.AtomicNumber != 1 || orbitalExplicitlySelected) return false;
+        return TryReplaceHydrogenWithAtom(atomicNumber);
+    }
+
     public bool TryAddAtomToSelected(int atomicNumber)
     {
         if (selectedAtom == null || atomPrefab == null || Camera.main == null) return false;

@@ -915,7 +915,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         if (editModeManager != null && editModeManager.EditModeActive && editModeManager.SelectedAtom != null)
         {
-            if (editModeManager.TryAddAtomToSelected(atomicNumber))
+            if (editModeManager.TryReplaceSelectedHydrogenWithAtom(atomicNumber))
                 return;
         }
         CreateAtomAtViewport(atomicNumber);
@@ -955,8 +955,11 @@ public class AtomQuickAddUI : MonoBehaviour
         if (atomObj.TryGetComponent<AtomFunction>(out var atom))
         {
             atom.AtomicNumber = atomicNumber;
+            atom.ForceInitialize();
             if (editModeManager != null && editModeManager.HAutoMode)
                 editModeManager.SaturateWithHydrogen(atom);
+            if (editModeManager != null)
+                editModeManager.OnAtomClicked(atom);
         }
     }
 

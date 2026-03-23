@@ -466,7 +466,7 @@ public class PeriodicTableUI : MonoBehaviour
         var editMode = FindFirstObjectByType<EditModeManager>();
         if (editMode != null && editMode.EditModeActive && editMode.SelectedAtom != null)
         {
-            if (editMode.TryAddAtomToSelected(atomicNumber))
+            if (editMode.TryReplaceSelectedHydrogenWithAtom(atomicNumber))
                 return;
         }
 
@@ -475,8 +475,11 @@ public class PeriodicTableUI : MonoBehaviour
         if (atomObj.TryGetComponent<AtomFunction>(out var atom))
         {
             atom.AtomicNumber = atomicNumber;
+            atom.ForceInitialize();
             if (editMode != null && editMode.HAutoMode)
                 editMode.SaturateWithHydrogen(atom);
+            if (editMode != null)
+                editMode.OnAtomClicked(atom);
         }
     }
 

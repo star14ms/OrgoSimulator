@@ -21,8 +21,8 @@ public enum FunctionalGroupKind
 /// </summary>
 public class MoleculeBuilder : MonoBehaviour
 {
-    /// <summary>Console logs tagged [FG-OrbDist] for Nitro / Carboxyl attach (orbital redistribution path). Set false to silence.</summary>
-    public static bool DebugFunctionalGroupOrbitalDistribution = true;
+    /// <summary>Console logs tagged [FG-OrbDist] for Nitro / Carboxyl attach (orbital redistribution path).</summary>
+    public static bool DebugFunctionalGroupOrbitalDistribution;
 
     [SerializeField] GameObject atomPrefab;
     [SerializeField] float viewportMargin = 0.1f;
@@ -343,8 +343,6 @@ public class MoleculeBuilder : MonoBehaviour
             if (a != null) a.RedistributeOrbitals();
         if (anchorAtom != null) anchorAtom.RedistributeOrbitals();
 
-        ElectronOrbitalFunction.LogPiRedistDebug($"CreateBenzene: batch RedistributeOrbitals on ring + anchor (π formed with redistributeEndpoints=false)");
-
         if (editMode != null)
         {
             foreach (var a in atoms)
@@ -409,10 +407,6 @@ public class MoleculeBuilder : MonoBehaviour
         if (atomA == null || atomB == null) return;
         if (atomA.GetBondsTo(atomB) != 1) return;
 
-        int piA0 = atomA.GetPiBondCount();
-        int piB0 = atomB.GetPiBondCount();
-        ElectronOrbitalFunction.LogPiRedistDebug($"FormPiBondInstant: Z={atomA.AtomicNumber}↔Z={atomB.AtomicNumber} π before {piA0}/{piB0}, redistributeEndpoints={redistributeEndpoints}");
-
         var dirAtoB = (atomB.transform.position - atomA.transform.position).normalized;
         var dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
 
@@ -437,7 +431,6 @@ public class MoleculeBuilder : MonoBehaviour
             }
             atomA.RefreshCharge();
             atomB.RefreshCharge();
-            ElectronOrbitalFunction.LogPiRedistDebug($"FormPiBondInstant done: Z={atomA.AtomicNumber} π={atomA.GetPiBondCount()} Z={atomB.AtomicNumber} π={atomB.GetPiBondCount()} (redistributed={(redistributeEndpoints ? "per-atom" : "deferred")})");
         }
     }
 
@@ -510,11 +503,6 @@ public class MoleculeBuilder : MonoBehaviour
     static void RedistributeOrbitalsOnConnectedMolecule(AtomFunction anyAtomInFragment)
     {
         if (anyAtomInFragment == null) return;
-        if (AtomFunction.DebugLogRedistributeOrbitalsSteps)
-        {
-            int n = anyAtomInFragment.GetConnectedMolecule().Count;
-            LogFgOrbit($"RedistributeOrbitalsOnConnectedMolecule: calling RedistributeOrbitals on {n} atom(s)");
-        }
         foreach (var atom in anyAtomInFragment.GetConnectedMolecule())
             if (atom != null) atom.RedistributeOrbitals();
     }
@@ -629,11 +617,7 @@ public class MoleculeBuilder : MonoBehaviour
         bool traceNitroOrCarboxyl = DebugFunctionalGroupOrbitalDistribution
             && (kind == FunctionalGroupKind.Nitro || kind == FunctionalGroupKind.Carboxyl);
         if (traceNitroOrCarboxyl)
-            AtomFunction.DebugLogRedistributeOrbitalsSteps = true;
-        try
-        {
-            if (traceNitroOrCarboxyl)
-                LogFgOrbit($"BuildFunctionalGroup BEGIN kind={kind} use3D={OrbitalAngleUtility.UseFull3DOrbitalGeometry}");
+            LogFgOrbit($"BuildFunctionalGroup BEGIN kind={kind} use3D={OrbitalAngleUtility.UseFull3DOrbitalGeometry}");
 
         int z0 = kind switch
         {
@@ -812,12 +796,6 @@ public class MoleculeBuilder : MonoBehaviour
 
         AtomFunction.SetupGlobalIgnoreCollisions();
         return true;
-        }
-        finally
-        {
-            if (traceNitroOrCarboxyl)
-                AtomFunction.DebugLogRedistributeOrbitalsSteps = false;
-        }
     }
 
     /// <summary>~120° coplanar σ directions for two substituents (e.g. nitro O—N—O, aldehyde/carbonyl O vs hydroxyl O) given center→parent bond.</summary>
