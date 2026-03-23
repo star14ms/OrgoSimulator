@@ -244,7 +244,12 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
 
         isBeingHeld = true;
         originalLocalPosition = transform.localPosition;
-        dragOffset = transform.position - PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
+        var cam = Camera.main;
+        var wp = MoleculeWorkPlane.Instance;
+        if (cam != null && wp != null && wp.TryGetWorldPoint(cam, eventData.position, out var hitDown))
+            dragOffset = transform.position - hitDown;
+        else
+            dragOffset = transform.position - PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
         orbital?.SetPointerBlocked(true);
         orbital?.SetPhysicsEnabled(false);
         SetPhysicsEnabled(false);
@@ -252,7 +257,17 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
 
     public void OnDrag(PointerEventData eventData)
     {
-        if (isBeingHeld)
+        if (!isBeingHeld) return;
+        var cam = Camera.main;
+        if (cam != null && MoleculeWorkPlane.Instance != null &&
+            MoleculeWorkPlane.Instance.TryGetWorldPoint(cam, eventData.position, out var hit))
+        {
+            Vector3 tip = hit + dragOffset;
+            tip = PlanarPointerInteraction.SnapWorldToWorkPlaneIfPresent(tip);
+            transform.position = tip;
+            dragOffset = transform.position - hit;
+        }
+        else
             transform.position = PlanarPointerInteraction.ScreenToWorldPoint(eventData.position) + dragOffset;
     }
 
@@ -296,10 +311,15 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
 
     void TryAcceptIntoOrbital()
     {
+        var cam = Camera.main;
         var orbitals = Object.FindObjectsByType<ElectronOrbitalFunction>(FindObjectsSortMode.None);
+        var p = transform.position;
         foreach (var orb in orbitals)
         {
-            if (orb.CanAcceptElectron() && orb.ContainsPoint(transform.position))
+            if (!orb.CanAcceptElectron()) continue;
+            bool worldHit = orb.ContainsPoint(p);
+            bool screenHit = cam != null && ElectronOrbitalFunction.ElectronViewOverlapsOrbital(cam, orb, p);
+            if (worldHit || screenHit)
             {
                 orb.AcceptElectron(this);
                 return;

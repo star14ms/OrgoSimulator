@@ -163,6 +163,28 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         return TryProjectWorldBoundsToScreenRect(cam, o.GetOrbitalBoundsForView(), padPixels, out rect);
     }
 
+    static bool TryProjectWorldPointToScreenRect(Camera cam, Vector3 worldPos, float padPixels, out Rect rect)
+    {
+        rect = default;
+        if (cam == null) return false;
+        Vector3 s = cam.WorldToScreenPoint(worldPos);
+        if (s.z < cam.nearClipPlane) return false;
+        rect = Rect.MinMaxRect(s.x - padPixels, s.y - padPixels, s.x + padPixels, s.y + padPixels);
+        return true;
+    }
+
+    /// <summary>
+    /// Screen-space overlap between a dragged electron (world position ± padding) and an orbital silhouette,
+    /// same padding as <see cref="OrbitalViewOverlaps"/> for bonding.
+    /// </summary>
+    public static bool ElectronViewOverlapsOrbital(Camera cam, ElectronOrbitalFunction orbital, Vector3 electronWorldPos, float expandPixels = ViewOverlapScreenPaddingPx)
+    {
+        if (cam == null || orbital == null) return false;
+        if (!TryProjectWorldPointToScreenRect(cam, electronWorldPos, expandPixels, out var re)) return false;
+        if (!TryProjectOrbitalToScreenRect(cam, orbital, expandPixels, out var ro)) return false;
+        return re.Overlaps(ro);
+    }
+
     static bool TryProjectWorldBoundsToScreenRect(Camera cam, Bounds b, float padPixels, out Rect rect)
     {
         rect = default;
@@ -704,64 +726,175 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             return;
         }
 
-        RotateOrbitalToTip(sourceAtom, tip);
+        ApplyVseprRotationAfterDrag(sourceAtom, tip);
     }
 
     const float RotateStepDeg = 30f;
-    const float MinOrbitalSeparationDeg = 30f;
 
-    void RotateOrbitalToTip(AtomFunction atom, Vector3 tipWorld)
+    /// <summary>
+    /// After a lone-orbital drag (no bond/swap): σ neighbors ≥ 2 — cannot reorient; restore drag start.
+    /// 0 σ — rigid rotation of all lone lobes (VSEPR shape preserved). 1 σ — spin lone lobes around the σ axis; bonded orbital fixed.
+    /// </summary>
+    void ApplyVseprRotationAfterDrag(AtomFunction atom, Vector3 tipWorld)
     {
         if (atom == null) return;
-        var dir = (tipWorld - atom.transform.position);
-        dir.z = 0;
-        if (dir.sqrMagnitude < 0.01f) return;
-        dir.Normalize();
-        float preferredAngle = OrbitalAngleUtility.DirectionToAngleWorld(dir);
-        float preferredNorm = NormalizeAngleTo360(preferredAngle);
-
-        float bestAngle = Mathf.Round(preferredNorm / RotateStepDeg) * RotateStepDeg;
-        bestAngle = NormalizeAngleTo360(bestAngle);
-        float bestDelta = 360f;
-
-        for (float slot = 0f; slot < 360f; slot += RotateStepDeg)
+        int sigmaN = atom.GetDistinctSigmaNeighborCount();
+        if (sigmaN >= 2)
         {
-            bool tooClose = false;
-            foreach (var orb in atom.GetComponentsInChildren<ElectronOrbitalFunction>())
-            {
-                if (orb == this || orb.transform.parent != atom.transform) continue;
-                if (orb.Bond != null) continue;
-                float orbAngle = NormalizeAngleTo360(OrbitalAngleUtility.GetOrbitalAngleWorld(orb.transform));
-                float delta = AngularDistanceDeg(slot, orbAngle);
-                if (delta < MinOrbitalSeparationDeg) { tooClose = true; break; }
-            }
-            if (tooClose) continue;
-
-            float deltaToPref = AngularDistanceDeg(slot, preferredNorm);
-            if (deltaToPref < bestDelta)
-            {
-                bestDelta = deltaToPref;
-                bestAngle = slot;
-            }
+            transform.localPosition = originalLocalPosition;
+            transform.localScale = originalLocalScale;
+            transform.localRotation = originalLocalRotation;
+            Reposition3DElectronsAfterOrbitalDrag();
+            return;
         }
 
-        var slotPos = GetCanonicalSlotPosition(bestAngle, atom.BondRadius);
-        transform.localPosition = slotPos.position;
-        transform.localRotation = slotPos.rotation;
+        if (sigmaN == 0)
+        {
+            ApplyRigidWorldRotationToAllLoneOrbitals(atom, this, tipWorld);
+            RefreshAllOrbitalElectronSlotPositions3D(atom);
+            return;
+        }
+
+        // Exactly one σ neighbor: spin lone lobes around bond axis; σ orbital stays fixed.
+        if (ApplyLoneOrbitalSpinAroundSigmaAxis(atom, this, tipWorld))
+            RefreshAllOrbitalElectronSlotPositions3D(atom);
+        else
+            RestoreDraggedOrbitalToPointerDown();
+    }
+
+    void RestoreDraggedOrbitalToPointerDown()
+    {
+        transform.localPosition = originalLocalPosition;
         transform.localScale = originalLocalScale;
+        transform.localRotation = originalLocalRotation;
+        Reposition3DElectronsAfterOrbitalDrag();
     }
 
-    static float NormalizeAngleTo360(float deg)
+    static void RefreshAllOrbitalElectronSlotPositions3D(AtomFunction atom)
     {
-        deg = deg % 360f;
-        if (deg < 0f) deg += 360f;
-        return deg;
+        if (!Use3DOrbitalPresentation()) return;
+        foreach (var orb in atom.GetComponentsInChildren<ElectronOrbitalFunction>())
+        {
+            foreach (var e in orb.GetComponentsInChildren<ElectronFunction>())
+                e.ApplyOrbitalSlotPosition();
+        }
     }
 
-    static float AngularDistanceDeg(float a, float b)
+    static Vector3 WorldRadialFromLocalRotation(AtomFunction atom, Quaternion localRot)
     {
-        float d = Mathf.Abs(NormalizeAngleTo360(a - b));
-        return Mathf.Min(d, 360f - d);
+        Vector3 d = atom.transform.TransformDirection(localRot * Vector3.right);
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            d.z = 0f;
+            if (d.sqrMagnitude < 1e-10f) return Vector3.right;
+            return d.normalized;
+        }
+        return d.sqrMagnitude < 1e-10f ? Vector3.right : d.normalized;
+    }
+
+    static Vector3 WorldOrbitalRadialDirection(Transform orbital, AtomFunction atom)
+    {
+        return WorldRadialFromLocalRotation(atom, orbital.localRotation);
+    }
+
+    /// <summary>Radial direction of this lone lobe at pointer-down (drag only moves position; rotation matches original for dragged).</summary>
+    static Vector3 LoneOrbitalRadialWorldAtDragStart(AtomFunction atom, ElectronOrbitalFunction orb, ElectronOrbitalFunction dragged)
+    {
+        if (orb == dragged)
+            return WorldRadialFromLocalRotation(atom, dragged.originalLocalRotation);
+        return WorldOrbitalRadialDirection(orb.transform, atom);
+    }
+
+    static Vector3 WorldTargetDirectionFromTip(AtomFunction atom, Vector3 tipWorld)
+    {
+        Vector3 v = tipWorld - atom.transform.position;
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            v.z = 0f;
+        }
+        if (v.sqrMagnitude < 1e-10f) return Vector3.right;
+        return v.normalized;
+    }
+
+    static Quaternion SnappedRotationBetweenWorldDirections(Vector3 fromW, Vector3 toW, float stepDeg)
+    {
+        if (fromW.sqrMagnitude < 1e-10f || toW.sqrMagnitude < 1e-10f) return Quaternion.identity;
+        fromW.Normalize();
+        toW.Normalize();
+        float dot = Mathf.Clamp(Vector3.Dot(fromW, toW), -1f, 1f);
+        float angle = Mathf.Acos(dot) * Mathf.Rad2Deg;
+        if (angle < 0.01f) return Quaternion.identity;
+        Vector3 axis = Vector3.Cross(fromW, toW);
+        if (axis.sqrMagnitude < 1e-10f)
+        {
+            axis = Mathf.Abs(fromW.z) < 0.9f ? Vector3.Cross(fromW, Vector3.forward) : Vector3.Cross(fromW, Vector3.right);
+            if (axis.sqrMagnitude < 1e-10f) return Quaternion.identity;
+        }
+        axis.Normalize();
+        float snapped = Mathf.Round(angle / stepDeg) * stepDeg;
+        if (snapped < 0.01f) return Quaternion.identity;
+        return Quaternion.AngleAxis(snapped, axis);
+    }
+
+    static void ApplyRigidWorldRotationToAllLoneOrbitals(AtomFunction atom, ElectronOrbitalFunction dragged, Vector3 tipWorld)
+    {
+        Vector3 dDragW = WorldRadialFromLocalRotation(atom, dragged.originalLocalRotation);
+        Vector3 dTargetW = WorldTargetDirectionFromTip(atom, tipWorld);
+        Quaternion rWorld = SnappedRotationBetweenWorldDirections(dDragW, dTargetW, RotateStepDeg);
+
+        foreach (var orb in atom.GetComponentsInChildren<ElectronOrbitalFunction>())
+        {
+            if (orb.transform.parent != atom.transform) continue;
+            if (orb.Bond != null) continue;
+            Vector3 dW = LoneOrbitalRadialWorldAtDragStart(atom, orb, dragged);
+            Vector3 dNewW = (rWorld * dW).normalized;
+            Vector3 localDir = atom.transform.InverseTransformDirection(dNewW);
+            if (localDir.sqrMagnitude < 1e-10f) continue;
+            localDir.Normalize();
+            var (pos, rot) = GetCanonicalSlotPositionFromLocalDirection(localDir, atom.BondRadius);
+            orb.transform.localPosition = pos;
+            orb.transform.localRotation = rot;
+        }
+    }
+
+    static bool ApplyLoneOrbitalSpinAroundSigmaAxis(AtomFunction atom, ElectronOrbitalFunction dragged, Vector3 tipWorld)
+    {
+        if (!atom.TryGetSingleSigmaNeighbor(out var neighbor) || neighbor == null) return false;
+
+        Vector3 sigmaW = neighbor.transform.position - atom.transform.position;
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            sigmaW.z = 0f;
+        if (sigmaW.sqrMagnitude < 1e-10f) return false;
+        sigmaW.Normalize();
+
+        Vector3 dDragW = WorldRadialFromLocalRotation(atom, dragged.originalLocalRotation);
+        Vector3 dTargetW = WorldTargetDirectionFromTip(atom, tipWorld);
+
+        Vector3 u0 = dDragW - sigmaW * Vector3.Dot(dDragW, sigmaW);
+        Vector3 u1 = dTargetW - sigmaW * Vector3.Dot(dTargetW, sigmaW);
+        if (u0.sqrMagnitude < 1e-8f || u1.sqrMagnitude < 1e-8f)
+            return false;
+        u0.Normalize();
+        u1.Normalize();
+
+        float delta = Vector3.SignedAngle(u0, u1, sigmaW);
+        float snapped = Mathf.Round(delta / RotateStepDeg) * RotateStepDeg;
+        Quaternion rWorld = Mathf.Abs(snapped) < 0.01f ? Quaternion.identity : Quaternion.AngleAxis(snapped, sigmaW);
+
+        foreach (var orb in atom.GetComponentsInChildren<ElectronOrbitalFunction>())
+        {
+            if (orb.transform.parent != atom.transform) continue;
+            if (orb.Bond != null) continue;
+            Vector3 dW = LoneOrbitalRadialWorldAtDragStart(atom, orb, dragged);
+            Vector3 dNewW = (rWorld * dW).normalized;
+            Vector3 localDir = atom.transform.InverseTransformDirection(dNewW);
+            if (localDir.sqrMagnitude < 1e-10f) continue;
+            localDir.Normalize();
+            var (pos, rot) = GetCanonicalSlotPositionFromLocalDirection(localDir, atom.BondRadius);
+            orb.transform.localPosition = pos;
+            orb.transform.localRotation = rot;
+        }
+        return true;
     }
 
     ElectronOrbitalFunction TryFindSwapTarget(AtomFunction atom, Vector3 tip)
@@ -971,6 +1104,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
         var rearrangeTargetInfo = GetRearrangeTarget(rearrangeSource, rearrangeTarget, targetPointOverride);
 
+        int sigmaBeforeSource = sourceAtom.GetDistinctSigmaNeighborCount();
+        int sigmaBeforeTarget = targetAtom.GetDistinctSigmaNeighborCount();
+
         // Create bond (instant) - source orbital (the one we dragged) stays visible through steps 2 and 3
         sourceOrbital.transform.localPosition = originalLocalPosition;
         sourceOrbital.transform.localRotation = originalLocalRotation;
@@ -1000,8 +1136,29 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         targetAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
-        var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom);
-        var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom);
+
+        // Tetrahedral σ-relax when σ count goes 3→4: preview end geometry for GetRedistributeTargets, restore, then lerp with orbitals (like bond-break σ animation).
+        var sigmaRelaxById = new Dictionary<int, (AtomFunction atom, Vector3 startWorld, Vector3 endWorld)>();
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            void CollectSigmaRelax(AtomFunction center, AtomFunction partner, int sigmaBefore)
+            {
+                if (center == null || partner == null || sigmaBefore < 0) return;
+                if (!center.TryGetTetrahedralFourSigmaNeighborRelaxMovesForBondFormation(partner, sigmaBefore, out var lst) || lst == null) return;
+                foreach (var entry in lst)
+                    sigmaRelaxById[entry.atom.GetInstanceID()] = entry;
+            }
+            CollectSigmaRelax(sourceAtom, targetAtom, sigmaBeforeSource);
+            CollectSigmaRelax(targetAtom, sourceAtom, sigmaBeforeTarget);
+        }
+        var sigmaRelaxList = new List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)>(sigmaRelaxById.Values);
+        foreach (var m in sigmaRelaxList)
+            m.atom.transform.position = m.endWorld;
+        var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom, sigmaNeighborCountBefore: sigmaBeforeSource);
+        var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom, sigmaNeighborCountBefore: sigmaBeforeTarget);
+        foreach (var m in sigmaRelaxList)
+            m.atom.transform.position = m.startWorld;
+
         const float alignThreshold = 0.05f;
         const float posThreshold = 0.01f;
         const float rotThreshold = 1f;
@@ -1031,10 +1188,13 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             }
         bool needsRedistribute = hasRedistributeMovement;
 
+        // Any tet σ-relax move from TryCompute (≥1e-4) should run step 2 — do not compare to posThreshold or tiny moves skip animation while targets assumed preview geometry.
+        bool hasSigmaRelaxMovement = sigmaRelaxList.Count > 0;
+
         // Must check rotation too: position can match while quaternions differ (e.g. 180° flip); direction-only angle can still match both.
         bool orbitalAlreadyAtBond = Vector3.Distance(bondOrbitalStartWorldPos, bondOrbitalEnd.worldPos) < alignThreshold
             && Quaternion.Angle(bondOrbitalStartWorldRot, bondOrbitalEnd.worldRot) < rotThreshold;
-        bool skipStep2 = !needsRearrange && !needsRedistribute && orbitalAlreadyAtBond;
+        bool skipStep2 = !needsRearrange && !needsRedistribute && !hasSigmaRelaxMovement && orbitalAlreadyAtBond;
 
         var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
         var redistBStarts = new List<(Vector3 pos, Quaternion rot)>();
@@ -1091,6 +1251,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                     entry.orb.transform.localRotation = Quaternion.Slerp(sr, entry.rot, rotT);
                 }
             }
+            foreach (var (atom, startW, endW) in sigmaRelaxList)
+                atom.transform.position = Vector3.Lerp(startW, endW, s);
             yield return null;
         }
 
@@ -1102,6 +1264,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 orbToMove.transform.localPosition = targetPos;
                 orbToMove.transform.localRotation = targetRot;
             }
+        }
+        foreach (var (atom, startW, endW) in sigmaRelaxList)
+        {
+            AtomFunction.LogAttachAnchorCarbonMove("FormCovalentBondSigma step2 σRelax snap", atom, startW, endW);
+            atom.transform.position = endW;
         }
         sourceAtom.ApplyRedistributeTargets(redistA);
         targetAtom.ApplyRedistributeTargets(redistB);
@@ -1197,6 +1364,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         {
         int piBeforeSource = sourceAtom.GetPiBondCount();
         int piBeforeTarget = targetAtom.GetPiBondCount();
+        int sigmaBeforeSource = sourceAtom.GetDistinctSigmaNeighborCount();
+        int sigmaBeforeTarget = targetAtom.GetDistinctSigmaNeighborCount();
         int mergedElectrons = electronCount + targetOrbital.ElectronCount;
 
         // Snap source orbital to original position (like sigma bond) before animating to bond center
@@ -1215,7 +1384,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
 
-        yield return AnimateRedistributeOrbitals(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget, this, targetOrbital, bond);
+        yield return AnimateRedistributeOrbitals(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget, sigmaBeforeSource, sigmaBeforeTarget, this, targetOrbital, bond);
 
         if (bond != null)
         {
@@ -1238,10 +1407,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     }
 
     IEnumerator AnimateRedistributeOrbitals(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget,
+        int sigmaBeforeSource, int sigmaBeforeTarget,
         ElectronOrbitalFunction sourceOrbital, ElectronOrbitalFunction targetOrbital, CovalentBond bond)
     {
-        var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom);
-        var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom);
+        var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom, sigmaNeighborCountBefore: sigmaBeforeSource);
+        var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom, sigmaNeighborCountBefore: sigmaBeforeTarget);
 
         var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
         var redistBStarts = new List<(Vector3 pos, Quaternion rot)>();

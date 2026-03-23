@@ -13,6 +13,10 @@ using System.Linq;
 public class EditModeManager : MonoBehaviour
 {
     [SerializeField] GameObject atomPrefab;
+    [Tooltip("Logs [attach-anchor-pos] for carbon world positions during H→atom replace, add-atom attach, and related paths (mirrors to project .log when enabled).")]
+    [SerializeField] bool debugLogAttachAnchorCarbonPosition = true;
+    [Tooltip("Logs [attach-added-group] for the new non-H fragment: position, σN, non-bond orbital counts through attach + optional per-H H-auto steps.")]
+    [SerializeField] bool debugLogAttachAddedGroup = true;
 
     bool editModeActive = true;
     bool hAutoMode;
@@ -94,7 +98,7 @@ public class EditModeManager : MonoBehaviour
             if (bridge == null) break;
             keeperAtom = keeper;
             orbitalTowardRemoved = bridge.Orbital;
-            bridge.BreakBond(keeper);
+            bridge.BreakBond(keeper, instantRedistributionForDestroyPartner: true);
         }
 
         DestroyMolecule(remove);
@@ -135,6 +139,8 @@ public class EditModeManager : MonoBehaviour
     {
         moleculeBuilder = FindFirstObjectByType<MoleculeBuilder>();
         CreateBackgroundForDeselect();
+        AtomFunction.DebugLogAttachAnchorCarbonPosition = debugLogAttachAnchorCarbonPosition;
+        AtomFunction.DebugLogAttachAddedGroup = debugLogAttachAddedGroup;
     }
 
     void CreateBackgroundForDeselect()
@@ -456,6 +462,10 @@ public class EditModeManager : MonoBehaviour
         return TryReplaceHydrogenWithAtom(atomicNumber);
     }
 
+    /// <summary>
+    /// Periodic table / toolbar: bond a new atom to the selection — terminal H replacement, or σ bond from the
+    /// selected lone (1e) orbital (or closest valid lone orbital when none highlighted).
+    /// </summary>
     public bool TryAddAtomToSelected(int atomicNumber)
     {
         if (selectedAtom == null || atomPrefab == null || Camera.main == null) return false;
@@ -464,7 +474,7 @@ public class EditModeManager : MonoBehaviour
             return TryReplaceHydrogenWithAtom(atomicNumber);
 
         var orb = selectedOrbital ?? selectedAtom.GetOrbitalClosestToAngle(0f);
-        if (orb == null) return false;
+        if (orb == null || orb.Bond != null || orb.ElectronCount != 1) return false;
 
         Vector3 dir = orb.transform.TransformDirection(Vector3.right);
         Vector3 newPos = selectedAtom.transform.position + dir * GetBondLength();
@@ -477,6 +487,8 @@ public class EditModeManager : MonoBehaviour
         }
         newAtom.AtomicNumber = atomicNumber;
         newAtom.ForceInitialize();
+        Vector3? addedGroupBaseline = newAtom.AtomicNumber > 1 ? newAtom.transform.position : (Vector3?)null;
+        AtomFunction.LogAttachAddedGroupPhase("TryAddAtom: after ForceInitialize", newAtom, addedGroupBaseline);
 
         Vector3 dirToSelected = (selectedAtom.transform.position - newAtom.transform.position).normalized;
         var newOrb = newAtom.GetLoneOrbitalWithOneElectron(dirToSelected);
@@ -486,16 +498,24 @@ public class EditModeManager : MonoBehaviour
             return false;
         }
 
-        FormSigmaBondInstant(selectedAtom, newAtom, orb, newOrb);
+        Vector3 anchorBaseline = selectedAtom.AtomicNumber == 6 ? selectedAtom.transform.position : default;
+        AtomFunction.LogAttachAnchorCarbonPhase("TryAddAtom: before FormSigmaBondInstant", selectedAtom, selectedAtom.AtomicNumber == 6 ? anchorBaseline : null);
+        AtomFunction.LogAttachAddedGroupPhase("TryAddAtom: before FormSigmaBondInstant", newAtom, addedGroupBaseline);
+        // Redistribute / tet σ-relax on the new fragment only — do not move the anchor's existing substituents.
+        FormSigmaBondInstant(selectedAtom, newAtom, orb, newOrb, redistributeAtomA: false, redistributeAtomB: true);
+        AtomFunction.LogAttachAddedGroupPhase("TryAddAtom: after FormSigmaBondInstant", newAtom, addedGroupBaseline);
 
         selectedOrbital?.SetHighlighted(false);
         selectedOrbital = selectedAtom.GetOrbitalClosestToAngle(0f);
         if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
 
         if (hAutoMode)
-            SaturateWithHydrogen(newAtom);
+            SaturateWithHydrogen(newAtom, logAddedGroupAfterEachHydrogen: true, addedGroupPositionBaseline: addedGroupBaseline);
 
+        AtomFunction.LogAttachAnchorCarbonPhase("TryAddAtom: after Saturate+HAuto", selectedAtom, selectedAtom.AtomicNumber == 6 ? anchorBaseline : null);
+        AtomFunction.LogAttachAddedGroupPhase("TryAddAtom: end", newAtom, addedGroupBaseline);
         AtomFunction.SetupGlobalIgnoreCollisions();
+        AtomFunction.LogAttachAnchorCarbonPhase("TryAddAtom: end", selectedAtom, selectedAtom.AtomicNumber == 6 ? anchorBaseline : null);
         return true;
     }
 
@@ -513,7 +533,10 @@ public class EditModeManager : MonoBehaviour
         if (parentAtom == null || bondToBreak == null) return false;
 
         Vector3 hPos = hydrogen.transform.position;
-        bondToBreak.BreakBond(parentAtom);
+        Vector3 parentBaseline = parentAtom.transform.position;
+        AtomFunction.LogAttachAnchorCarbonPhase("TryReplaceH: before BreakBond", parentAtom, parentBaseline);
+        bondToBreak.BreakBond(parentAtom, instantRedistributionForDestroyPartner: true);
+        AtomFunction.LogAttachAnchorCarbonPhase("TryReplaceH: after BreakBond", parentAtom, parentBaseline);
         selectedAtom?.SetSelectionHighlight(false);
         selectedOrbital?.SetHighlighted(false);
         Destroy(hydrogen.gameObject);
@@ -526,6 +549,8 @@ public class EditModeManager : MonoBehaviour
         }
         newAtom.AtomicNumber = atomicNumber;
         newAtom.ForceInitialize();
+        Vector3? addedGroupBaseline = newAtom.AtomicNumber > 1 ? newAtom.transform.position : (Vector3?)null;
+        AtomFunction.LogAttachAddedGroupPhase("TryReplaceH: after ForceInitialize", newAtom, addedGroupBaseline);
 
         Vector3 dirToNewAtom = (newAtom.transform.position - parentAtom.transform.position).normalized;
         var parentOrb = parentAtom.GetLoneOrbitalForBondFormation(dirToNewAtom);
@@ -543,7 +568,11 @@ public class EditModeManager : MonoBehaviour
             return false;
         }
 
-        FormSigmaBondInstant(parentAtom, newAtom, parentOrb, newOrb);
+        AtomFunction.LogAttachAnchorCarbonPhase("TryReplaceH: before FormSigmaBondInstant", parentAtom, parentBaseline);
+        AtomFunction.LogAttachAddedGroupPhase("TryReplaceH: before FormSigmaBondInstant", newAtom, addedGroupBaseline);
+        FormSigmaBondInstant(parentAtom, newAtom, parentOrb, newOrb, redistributeAtomA: false, redistributeAtomB: true);
+        AtomFunction.LogAttachAnchorCarbonPhase("TryReplaceH: after FormSigmaBondInstant", parentAtom, parentBaseline);
+        AtomFunction.LogAttachAddedGroupPhase("TryReplaceH: after FormSigmaBondInstant", newAtom, addedGroupBaseline);
 
         selectedAtom = newAtom;
         selectedOrbital = newAtom.GetOrbitalClosestToAngle(0f);
@@ -551,15 +580,26 @@ public class EditModeManager : MonoBehaviour
         if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
 
         if (hAutoMode)
-            SaturateWithHydrogen(newAtom);
+            SaturateWithHydrogen(newAtom, logAddedGroupAfterEachHydrogen: true, addedGroupPositionBaseline: addedGroupBaseline);
 
+        AtomFunction.LogAttachAnchorCarbonPhase("TryReplaceH: after Saturate+HAuto", parentAtom, parentBaseline);
+        AtomFunction.LogAttachAddedGroupPhase("TryReplaceH: after Saturate+HAuto", newAtom, addedGroupBaseline);
         AtomFunction.SetupGlobalIgnoreCollisions();
+        AtomFunction.LogAttachAnchorCarbonPhase("TryReplaceH: end", parentAtom, parentBaseline);
+        AtomFunction.LogAttachAddedGroupPhase("TryReplaceH: end", newAtom, addedGroupBaseline);
         return true;
     }
 
     void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, bool redistributeAtomA = true, bool redistributeAtomB = true)
     {
+        Vector3? a0 = atomA != null && atomA.AtomicNumber == 6 ? atomA.transform.position : (Vector3?)null;
+        Vector3? b0 = atomB != null && atomB.AtomicNumber == 6 ? atomB.transform.position : (Vector3?)null;
+        AtomFunction.LogAttachAnchorCarbonPhase("FormSigmaInstant: entry", atomA);
+        AtomFunction.LogAttachAnchorCarbonPhase("FormSigmaInstant: entry", atomB);
+
         int merged = orbA.ElectronCount + orbB.ElectronCount;
+        int sigmaBeforeA = atomA.GetDistinctSigmaNeighborCount();
+        int sigmaBeforeB = atomB.GetDistinctSigmaNeighborCount();
         atomA.UnbondOrbital(orbA);
         atomB.UnbondOrbital(orbB);
 
@@ -569,16 +609,28 @@ public class EditModeManager : MonoBehaviour
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
             if (redistributeAtomA)
-                atomA.RedistributeOrbitals();
+                atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA);
             if (redistributeAtomB)
             {
                 Vector3 dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
                 float bondAngleFromB = Mathf.Atan2(dirBtoA.y, dirBtoA.x) * Mathf.Rad2Deg;
-                atomB.RedistributeOrbitals(piBondAngleOverride: bondAngleFromB, refBondWorldDirection: dirBtoA);
+                atomB.RedistributeOrbitals(piBondAngleOverride: bondAngleFromB, refBondWorldDirection: dirBtoA, newSigmaBondPartnerHint: atomA, sigmaNeighborCountBeforeHint: sigmaBeforeB);
             }
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }
+
+        if (bond != null && OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            float bl = GetBondLength();
+            if (atomA != null && atomA.AtomicNumber > 1 && atomB != null && atomB.AtomicNumber == 1)
+                atomA.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bl);
+            else if (atomB != null && atomB.AtomicNumber > 1 && atomA != null && atomA.AtomicNumber == 1)
+                atomB.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bl);
+        }
+
+        if (a0.HasValue && atomA != null) AtomFunction.LogAttachAnchorCarbonPhase("FormSigmaInstant: after bond+redist", atomA, a0.Value);
+        if (b0.HasValue && atomB != null) AtomFunction.LogAttachAnchorCarbonPhase("FormSigmaInstant: after bond+redist", atomB, b0.Value);
 
         RefreshSelectedMoleculeAfterBondChange();
     }
@@ -710,6 +762,8 @@ public class EditModeManager : MonoBehaviour
 
                 FormSigmaBondInstant(atom, hAtom, carbonOrb, hOrb, redistributeAtomA: false, redistributeAtomB: false);
                 atom.RedistributeOrbitals();
+                if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && atom.AtomicNumber > 1)
+                    atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
             }
         }
 
@@ -738,9 +792,14 @@ public class EditModeManager : MonoBehaviour
             return;
         }
 
+        float bondLen = GetBondLength();
         FormSigmaBondInstant(atom, hAtom, orb, hOrb);
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
             atom.RedistributeOrbitals(refBondWorldDirection: dir.normalized);
+            if (atom.AtomicNumber > 1)
+                atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLen);
+        }
         else
         {
             var bondAngle = atom.GetPrimaryBondDirectionAngle();
@@ -751,10 +810,20 @@ public class EditModeManager : MonoBehaviour
 
     public void SaturateWithHydrogen(AtomFunction atom)
     {
+        SaturateWithHydrogen(atom, false, null);
+    }
+
+    /// <param name="logAddedGroupAfterEachHydrogen">When true with a baseline, logs <c>[attach-added-group]</c> after each H bond + redistribute (edit attach debug).</param>
+    public void SaturateWithHydrogen(AtomFunction atom, bool logAddedGroupAfterEachHydrogen, Vector3? addedGroupPositionBaseline)
+    {
         if (atom == null || atomPrefab == null || Camera.main == null) return;
 
         atom.ForceInitialize();
+        if (logAddedGroupAfterEachHydrogen && addedGroupPositionBaseline.HasValue)
+            AtomFunction.LogAttachAddedGroupPhase("SaturateWithHydrogen: enter", atom, addedGroupPositionBaseline);
+
         float bondLength = GetBondLength();
+        int hStep = 0;
 
         while (true)
         {
@@ -793,16 +862,29 @@ public class EditModeManager : MonoBehaviour
                 break;
             }
 
+            hStep++;
             FormSigmaBondInstant(atom, hAtom, orb, hOrb);
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
                 atom.RedistributeOrbitals(refBondWorldDirection: dirN);
+                if (atom.AtomicNumber > 1)
+                    atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
+            }
             else
             {
                 var bondAngle = atom.GetPrimaryBondDirectionAngle();
                 atom.RedistributeOrbitals(piBondAngleOverride: bondAngle);
             }
+            if (logAddedGroupAfterEachHydrogen && addedGroupPositionBaseline.HasValue)
+                AtomFunction.LogAttachAddedGroupPhase($"SaturateWithHydrogen: after H#{hStep} bond+redist", atom, addedGroupPositionBaseline);
             AtomFunction.SetupGlobalIgnoreCollisions();
         }
+
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && atom != null && atom.AtomicNumber > 1)
+            atom.TryPlaceTetrahedralHydrogenSubstituentsAboutSingleHeavyNeighbor(bondLength);
+
+        if (logAddedGroupAfterEachHydrogen && addedGroupPositionBaseline.HasValue)
+            AtomFunction.LogAttachAddedGroupPhase("SaturateWithHydrogen: exit", atom, addedGroupPositionBaseline);
     }
 
     /// <summary>
@@ -963,7 +1045,7 @@ public class EditModeManager : MonoBehaviour
             if (parentAtom == null || bondToBreak == null) return false;
 
             Vector3 hPos = hydrogen.transform.position;
-            bondToBreak.BreakBond(parentAtom);
+            bondToBreak.BreakBond(parentAtom, instantRedistributionForDestroyPartner: true);
             if (selectedAtom != null) selectedAtom.SetSelectionHighlight(false);
             if (selectedOrbital != null) selectedOrbital.SetHighlighted(false);
             Destroy(hydrogen.gameObject);

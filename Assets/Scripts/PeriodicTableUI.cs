@@ -466,7 +466,7 @@ public class PeriodicTableUI : MonoBehaviour
         var editMode = FindFirstObjectByType<EditModeManager>();
         if (editMode != null && editMode.EditModeActive && editMode.SelectedAtom != null)
         {
-            if (editMode.TryReplaceSelectedHydrogenWithAtom(atomicNumber))
+            if (editMode.TryAddAtomToSelected(atomicNumber))
                 return;
         }
 

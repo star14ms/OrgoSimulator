@@ -915,7 +915,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         if (editModeManager != null && editModeManager.EditModeActive && editModeManager.SelectedAtom != null)
         {
-            if (editModeManager.TryReplaceSelectedHydrogenWithAtom(atomicNumber))
+            if (editModeManager.TryAddAtomToSelected(atomicNumber))
                 return;
         }
         CreateAtomAtViewport(atomicNumber);
