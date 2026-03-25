@@ -16,7 +16,7 @@ public class EditModeManager : MonoBehaviour
 {
     [SerializeField] GameObject atomPrefab;
     bool editModeActive = true;
-    bool hAutoMode;
+    bool hAutoMode = true;
     bool eraserMode;
     AtomFunction selectedAtom;
     ElectronOrbitalFunction selectedOrbital;
@@ -700,11 +700,13 @@ public class EditModeManager : MonoBehaviour
             selectedOrbital?.SetHighlighted(false);
             orbitalExplicitlySelected = false;
 
-            if (hAutoMode && OrbitalAngleUtility.UseFull3DOrbitalGeometry && newAtom.AtomicNumber > 1)
-                newAtom.TryStaggerNewmanRelativeToPartner(anchor);
-
             if (hAutoMode)
                 SaturateWithHydrogen(newAtom, pinChildSigmaRelax);
+
+            // Saturation rebuilds tetrahedral geometry (and TryPlaceTetrahedralHydrogenSubstituentsAboutSingleHeavyNeighbor
+            // re-seats —CH₃ H), which clears an earlier Newman twist — stagger after H-auto so the new center is vs the anchor.
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && newAtom.AtomicNumber > 1)
+                newAtom.TryStaggerNewmanRelativeToPartner(anchor);
 
             // Same-element heavy (e.g. C on C): continue from the new tip so repeated toolbar adds extend the chain.
             bool sameHeavyExtend = atomicNumber > 1 && anchor.AtomicNumber == atomicNumber;
@@ -823,12 +825,11 @@ public class EditModeManager : MonoBehaviour
             selectedAtom.SetSelectionHighlight(true);
             if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
 
-            // Stagger vs parent (~60° Newman) before H-auto adds substituent H, so saturation uses staggered heavy geometry.
-            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && newAtom.AtomicNumber > 1)
-                newAtom.TryStaggerNewmanRelativeToPartner(parentAtom);
-
             if (hAutoMode)
                 SaturateWithHydrogen(newAtom, pinFramework);
+
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && newAtom.AtomicNumber > 1)
+                newAtom.TryStaggerNewmanRelativeToPartner(parentAtom);
 
             AtomFunction.SetupGlobalIgnoreCollisions();
             return true;
@@ -846,7 +847,7 @@ public class EditModeManager : MonoBehaviour
         }
     }
 
-    void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, bool redistributeAtomA = true, bool redistributeAtomB = true, HashSet<AtomFunction> pinSigmaRelaxForAtomA = null, HashSet<AtomFunction> pinSigmaRelaxForAtomB = null)
+    void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, bool redistributeAtomA = true, bool redistributeAtomB = true, HashSet<AtomFunction> pinSigmaRelaxForAtomA = null, HashSet<AtomFunction> pinSigmaRelaxForAtomB = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         int merged = orbA.ElectronCount + orbB.ElectronCount;
         int sigmaBeforeA = atomA.GetDistinctSigmaNeighborCount();
@@ -869,12 +870,12 @@ public class EditModeManager : MonoBehaviour
                     + " | " + AtomFunction.FormatPinSummary(pinSigmaRelaxForAtomB));
             }
             if (redistributeAtomA)
-                atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA, pinAtomsForSigmaRelax: pinSigmaRelaxForAtomA);
+                atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA, pinAtomsForSigmaRelax: pinSigmaRelaxForAtomA, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
             if (redistributeAtomB)
             {
                 Vector3 dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
                 float bondAngleFromB = Mathf.Atan2(dirBtoA.y, dirBtoA.x) * Mathf.Rad2Deg;
-                atomB.RedistributeOrbitals(piBondAngleOverride: bondAngleFromB, refBondWorldDirection: dirBtoA, newSigmaBondPartnerHint: atomA, sigmaNeighborCountBeforeHint: sigmaBeforeB, pinAtomsForSigmaRelax: pinSigmaRelaxForAtomB);
+                atomB.RedistributeOrbitals(piBondAngleOverride: bondAngleFromB, refBondWorldDirection: dirBtoA, newSigmaBondPartnerHint: atomA, sigmaNeighborCountBeforeHint: sigmaBeforeB, pinAtomsForSigmaRelax: pinSigmaRelaxForAtomB, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
             }
             atomA.RefreshCharge();
             atomB.RefreshCharge();
@@ -1080,13 +1081,15 @@ public class EditModeManager : MonoBehaviour
         AtomFunction.SetupGlobalIgnoreCollisions();
     }
 
-    public void SaturateWithHydrogen(AtomFunction atom, HashSet<AtomFunction> pinSigmaRelaxNeighbors = null)
+    /// <param name="freezeSigmaNeighborSubtreeRoot">With FG attach, pass substrate attachment atom so σ-relax skips parent subtree without O(N) pins.</param>
+    /// <param name="incrementalCollisionInvolvingAtoms">When non-null (e.g. functional-group attach), refresh ignores for this set only after each H add instead of the whole scene.</param>
+    public void SaturateWithHydrogen(AtomFunction atom, HashSet<AtomFunction> pinSigmaRelaxNeighbors = null, IReadOnlyList<AtomFunction> incrementalCollisionInvolvingAtoms = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         if (atom == null || atomPrefab == null || Camera.main == null) return;
 
         atom.ForceInitialize();
 
-        if (pinSigmaRelaxNeighbors == null)
+        if (pinSigmaRelaxNeighbors == null && freezeSigmaNeighborSubtreeRoot == null)
             pinSigmaRelaxNeighbors = TryBuildSigmaRelaxPinForHeavyCenter(atom);
 
         float bondLength = GetBondLength();
@@ -1128,19 +1131,22 @@ public class EditModeManager : MonoBehaviour
                 break;
             }
 
-            FormSigmaBondInstant(atom, hAtom, orb, hOrb, pinSigmaRelaxForAtomA: pinSigmaRelaxNeighbors, pinSigmaRelaxForAtomB: pinSigmaRelaxNeighbors);
+            FormSigmaBondInstant(atom, hAtom, orb, hOrb, pinSigmaRelaxForAtomA: pinSigmaRelaxNeighbors, pinSigmaRelaxForAtomB: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
-                atom.RedistributeOrbitals(refBondWorldDirection: dirN, pinAtomsForSigmaRelax: pinSigmaRelaxNeighbors);
+                atom.RedistributeOrbitals(refBondWorldDirection: dirN, pinAtomsForSigmaRelax: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
                 if (atom.AtomicNumber > 1)
                     atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
             }
             else
             {
                 var bondAngle = atom.GetPrimaryBondDirectionAngle();
-                atom.RedistributeOrbitals(piBondAngleOverride: bondAngle, pinAtomsForSigmaRelax: pinSigmaRelaxNeighbors);
+                atom.RedistributeOrbitals(piBondAngleOverride: bondAngle, pinAtomsForSigmaRelax: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
             }
-            AtomFunction.SetupGlobalIgnoreCollisions();
+            if (incrementalCollisionInvolvingAtoms != null && incrementalCollisionInvolvingAtoms.Count > 0)
+                AtomFunction.SetupIgnoreCollisionsInvolvingAtoms(incrementalCollisionInvolvingAtoms);
+            else
+                AtomFunction.SetupGlobalIgnoreCollisions();
         }
 
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && atom != null && atom.AtomicNumber > 1)
@@ -1151,7 +1157,13 @@ public class EditModeManager : MonoBehaviour
     /// H-auto-style saturation on <paramref name="atoms"/> only (same logic as <see cref="SaturateWithHydrogen"/>, repeated until no progress).
     /// Used after functional-group attachment so substituent OH / NH₂ / etc. fill without touching the rest of the molecule or the anchor atom.
     /// </summary>
-    public void SaturateAtomsWithHydrogenPass(IReadOnlyList<AtomFunction> atoms, HashSet<AtomFunction> pinSigmaRelaxNeighbors = null)
+    /// <param name="incrementalIgnoreSubstrateParent">With <paramref name="incrementalIgnoreGroupAnchor"/>, limits physics ignore updates to the FG fragment after each H.</param>
+    public void SaturateAtomsWithHydrogenPass(
+        IReadOnlyList<AtomFunction> atoms,
+        HashSet<AtomFunction> pinSigmaRelaxNeighbors = null,
+        AtomFunction incrementalIgnoreSubstrateParent = null,
+        AtomFunction incrementalIgnoreGroupAnchor = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         if (atoms == null || atoms.Count == 0 || atomPrefab == null || Camera.main == null) return;
         for (int round = 0; round < 16; round++)
@@ -1162,13 +1174,18 @@ public class EditModeManager : MonoBehaviour
                 if (a == null) continue;
                 int before = a.GetLoneOrbitalsWithOneElectronSortedByAngle().Count;
                 if (before == 0) continue;
-                SaturateWithHydrogen(a, pinSigmaRelaxNeighbors);
+                IReadOnlyList<AtomFunction> involving = null;
+                if (incrementalIgnoreSubstrateParent != null && incrementalIgnoreGroupAnchor != null)
+                    involving = incrementalIgnoreSubstrateParent.GetAtomsOnSideOfSigmaBond(incrementalIgnoreGroupAnchor);
+                SaturateWithHydrogen(a, pinSigmaRelaxNeighbors, involving, freezeSigmaNeighborSubtreeRoot);
                 int after = a.GetLoneOrbitalsWithOneElectronSortedByAngle().Count;
                 if (after < before) anyProgress = true;
             }
             if (!anyProgress) break;
         }
-        AtomFunction.SetupGlobalIgnoreCollisions();
+        // When saturating a tethered FG, BuildFunctionalGroup finishes with one involving-atoms pass after Newman stagger.
+        if (incrementalIgnoreSubstrateParent == null || incrementalIgnoreGroupAnchor == null)
+            AtomFunction.SetupGlobalIgnoreCollisions();
     }
 
     /// <summary>Unit vectors from <paramref name="center"/> toward each bonded neighbor (one entry per neighbor atom).</summary>

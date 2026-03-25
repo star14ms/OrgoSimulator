@@ -602,12 +602,13 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <summary>Redistributes orbital directions when pi count or bonding changed. In 3D (perspective), uses VSEPR (linear … octahedral). <paramref name="refBondWorldDirection"/> overrides reference axis when set (e.g. bond break). <paramref name="relaxCoplanarSigmaToTetrahedral"/> (e.g. after σ-only break from a π system) moves coplanar 3σ+1-lone neighbors toward tetrahedral; leave false for normal builds (sp² trigonal FG centers also match 3σ+1 lone before π). <paramref name="skipLoneLobeLayout"/> skips VSEPR repositioning of lone lobes (σ-neighbor relax still runs); use after bond-break animation already placed lone orbitals. <paramref name="pinAtomsForSigmaRelax"/> keeps those atoms fixed during coplanar→tetrahedral σ-neighbor relax (e.g. π break: the two centers still σ-bonded). <paramref name="skipSigmaNeighborRelax"/> skips σ-neighbor motion when substituents are already at post-relax positions (bond-break preview + final lone layout only). <paramref name="bondBreakGuideLoneOrbital"/> when set (bond break), that non-bonded lobe’s direction is not remapped by TryMatch; ideal polyhedron aligns to reference with π &gt; broken σ &gt; guide tip. <paramref name="newSigmaBondPartnerHint"/> + <paramref name="sigmaNeighborCountBeforeHint"/> (instant σ bond): when σ neighbor count increases (e.g. 3→4) and there are no occupied lone lobes, snap substituents to a tetrahedral framework with the new partner pinned (fixes carbocation → sp³ after re-forming C–C).</summary>
+    /// <param name="freezeSigmaNeighborSubtreeRoot">When set (e.g. functional-group attach), σ-relax emits no nuclear targets for this σ neighbor or its subtree — avoids O(N) over the substrate and keeps the parent framework fixed.</param>
     /// <param name="skipBondBreakSparseNonbondSpread">When true, skips <see cref="TrySpreadNonbondOrbitalsForBondBreakSparseSigmaNeighbors"/> in 3D. Set after animated σ-only bond break (lobes already match <see cref="GetRedistributeTargets"/>); a second TrySpread can remap via <c>FindBestDirectionMapping</c> and visibly pop lobes.</param>
-    public void RedistributeOrbitals(float? piBondAngleOverride = null, Vector3? refBondWorldDirection = null, bool relaxCoplanarSigmaToTetrahedral = false, bool skipLoneLobeLayout = false, HashSet<AtomFunction> pinAtomsForSigmaRelax = null, bool skipSigmaNeighborRelax = false, ElectronOrbitalFunction bondBreakGuideLoneOrbital = null, AtomFunction newSigmaBondPartnerHint = null, int sigmaNeighborCountBeforeHint = -1, bool skipBondBreakSparseNonbondSpread = false)
+    public void RedistributeOrbitals(float? piBondAngleOverride = null, Vector3? refBondWorldDirection = null, bool relaxCoplanarSigmaToTetrahedral = false, bool skipLoneLobeLayout = false, HashSet<AtomFunction> pinAtomsForSigmaRelax = null, bool skipSigmaNeighborRelax = false, ElectronOrbitalFunction bondBreakGuideLoneOrbital = null, AtomFunction newSigmaBondPartnerHint = null, int sigmaNeighborCountBeforeHint = -1, bool skipBondBreakSparseNonbondSpread = false, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
         {
-            RedistributeOrbitals3D(piBondAngleOverride, refBondWorldDirection, relaxCoplanarSigmaToTetrahedral, skipLoneLobeLayout, pinAtomsForSigmaRelax, skipSigmaNeighborRelax, bondBreakGuideLoneOrbital, newSigmaBondPartnerHint, sigmaNeighborCountBeforeHint, skipBondBreakSparseNonbondSpread);
+            RedistributeOrbitals3D(piBondAngleOverride, refBondWorldDirection, relaxCoplanarSigmaToTetrahedral, skipLoneLobeLayout, pinAtomsForSigmaRelax, skipSigmaNeighborRelax, bondBreakGuideLoneOrbital, newSigmaBondPartnerHint, sigmaNeighborCountBeforeHint, skipBondBreakSparseNonbondSpread, freezeSigmaNeighborSubtreeRoot);
             return;
         }
 
@@ -1641,6 +1642,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>
     /// Rigid rotation about <paramref name="pivotWorld"/> maps each σ axis oldDir[i]→newDir[i]. If substituents (fragments beyond each σ bond)
     /// are disjoint, every atom in each fragment rotates; if any fragment shares atoms (rings), only immediate σ neighbors move.
+    /// When <paramref name="freezeSigmaNeighborSubtreeRoot"/> matches σ neighbor <c>i</c>, that branch emits no targets (substrate frozen for FG attach; avoids O(N) over the parent fragment).
     /// </summary>
     static void BuildSigmaNeighborTargetsWithFragmentRigidRotation(
         Vector3 pivotWorld,
@@ -1649,7 +1651,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         IReadOnlyList<Vector3> newUnitDirs,
         AtomFunction pivot,
         out List<(AtomFunction atom, Vector3 targetWorld)> targets,
-        HashSet<AtomFunction> pinWorld = null)
+        HashSet<AtomFunction> pinWorld = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         targets = new List<(AtomFunction, Vector3)>();
         int n = sigmaNeighbors.Count;
@@ -1679,6 +1682,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             for (int i = 0; i < n; i++)
             {
                 var neighbor = sigmaNeighbors[i];
+                if (freezeSigmaNeighborSubtreeRoot != null && neighbor == freezeSigmaNeighborSubtreeRoot)
+                    continue;
                 if (pinWorld != null && pinWorld.Contains(neighbor)) continue;
                 float dist = Vector3.Distance(pivotWorld, neighbor.transform.position);
                 targets.Add((neighbor, pivotWorld + newUnitDirs[i].normalized * dist));
@@ -1688,6 +1693,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         for (int i = 0; i < n; i++)
         {
+            if (freezeSigmaNeighborSubtreeRoot != null && sigmaNeighbors[i] == freezeSigmaNeighborSubtreeRoot)
+                continue;
             Vector3 o = oldUnitDirs[i].normalized;
             Vector3 nd = newUnitDirs[i].normalized;
             if (o.sqrMagnitude < 1e-12f || nd.sqrMagnitude < 1e-12f) continue;
@@ -1738,7 +1745,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public bool TryComputeCoplanarTetrahedralSigmaNeighborRelaxTargets(Vector3 refLocalNormalized,
         out List<(AtomFunction neighbor, Vector3 targetWorld)> targets,
         HashSet<AtomFunction> pinWorld = null,
-        bool requireCoplanarBondAxes = true)
+        bool requireCoplanarBondAxes = true,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         targets = null;
         var sigmaNeighbors = GetDistinctSigmaNeighborAtoms();
@@ -1789,16 +1797,16 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var newDirs = new List<Vector3>(3);
         for (int i = 0; i < 3; i++)
             newDirs.Add(mapping[i].newDir.normalized);
-        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld);
+        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld, freezeSigmaNeighborSubtreeRoot);
         return targets != null && targets.Count > 0;
     }
 
     /// <summary>
     /// AX₃E with coplanar σ axes (e.g. after π bond break): move σ neighbors onto three vertices of a tetrahedron so lone pair + σ bonds can adopt sp³-like angles. Bond σ orbitals (on CovalentBond) follow atom positions in LateUpdate.
     /// </summary>
-    void TryRelaxCoplanarSigmaNeighborsToTetrahedral3D(Vector3 refLocalNormalized, HashSet<AtomFunction> pinWorld = null)
+    void TryRelaxCoplanarSigmaNeighborsToTetrahedral3D(Vector3 refLocalNormalized, HashSet<AtomFunction> pinWorld = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
-        if (!TryComputeCoplanarTetrahedralSigmaNeighborRelaxTargets(refLocalNormalized, out var targets, pinWorld) || targets == null) return;
+        if (!TryComputeCoplanarTetrahedralSigmaNeighborRelaxTargets(refLocalNormalized, out var targets, pinWorld, requireCoplanarBondAxes: true, freezeSigmaNeighborSubtreeRoot) || targets == null) return;
 
         var moved = new HashSet<AtomFunction>();
         foreach (var (atom, targetWorld) in targets)
@@ -1826,7 +1834,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// </summary>
     public bool TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(Vector3 refLocalNormalized,
         out List<(AtomFunction neighbor, Vector3 targetWorld)> targets,
-        HashSet<AtomFunction> pinWorld = null)
+        HashSet<AtomFunction> pinWorld = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         targets = null;
         if (GetPiBondCount() < 1) return false;
@@ -1854,7 +1863,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var newDirs = new List<Vector3>(3);
         for (int i = 0; i < 3; i++)
             newDirs.Add(mapping[i].newDir.normalized);
-        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld);
+        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld, freezeSigmaNeighborSubtreeRoot);
         return targets != null && targets.Count > 0;
     }
 
@@ -1863,9 +1872,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// three σ neighbors + π should be trigonal planar; if σ directions are not coplanar, snap neighbors onto 120° in-plane.
     /// Skips when already coplanar (FG builds, undistorted sp²).
     /// </summary>
-    void TryRelaxSigmaNeighborsToTrigonalPlanar3D(Vector3 refLocalNormalized, HashSet<AtomFunction> pinWorld = null)
+    void TryRelaxSigmaNeighborsToTrigonalPlanar3D(Vector3 refLocalNormalized, HashSet<AtomFunction> pinWorld = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
-        if (!TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(refLocalNormalized, out var targets, pinWorld) || targets == null) return;
+        if (!TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(refLocalNormalized, out var targets, pinWorld, freezeSigmaNeighborSubtreeRoot) || targets == null) return;
 
         var moved = new HashSet<AtomFunction>();
         foreach (var (atom, targetWorld) in targets)
@@ -1897,7 +1906,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public bool TryComputeSp2BondBreakTrigonalPlanarSigmaNeighborRelaxTargets(
         Vector3? refBondWorldDirection,
         HashSet<AtomFunction> pinWorld,
-        out List<(AtomFunction neighbor, Vector3 targetWorld)> targets)
+        out List<(AtomFunction neighbor, Vector3 targetWorld)> targets,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         targets = null;
         if (GetPiBondCount() > 0)
@@ -2033,7 +2043,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var newDirs = new List<Vector3>(sigmaN);
         for (int i = 0; i < sigmaN; i++)
             newDirs.Add(mapping[i].newDir.normalized);
-        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld);
+        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld, freezeSigmaNeighborSubtreeRoot);
         if (targets == null || targets.Count == 0)
         {
             if (DebugLogCcBondBreakGeometry)
@@ -2044,9 +2054,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <summary>Instant apply for redistribute when bond-break animation is not used — same targets as <see cref="TryComputeSp2BondBreakTrigonalPlanarSigmaNeighborRelaxTargets"/>.</summary>
-    void TryApplySp2BondBreakTrigonalPlanarSigmaNeighborRelax3D(Vector3? refBondWorldDirection, HashSet<AtomFunction> pinWorld = null)
+    void TryApplySp2BondBreakTrigonalPlanarSigmaNeighborRelax3D(Vector3? refBondWorldDirection, HashSet<AtomFunction> pinWorld = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
-        if (!TryComputeSp2BondBreakTrigonalPlanarSigmaNeighborRelaxTargets(refBondWorldDirection, pinWorld, out var t) || t == null) return;
+        if (!TryComputeSp2BondBreakTrigonalPlanarSigmaNeighborRelaxTargets(refBondWorldDirection, pinWorld, out var t, freezeSigmaNeighborSubtreeRoot) || t == null) return;
 
         var moved = new HashSet<AtomFunction>();
         foreach (var (atom, targetWorld) in t)
@@ -2069,7 +2079,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public bool TryComputeTetrahedralFourSigmaNeighborRelaxTargets(
         AtomFunction partnerAlongRef,
         HashSet<AtomFunction> pinWorld,
-        out List<(AtomFunction neighbor, Vector3 targetWorld)> targets)
+        out List<(AtomFunction neighbor, Vector3 targetWorld)> targets,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         targets = null;
         if (partnerAlongRef == null) return false;
@@ -2106,6 +2117,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         for (int i = 0; i < 4; i++)
         {
             var n = neighOrder[i];
+            if (freezeSigmaNeighborSubtreeRoot != null && n == freezeSigmaNeighborSubtreeRoot) continue;
             if (pinWorld != null && pinWorld.Contains(n)) continue;
             float dist = Vector3.Distance(transform.position, n.transform.position);
             Vector3 newDir = mapping[i].newDir.normalized;
@@ -2123,7 +2135,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         AtomFunction partnerAlongRef,
         int sigmaNeighborCountBefore,
         out List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)> moves,
-        HashSet<AtomFunction> mergePins = null)
+        HashSet<AtomFunction> mergePins = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         moves = null;
         if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry) return false;
@@ -2152,7 +2165,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 if (p != null) pin.Add(p);
         }
 
-        if (!TryComputeTetrahedralFourSigmaNeighborRelaxTargets(alignAlong, pin, out var t) || t == null || t.Count == 0) return false;
+        if (!TryComputeTetrahedralFourSigmaNeighborRelaxTargets(alignAlong, pin, out var t, freezeSigmaNeighborSubtreeRoot) || t == null || t.Count == 0) return false;
         moves = new List<(AtomFunction, Vector3, Vector3)>();
         foreach (var (n, end) in t)
             moves.Add((n, n.transform.position, end));
@@ -2167,7 +2180,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         AtomFunction partnerAlongRef,
         int sigmaNeighborCountBefore,
         out List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)> moves,
-        HashSet<AtomFunction> mergePins = null)
+        HashSet<AtomFunction> mergePins = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         moves = null;
         if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry) return false;
@@ -2187,7 +2201,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             foreach (var p in mergePins)
                 if (p != null) pin.Add(p);
         }
-        if (!TryComputeCoplanarTetrahedralSigmaNeighborRelaxTargets(refLocal, out var targets, pin, requireCoplanarBondAxes: false) || targets == null || targets.Count == 0)
+        if (!TryComputeCoplanarTetrahedralSigmaNeighborRelaxTargets(refLocal, out var targets, pin, requireCoplanarBondAxes: false, freezeSigmaNeighborSubtreeRoot) || targets == null || targets.Count == 0)
             return false;
 
         moves = new List<(AtomFunction, Vector3, Vector3)>();
@@ -2196,16 +2210,16 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return true;
     }
 
-    void MaybeApplyTetrahedralSigmaRelaxForBondFormation(AtomFunction partnerAlongRef, int sigmaNeighborCountBefore, HashSet<AtomFunction> mergePins = null)
+    void MaybeApplyTetrahedralSigmaRelaxForBondFormation(AtomFunction partnerAlongRef, int sigmaNeighborCountBefore, HashSet<AtomFunction> mergePins = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)> moves = null;
         string relaxBranch = null;
-        if (TryGetTetrahedralFourSigmaNeighborRelaxMovesForBondFormation(partnerAlongRef, sigmaNeighborCountBefore, out var m4, mergePins) && m4 != null)
+        if (TryGetTetrahedralFourSigmaNeighborRelaxMovesForBondFormation(partnerAlongRef, sigmaNeighborCountBefore, out var m4, mergePins, freezeSigmaNeighborSubtreeRoot) && m4 != null)
         {
             moves = m4;
             relaxBranch = "fourσ";
         }
-        else if (TryGetTetrahedralThreeSigmaAx3ERelaxMovesForBondFormation(partnerAlongRef, sigmaNeighborCountBefore, out var m3, mergePins) && m3 != null)
+        else if (TryGetTetrahedralThreeSigmaAx3ERelaxMovesForBondFormation(partnerAlongRef, sigmaNeighborCountBefore, out var m3, mergePins, freezeSigmaNeighborSubtreeRoot) && m3 != null)
         {
             moves = m3;
             relaxBranch = "threeσAx3E";
@@ -3555,7 +3569,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         BuildSigmaNeighborTargetsWithFragmentRigidRotation(
-            transform.position, neighborsOrdered, worldDirs, newDirs, this, out var targets, null);
+            transform.position, neighborsOrdered, worldDirs, newDirs, this, out var targets, null, null);
         if (targets == null || targets.Count == 0)
         {
             for (int i = 0; i < 3; i++)
@@ -4027,7 +4041,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// </summary>
     public bool TryComputeLinearSigmaNeighborRelaxTargets(Vector3 refLocalNormalized,
         out List<(AtomFunction neighbor, Vector3 targetWorld)> targets,
-        HashSet<AtomFunction> pinWorld = null)
+        HashSet<AtomFunction> pinWorld = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         targets = null;
         if (GetPiBondCount() < 2) return false;
@@ -4055,7 +4070,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var newDirs = new List<Vector3>(2);
         for (int i = 0; i < 2; i++)
             newDirs.Add(mapping[i].newDir.normalized);
-        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld);
+        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld, freezeSigmaNeighborSubtreeRoot);
         return targets != null && targets.Count > 0;
     }
 
@@ -4065,7 +4080,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// </summary>
     public bool TryComputeOpenedTrigonalSigmaNeighborRelaxTargetsFromLinear(Vector3 refLocalNormalized,
         out List<(AtomFunction neighbor, Vector3 targetWorld)> targets,
-        HashSet<AtomFunction> pinWorld = null)
+        HashSet<AtomFunction> pinWorld = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         targets = null;
         if (GetPiBondCount() != 1) return false;
@@ -4098,13 +4114,13 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var newDirs = new List<Vector3>(2);
         for (int i = 0; i < 2; i++)
             newDirs.Add(mapping[i].newDir.normalized);
-        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld);
+        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld, freezeSigmaNeighborSubtreeRoot);
         return targets != null && targets.Count > 0;
     }
 
-    void TryRelaxSigmaNeighborsToLinear3D(Vector3 refLocalNormalized, HashSet<AtomFunction> pinWorld = null)
+    void TryRelaxSigmaNeighborsToLinear3D(Vector3 refLocalNormalized, HashSet<AtomFunction> pinWorld = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
-        if (!TryComputeLinearSigmaNeighborRelaxTargets(refLocalNormalized, out var targets, pinWorld) || targets == null) return;
+        if (!TryComputeLinearSigmaNeighborRelaxTargets(refLocalNormalized, out var targets, pinWorld, freezeSigmaNeighborSubtreeRoot) || targets == null) return;
 
         var moved = new HashSet<AtomFunction>();
         foreach (var (atom, targetWorld) in targets)
@@ -4126,9 +4142,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         SetupGlobalIgnoreCollisions();
     }
 
-    void TryRelaxSigmaNeighborsOpenedFromLinear3D(Vector3 refLocalNormalized, HashSet<AtomFunction> pinWorld = null)
+    void TryRelaxSigmaNeighborsOpenedFromLinear3D(Vector3 refLocalNormalized, HashSet<AtomFunction> pinWorld = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
-        if (!TryComputeOpenedTrigonalSigmaNeighborRelaxTargetsFromLinear(refLocalNormalized, out var targets, pinWorld) || targets == null) return;
+        if (!TryComputeOpenedTrigonalSigmaNeighborRelaxTargetsFromLinear(refLocalNormalized, out var targets, pinWorld, freezeSigmaNeighborSubtreeRoot) || targets == null) return;
 
         var moved = new HashSet<AtomFunction>();
         foreach (var (atom, targetWorld) in targets)
@@ -4150,7 +4166,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         SetupGlobalIgnoreCollisions();
     }
 
-    void RedistributeOrbitals3D(float? piBondAngleOverride, Vector3? refBondWorldDirection, bool relaxCoplanarSigmaToTetrahedral = false, bool skipLoneLobeLayout = false, HashSet<AtomFunction> pinAtomsForSigmaRelax = null, bool skipSigmaNeighborRelax = false, ElectronOrbitalFunction bondBreakGuideLoneOrbital = null, AtomFunction newSigmaBondPartnerHint = null, int sigmaNeighborCountBeforeHint = -1, bool skipBondBreakSparseNonbondSpread = false)
+    void RedistributeOrbitals3D(float? piBondAngleOverride, Vector3? refBondWorldDirection, bool relaxCoplanarSigmaToTetrahedral = false, bool skipLoneLobeLayout = false, HashSet<AtomFunction> pinAtomsForSigmaRelax = null, bool skipSigmaNeighborRelax = false, ElectronOrbitalFunction bondBreakGuideLoneOrbital = null, AtomFunction newSigmaBondPartnerHint = null, int sigmaNeighborCountBeforeHint = -1, bool skipBondBreakSparseNonbondSpread = false, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         int maxSlots = GetOrbitalSlotCount();
         if (maxSlots <= 1)
@@ -4171,7 +4187,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         if (!skipSigmaNeighborRelax)
-            MaybeApplyTetrahedralSigmaRelaxForBondFormation(newSigmaBondPartnerHint, sigmaNeighborCountBeforeHint, pinAtomsForSigmaRelax);
+            MaybeApplyTetrahedralSigmaRelaxForBondFormation(newSigmaBondPartnerHint, sigmaNeighborCountBeforeHint, pinAtomsForSigmaRelax, freezeSigmaNeighborSubtreeRoot);
 
         float mergeToleranceDeg = 360f / (2f * maxSlots);
         Vector3 refLocal = ResolveReferenceBondDirectionLocal(piBondAngleOverride, refBondWorldDirection, bondBreakGuideLoneOrbital);
@@ -4185,17 +4201,17 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             if (relaxCoplanarSigmaToTetrahedral)
             {
                 // π bond break: tet (AX₃E) first, then same σ-relax as normal π formation (bond-break previously skipped linear/trigonal).
-                TryRelaxCoplanarSigmaNeighborsToTetrahedral3D(refLocal, pinAtomsForSigmaRelax);
+                TryRelaxCoplanarSigmaNeighborsToTetrahedral3D(refLocal, pinAtomsForSigmaRelax, freezeSigmaNeighborSubtreeRoot);
                 // Carbocation (3σ or 2σ + empty along ref): generic trigonal relax aligns one σ vertex onto refLocal — same axis as the empty p — so skip it; TryApplySp2 places σ neighbors in the trigonal plane.
                 if (!IsSp2BondBreakEmptyAlongRefCase() && !IsBondBreakTrigonalPlanarFrameworkCase())
-                    TryRelaxSigmaNeighborsToTrigonalPlanar3D(refLocal);
-                TryRelaxSigmaNeighborsToLinear3D(refLocal, pinAtomsForSigmaRelax);
-                TryRelaxSigmaNeighborsOpenedFromLinear3D(refLocal, pinAtomsForSigmaRelax);
+                    TryRelaxSigmaNeighborsToTrigonalPlanar3D(refLocal, null, freezeSigmaNeighborSubtreeRoot);
+                TryRelaxSigmaNeighborsToLinear3D(refLocal, pinAtomsForSigmaRelax, freezeSigmaNeighborSubtreeRoot);
+                TryRelaxSigmaNeighborsOpenedFromLinear3D(refLocal, pinAtomsForSigmaRelax, freezeSigmaNeighborSubtreeRoot);
             }
             else
             {
-                TryRelaxSigmaNeighborsToTrigonalPlanar3D(refLocal, pinAtomsForSigmaRelax);
-                TryRelaxSigmaNeighborsToLinear3D(refLocal, pinAtomsForSigmaRelax);
+                TryRelaxSigmaNeighborsToTrigonalPlanar3D(refLocal, pinAtomsForSigmaRelax, freezeSigmaNeighborSubtreeRoot);
+                TryRelaxSigmaNeighborsToLinear3D(refLocal, pinAtomsForSigmaRelax, freezeSigmaNeighborSubtreeRoot);
             }
         }
 
@@ -4203,7 +4219,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         // When skipSigmaNeighborRelax=true, animation or instant break already applied the same targets via BuildSigmaRelaxMoves — running
         // TryApplySp2 again remaps σ→ideal (FindBestDirectionMapping) and teleports H while guide lobes stay put (looks like the ex-bond lobe flipped vs σ).
         if (relaxCoplanarSigmaToTetrahedral && !skipSigmaNeighborRelax)
-            TryApplySp2BondBreakTrigonalPlanarSigmaNeighborRelax3D(refBondWorldDirection, pinAtomsForSigmaRelax);
+            TryApplySp2BondBreakTrigonalPlanarSigmaNeighborRelax3D(refBondWorldDirection, pinAtomsForSigmaRelax, freezeSigmaNeighborSubtreeRoot);
 
         // Bare C₂ (etc.): 0 σ neighbors — TryApplySp2 never runs; VSEPR may skip (no occupied lone lobes). Carbon: TrySpread uses TryAssignCarbonBreakIdealFrame (σ + e⁻ non-bond unified perm when sparse).
         // ·CH₂ radical (2 σ): σ targets from TryApplySp2 — skip tetrahedral TrySpread (teleports guide/empty vs animation). CH₂⁺ (2 σ carbocation) still runs TrySpread (trigonal / unified).
@@ -6082,20 +6098,27 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return best;
     }
 
+    /// <summary>When &gt; 0, <see cref="SetupIgnoreCollisions"/> skips work (batch FG / multi-bond builds call <see cref="SetupIgnoreCollisionsInvolvingAtoms"/> or <see cref="SetupGlobalIgnoreCollisions"/> once at the end).</summary>
+    public static int SuppressAutoGlobalIgnoreCollisions;
+
     public void SetupIgnoreCollisions()
     {
+        if (SuppressAutoGlobalIgnoreCollisions > 0) return;
         SetupGlobalIgnoreCollisions();
     }
 
-    public static void SetupGlobalIgnoreCollisions()
+    static void BuildCollisionUniverse(
+        AtomFunction[] sceneAtoms,
+        out List<(Collider2D c2d, Collider c3d)> atomColliders,
+        out List<ElectronOrbitalFunction> orbitals,
+        out List<ElectronFunction> allElectrons)
     {
-        var atoms = Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
-        var orbitals = new List<ElectronOrbitalFunction>();
-        var allElectrons = new List<ElectronFunction>();
-        var atomColliders = new List<(Collider2D c2d, Collider c3d)>();
-
-        foreach (var a in atoms)
+        atomColliders = new List<(Collider2D c2d, Collider c3d)>();
+        orbitals = new List<ElectronOrbitalFunction>();
+        allElectrons = new List<ElectronFunction>();
+        foreach (var a in sceneAtoms)
         {
+            if (a == null) continue;
             var a2d = a.GetComponent<Collider2D>();
             var a3d = a.GetComponent<Collider>();
             if (a2d != null || a3d != null) atomColliders.Add((a2d, a3d));
@@ -6106,12 +6129,17 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
         foreach (var orb in orbitals)
             allElectrons.AddRange(orb.GetComponentsInChildren<ElectronFunction>());
-
         foreach (var e in Object.FindObjectsByType<ElectronFunction>(FindObjectsSortMode.None))
         {
             if (e != null && !allElectrons.Contains(e))
                 allElectrons.Add(e);
         }
+    }
+
+    public static void SetupGlobalIgnoreCollisions()
+    {
+        var atoms = Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
+        BuildCollisionUniverse(atoms, out var atomColliders, out var orbitals, out var allElectrons);
 
         for (int i = 0; i < atomColliders.Count; i++)
             for (int j = i + 1; j < atomColliders.Count; j++)
@@ -6132,6 +6160,79 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         for (int i = 0; i < allElectrons.Count; i++)
             for (int j = i + 1; j < allElectrons.Count; j++)
                 IgnoreCollision(allElectrons[i], allElectrons[j]);
+    }
+
+    /// <summary>
+    /// Sets ignore flags only for pairs that touch <paramref name="involvedAtoms"/> (expanded to orbitals/electrons on those centers).
+    /// Use after adding a small fragment so cost is O(|involved|·scene) instead of O(scene²).
+    /// </summary>
+    public static void SetupIgnoreCollisionsInvolvingAtoms(IReadOnlyCollection<AtomFunction> involvedAtoms)
+    {
+        if (involvedAtoms == null || involvedAtoms.Count == 0)
+        {
+            SetupGlobalIgnoreCollisions();
+            return;
+        }
+
+        var involved = new HashSet<AtomFunction>();
+        foreach (var a in involvedAtoms)
+            if (a != null) involved.Add(a);
+
+        var sceneAtoms = Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
+        BuildCollisionUniverse(sceneAtoms, out var atomColliders, out var orbitals, out var allElectrons);
+
+        var invAtomColliders = new List<(Collider2D c2d, Collider c3d)>();
+        foreach (var a in sceneAtoms)
+        {
+            if (a == null || !involved.Contains(a)) continue;
+            var a2d = a.GetComponent<Collider2D>();
+            var a3d = a.GetComponent<Collider>();
+            if (a2d != null || a3d != null) invAtomColliders.Add((a2d, a3d));
+        }
+
+        var invOrbitals = new List<ElectronOrbitalFunction>();
+        foreach (var a in sceneAtoms)
+        {
+            if (a == null || !involved.Contains(a)) continue;
+            invOrbitals.AddRange(a.GetComponentsInChildren<ElectronOrbitalFunction>());
+            foreach (var b in a.CovalentBonds)
+                if (b?.Orbital != null && !invOrbitals.Contains(b.Orbital))
+                    invOrbitals.Add(b.Orbital);
+        }
+        var invElectrons = new List<ElectronFunction>();
+        foreach (var orb in invOrbitals)
+            invElectrons.AddRange(orb.GetComponentsInChildren<ElectronFunction>());
+
+        foreach (var iac in invAtomColliders)
+            foreach (var ac in atomColliders)
+                IgnoreCollisionPair(iac, ac);
+        foreach (var io in invOrbitals)
+            foreach (var o in orbitals)
+                IgnoreCollision(io, o);
+        foreach (var ie in invElectrons)
+            foreach (var e in allElectrons)
+                IgnoreCollision(ie, e);
+
+        foreach (var iac in invAtomColliders)
+            foreach (var orb in orbitals)
+                IgnoreCollision(iac, orb.GetComponent<Collider2D>(), orb.GetComponent<Collider>());
+        foreach (var ac in atomColliders)
+            foreach (var io in invOrbitals)
+                IgnoreCollision(ac, io.GetComponent<Collider2D>(), io.GetComponent<Collider>());
+
+        foreach (var iac in invAtomColliders)
+            foreach (var e in allElectrons)
+                IgnoreCollision(iac, e.GetComponent<Collider2D>(), e.GetComponent<Collider>());
+        foreach (var ac in atomColliders)
+            foreach (var ie in invElectrons)
+                IgnoreCollision(ac, ie.GetComponent<Collider2D>(), ie.GetComponent<Collider>());
+
+        foreach (var io in invOrbitals)
+            foreach (var e in allElectrons)
+                IgnoreCollision(io, e);
+        foreach (var o in orbitals)
+            foreach (var ie in invElectrons)
+                IgnoreCollision(o, ie);
     }
 
     static void IgnoreCollisionPair((Collider2D c2d, Collider c3d) a, (Collider2D c2d, Collider c3d) b)

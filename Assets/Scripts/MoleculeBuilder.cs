@@ -366,7 +366,7 @@ public class MoleculeBuilder : MonoBehaviour
         AtomFunction.SetupGlobalIgnoreCollisions();
     }
 
-    void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, bool redistributeEndpoints = true)
+    void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, bool redistributeEndpoints = true, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         if (atomA == null || atomB == null) return;
         var dirAtoB = (atomB.transform.position - atomA.transform.position).normalized;
@@ -376,7 +376,7 @@ public class MoleculeBuilder : MonoBehaviour
         var orbB = atomB.GetLoneOrbitalWithOneElectron(dirBtoA);
         if (orbA == null || orbB == null) return;
 
-        FormSigmaBondInstant(atomA, atomB, orbA, orbB, redistributeEndpoints, redistributeEndpoints);
+        FormSigmaBondInstant(atomA, atomB, orbA, orbB, redistributeEndpoints, redistributeEndpoints, null, null, freezeSigmaNeighborSubtreeRoot);
     }
 
     void FormSigmaBondInstant(
@@ -387,7 +387,8 @@ public class MoleculeBuilder : MonoBehaviour
         bool redistributeAtomA = true,
         bool redistributeAtomB = true,
         HashSet<AtomFunction> pinAtomsForSigmaRelaxAtomA = null,
-        HashSet<AtomFunction> pinAtomsForSigmaRelaxAtomB = null)
+        HashSet<AtomFunction> pinAtomsForSigmaRelaxAtomB = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         if (atomA == null || atomB == null || orbA == null || orbB == null) return;
 
@@ -403,15 +404,15 @@ public class MoleculeBuilder : MonoBehaviour
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
             if (redistributeAtomA)
-                atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA, pinAtomsForSigmaRelax: pinAtomsForSigmaRelaxAtomA);
+                atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA, pinAtomsForSigmaRelax: pinAtomsForSigmaRelaxAtomA, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
             if (redistributeAtomB)
-                atomB.RedistributeOrbitals(newSigmaBondPartnerHint: atomA, sigmaNeighborCountBeforeHint: sigmaBeforeB, pinAtomsForSigmaRelax: pinAtomsForSigmaRelaxAtomB);
+                atomB.RedistributeOrbitals(newSigmaBondPartnerHint: atomA, sigmaNeighborCountBeforeHint: sigmaBeforeB, pinAtomsForSigmaRelax: pinAtomsForSigmaRelaxAtomB, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }
     }
 
-    void FormPiBondInstant(AtomFunction atomA, AtomFunction atomB, bool redistributeEndpoints = true)
+    void FormPiBondInstant(AtomFunction atomA, AtomFunction atomB, bool redistributeEndpoints = true, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         if (atomA == null || atomB == null) return;
         if (atomA.GetBondsTo(atomB) != 1) return;
@@ -435,8 +436,8 @@ public class MoleculeBuilder : MonoBehaviour
             Destroy(orbB.gameObject);
             if (redistributeEndpoints)
             {
-                atomA.RedistributeOrbitals();
-                atomB.RedistributeOrbitals();
+                atomA.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
+                atomB.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
             }
             atomA.RefreshCharge();
             atomB.RefreshCharge();
@@ -444,7 +445,7 @@ public class MoleculeBuilder : MonoBehaviour
     }
 
     /// <summary>Second π between the same pair (σ + π already present) for approximate triple bonds.</summary>
-    void FormSecondPiBondInstant(AtomFunction atomA, AtomFunction atomB, bool redistributeEndpoints = true)
+    void FormSecondPiBondInstant(AtomFunction atomA, AtomFunction atomB, bool redistributeEndpoints = true, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         if (atomA == null || atomB == null) return;
         if (atomA.GetBondsTo(atomB) != 2) return;
@@ -474,8 +475,8 @@ public class MoleculeBuilder : MonoBehaviour
             Destroy(orbB.gameObject);
             if (redistributeEndpoints)
             {
-                atomA.RedistributeOrbitals();
-                atomB.RedistributeOrbitals();
+                atomA.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
+                atomB.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
             }
             atomA.RefreshCharge();
             atomB.RefreshCharge();
@@ -498,14 +499,14 @@ public class MoleculeBuilder : MonoBehaviour
     }
 
     /// <summary>σ bond with optional per-end RedistributeOrbitals (both true = next bond from each center sees updated VSEPR).</summary>
-    bool BondSigma(AtomFunction a, AtomFunction b, bool redistributeAtomA = true, bool redistributeAtomB = true, HashSet<AtomFunction> pinAtomsForSigmaRelax = null)
+    bool BondSigma(AtomFunction a, AtomFunction b, bool redistributeAtomA = true, bool redistributeAtomB = true, HashSet<AtomFunction> pinAtomsForSigmaRelax = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         Vector3 dAB = (b.transform.position - a.transform.position).normalized;
         Vector3 dBA = -dAB;
         var oa = a.GetLoneOrbitalForBondFormation(dAB);
         var ob = b.GetLoneOrbitalWithOneElectron(dBA);
         if (oa == null || ob == null) return false;
-        FormSigmaBondInstant(a, b, oa, ob, redistributeAtomA, redistributeAtomB, pinAtomsForSigmaRelax, pinAtomsForSigmaRelax);
+        FormSigmaBondInstant(a, b, oa, ob, redistributeAtomA, redistributeAtomB, pinAtomsForSigmaRelax, pinAtomsForSigmaRelax, freezeSigmaNeighborSubtreeRoot);
         return true;
     }
 
@@ -528,7 +529,21 @@ public class MoleculeBuilder : MonoBehaviour
     }
 
     /// <summary>
-    /// For each heavy in the FG (BFS from <paramref name="parent"/> along <paramref name="touched"/> only), Newman-stagger vs the σ partner one step toward parent (before H saturation).
+    /// VSEPR redistribute only on the functional-group fragment (beyond the <paramref name="parent"/>–<paramref name="anchor"/> σ bond), not the whole substrate.
+    /// </summary>
+    static void RedistributeOrbitalsFunctionalGroupSide(AtomFunction parent, AtomFunction anchor)
+    {
+        if (parent == null || anchor == null) return;
+        foreach (var atom in parent.GetAtomsOnSideOfSigmaBond(anchor))
+        {
+            if (atom == null) continue;
+            atom.RedistributeOrbitals(pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent);
+        }
+    }
+
+    /// <summary>
+    /// For each heavy in the FG (BFS from <paramref name="parent"/> along <paramref name="touched"/> only), Newman-stagger vs the σ partner one step toward parent.
+    /// Call after H saturation / final redistribute so methyl placement does not wipe the twist.
     /// </summary>
     static void TryStaggerFunctionalGroupBackboneHeaviesTowardParent(AtomFunction parent, List<AtomFunction> touched)
     {
@@ -622,9 +637,9 @@ public class MoleculeBuilder : MonoBehaviour
 
                 int piBefore = center.GetPiBondCount();
                 if (bo == 1)
-                    FormPiBondInstant(center, other, redistributeEndpoints: true);
+                    FormPiBondInstant(center, other, redistributeEndpoints: true, freezeSigmaNeighborSubtreeRoot: attachmentRoot);
                 else if (bo == 2)
-                    FormSecondPiBondInstant(center, other, redistributeEndpoints: true);
+                    FormSecondPiBondInstant(center, other, redistributeEndpoints: true, freezeSigmaNeighborSubtreeRoot: attachmentRoot);
 
                 if (center.GetPiBondCount() != piBefore)
                     progress = true;
@@ -674,7 +689,7 @@ public class MoleculeBuilder : MonoBehaviour
     }
 
     /// <summary>First atom of the group is placed at <paramref name="anchorWorldPos"/> and σ-bonded to <paramref name="parent"/>.</summary>
-    /// <param name="preserveAttachmentParentGeometry">Kept for callers; attachment <paramref name="parent"/> is never VSEPR-redistributed during FG build and σ-relax pins keep it fixed.</param>
+    /// <param name="preserveAttachmentParentGeometry">Kept for callers; attachment <paramref name="parent"/> is never VSEPR-redistributed during FG build and σ-relax treats it as frozen (no O(N) full-molecule pin set).</param>
     public bool BuildFunctionalGroup(
         FunctionalGroupKind kind,
         AtomFunction parent,
@@ -713,18 +728,17 @@ public class MoleculeBuilder : MonoBehaviour
         int anchorFormalCharge = kind == FunctionalGroupKind.Nitro ? 1 : 0;
         var anchor = SpawnAtomElement(z0, anchorWorldPos, anchorFormalCharge);
         if (anchor == null) return false;
-        var pinFramework = new HashSet<AtomFunction>();
-        foreach (var a in parent.GetConnectedMolecule())
-            if (a != null) pinFramework.Add(a);
-        // Keep attachment heavy un-redistributed; pins = whole pre-existing molecule so σ-relax on the new FG atom cannot rigid-rotate the framework (pinning only parent is insufficient).
-        bool bondOk = BondSigma(parent, anchor, redistributeAtomA: false, redistributeAtomB: true, pinAtomsForSigmaRelax: pinFramework);
+
+        AtomFunction.SuppressAutoGlobalIgnoreCollisions++;
+        try
+        {
+        // Substrate frozen via freezeSigmaNeighborSubtreeRoot ((parent) on FG redistributes — no O(N) pin hash, no fragment relax over parent.
+        bool bondOk = BondSigma(parent, anchor, redistributeAtomA: false, redistributeAtomB: true, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent);
         if (!bondOk)
         {
             Destroy(anchor.gameObject);
             return false;
         }
-
-        pinFramework = new HashSet<AtomFunction>(anchor.GetAtomsOnSideOfSigmaBond(parent));
 
         selectionAnchor = anchor;
         float L = GetBondLength();
@@ -746,7 +760,7 @@ public class MoleculeBuilder : MonoBehaviour
                 var c = SpawnAtomElement(6, oc);
                 if (c == null) { ok = false; break; }
                 touched.Add(c);
-                ok = BondSigma(anchor, c, pinAtomsForSigmaRelax: pinFramework);
+                ok = BondSigma(anchor, c, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent);
                 break;
             }
             case FunctionalGroupKind.Aldehyde:
@@ -757,7 +771,7 @@ public class MoleculeBuilder : MonoBehaviour
                 var o = SpawnAtomElement(8, cPos + dirCarbonylO * L);
                 if (o == null) { ok = false; break; }
                 touched.Add(o);
-                ok = BondSigma(anchor, o, pinAtomsForSigmaRelax: pinFramework);
+                ok = BondSigma(anchor, o, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent);
                 // C=O π from TryFormPiBondsForFunctionalGroupCenter after σ.
                 // Aldehyde C—H from saturation pass after π (third σ ~120° from R—C and C=O).
                 break;
@@ -772,7 +786,7 @@ public class MoleculeBuilder : MonoBehaviour
                 if (oC == null || oH == null) { ok = false; break; }
                 touched.Add(oC);
                 touched.Add(oH);
-                ok = BondSigma(anchor, oC, pinAtomsForSigmaRelax: pinFramework) && BondSigma(anchor, oH, pinAtomsForSigmaRelax: pinFramework);
+                ok = BondSigma(anchor, oC, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent) && BondSigma(anchor, oH, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent);
                 // C=O π from TryFormPiBondsForFunctionalGroupCenter.
                 // Carboxylic O—H from saturation pass.
                 break;
@@ -788,9 +802,9 @@ public class MoleculeBuilder : MonoBehaviour
                 touched.Add(o1);
                 touched.Add(o2);
                 touched.Add(o3);
-                ok = BondSigma(anchor, o1, pinAtomsForSigmaRelax: pinFramework)
-                    && BondSigma(anchor, o2, pinAtomsForSigmaRelax: pinFramework)
-                    && BondSigma(anchor, o3, pinAtomsForSigmaRelax: pinFramework);
+                ok = BondSigma(anchor, o1, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent)
+                    && BondSigma(anchor, o2, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent)
+                    && BondSigma(anchor, o3, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent);
                 // S=O π bonds from TryFormPiBondsForFunctionalGroupCenter; O—H from saturation pass.
                 break;
             }
@@ -799,7 +813,7 @@ public class MoleculeBuilder : MonoBehaviour
                 var n = SpawnAtomElement(7, anchor.transform.position + dirOut * L);
                 if (n == null) { ok = false; break; }
                 touched.Add(n);
-                ok = BondSigma(anchor, n, pinAtomsForSigmaRelax: pinFramework);
+                ok = BondSigma(anchor, n, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent);
                 // C≡N: two π from TryFormPiBondsForFunctionalGroupCenter.
                 break;
             }
@@ -814,7 +828,7 @@ public class MoleculeBuilder : MonoBehaviour
                 if (o1 == null || o2 == null) { ok = false; break; }
                 touched.Add(o1);
                 touched.Add(o2);
-                ok = BondSigma(anchor, o1, pinAtomsForSigmaRelax: pinFramework) && BondSigma(anchor, o2, pinAtomsForSigmaRelax: pinFramework);
+                ok = BondSigma(anchor, o1, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent) && BondSigma(anchor, o2, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent);
                 break;
             }
             case FunctionalGroupKind.PhosphateDihydrogen:
@@ -829,9 +843,9 @@ public class MoleculeBuilder : MonoBehaviour
                 touched.Add(o1);
                 touched.Add(o2);
                 touched.Add(o3);
-                ok = BondSigma(anchor, o1, pinAtomsForSigmaRelax: pinFramework)
-                    && BondSigma(anchor, o2, pinAtomsForSigmaRelax: pinFramework)
-                    && BondSigma(anchor, o3, pinAtomsForSigmaRelax: pinFramework);
+                ok = BondSigma(anchor, o1, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent)
+                    && BondSigma(anchor, o2, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent)
+                    && BondSigma(anchor, o3, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent);
                 // P=O π from TryFormPiBondsForFunctionalGroupCenter; two P—OH: O—H from saturation pass.
                 break;
             }
@@ -857,13 +871,10 @@ public class MoleculeBuilder : MonoBehaviour
                 LogFgOrbit($"Fragment before RedistributeOrbitals (post-π):\n{DescribeConnectedFragment(anchor)}");
             }
 
-            // Skip attachment atom: keeps parent framework fixed; pins prevent σ-relax on the FG from dragging parent.
-            RedistributeOrbitalsOnConnectedMoleculeExcept(anchor, parent, pinFramework);
+            RedistributeOrbitalsFunctionalGroupSide(parent, anchor);
 
             if (traceNitroOrCarboxyl)
                 LogFgOrbit($"After RedistributeOrbitals #1:\n{DescribeConnectedFragment(anchor)}");
-
-            TryStaggerFunctionalGroupBackboneHeaviesTowardParent(parent, touched);
 
             if (edit != null)
             {
@@ -872,10 +883,18 @@ public class MoleculeBuilder : MonoBehaviour
                     if (a != null && a != parent)
                         fgOnly.Add(a);
                 if (fgOnly.Count > 0)
-                    edit.SaturateAtomsWithHydrogenPass(fgOnly, pinSigmaRelaxNeighbors: pinFramework);
+                    edit.SaturateAtomsWithHydrogenPass(
+                        fgOnly,
+                        pinSigmaRelaxNeighbors: null,
+                        incrementalIgnoreSubstrateParent: parent,
+                        incrementalIgnoreGroupAnchor: anchor,
+                        freezeSigmaNeighborSubtreeRoot: parent);
             }
 
-            RedistributeOrbitalsOnConnectedMoleculeExcept(anchor, parent, pinFramework);
+            RedistributeOrbitalsFunctionalGroupSide(parent, anchor);
+
+            // H saturation and post-saturation redistribute rebuild local tetrahedra; Newman stagger must run last.
+            TryStaggerFunctionalGroupBackboneHeaviesTowardParent(parent, touched);
 
             if (traceNitroOrCarboxyl)
             {
@@ -883,8 +902,16 @@ public class MoleculeBuilder : MonoBehaviour
                 LogFgOrbit("BuildFunctionalGroup END");
             }
 
-        AtomFunction.SetupGlobalIgnoreCollisions();
         return true;
+        }
+        finally
+        {
+            AtomFunction.SuppressAutoGlobalIgnoreCollisions--;
+            if (selectionAnchor != null && parent != null)
+                AtomFunction.SetupIgnoreCollisionsInvolvingAtoms(parent.GetAtomsOnSideOfSigmaBond(selectionAnchor));
+            else
+                AtomFunction.SetupGlobalIgnoreCollisions();
+        }
     }
 
     /// <summary>~120° coplanar σ directions for two substituents (e.g. nitro O—N—O, aldehyde/carbonyl O vs hydroxyl O) given center→parent bond.</summary>
