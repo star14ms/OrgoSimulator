@@ -31,6 +31,50 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         Debug.Log($"[π-redist] {message}");
     }
 
+    /// <summary>Unity + project <c>.log</c>: <c>[σ-form-pose]</c> — bonding orbital + non-bond tips during σ formation. Default off.</summary>
+    public static bool DebugLogSigmaBondFormationOrbitalPose = false;
+
+    static void LogSigmaFormationBondingOrb(string phase, string label, ElectronOrbitalFunction orb)
+    {
+        if (!DebugLogSigmaBondFormationOrbitalPose || orb == null) return;
+        Transform pr = orb.transform.parent;
+        Vector3 tipL = (orb.transform.localRotation * Vector3.right).normalized;
+        Vector3 tipW = orb.transform.TransformDirection(tipL);
+        if (tipW.sqrMagnitude > 1e-8f) tipW.Normalize();
+        Vector3 wpos = orb.transform.position;
+        string line =
+            $"[σ-form-pose] {phase} {label} orbId={orb.GetInstanceID()} e={orb.ElectronCount} parent={(pr != null ? pr.name : "null")} " +
+            $"worldP=({wpos.x:F4},{wpos.y:F4},{wpos.z:F4}) tipW=({tipW.x:F4},{tipW.y:F4},{tipW.z:F4})";
+        Debug.Log(line);
+        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
+    }
+
+    static void LogSigmaFormationNonbondTipsOnAtom(string phase, AtomFunction atom, AtomFunction towardPartner)
+    {
+        if (!DebugLogSigmaBondFormationOrbitalPose || atom == null) return;
+        Vector3? axis = null;
+        if (towardPartner != null)
+        {
+            Vector3 d = towardPartner.transform.position - atom.transform.position;
+            if (d.sqrMagnitude > 1e-8f) axis = d.normalized;
+        }
+        foreach (var o in atom.GetComponentsInChildren<ElectronOrbitalFunction>(true))
+        {
+            if (o == null || o.transform.parent != atom.transform || o.Bond != null) continue;
+            Vector3 tipL = (o.transform.localRotation * Vector3.right).normalized;
+            Vector3 tipW = atom.transform.TransformDirection(tipL);
+            if (tipW.sqrMagnitude > 1e-8f) tipW.Normalize();
+            string extra = "";
+            if (axis.HasValue)
+                extra = $" towardPartner∠={Vector3.Angle(tipW, axis.Value):F2}° dot={Vector3.Dot(tipW, axis.Value):F4}";
+            string line =
+                $"[σ-form-pose] {phase} nonbond atomZ={atom.AtomicNumber} orbId={o.GetInstanceID()} e={o.ElectronCount} " +
+                $"tipW=({tipW.x:F4},{tipW.y:F4},{tipW.z:F4}){extra}";
+            Debug.Log(line);
+            ProjectAgentDebugLog.MirrorToProjectDotLog(line);
+        }
+    }
+
     AtomFunction bondedAtom;
     CovalentBond bond;
     bool isBeingHeld;
@@ -1137,16 +1181,23 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
 
-        // Tetrahedral σ-relax when σ count goes 3→4: preview end geometry for GetRedistributeTargets, restore, then lerp with orbitals (like bond-break σ animation).
+        // Tetrahedral σ-relax: 3→4 σ with no occupied lone (CH₄-style), or 2→3 σ with AX₃E (one occupied non-bond, e.g. trigonal radical → sp³).
         var sigmaRelaxById = new Dictionary<int, (AtomFunction atom, Vector3 startWorld, Vector3 endWorld)>();
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
         {
             void CollectSigmaRelax(AtomFunction center, AtomFunction partner, int sigmaBefore)
             {
                 if (center == null || partner == null || sigmaBefore < 0) return;
-                if (!center.TryGetTetrahedralFourSigmaNeighborRelaxMovesForBondFormation(partner, sigmaBefore, out var lst) || lst == null) return;
-                foreach (var entry in lst)
-                    sigmaRelaxById[entry.atom.GetInstanceID()] = entry;
+                if (center.TryGetTetrahedralFourSigmaNeighborRelaxMovesForBondFormation(partner, sigmaBefore, out var lst4) && lst4 != null)
+                {
+                    foreach (var entry in lst4)
+                        sigmaRelaxById[entry.atom.GetInstanceID()] = entry;
+                }
+                else if (center.TryGetTetrahedralThreeSigmaAx3ERelaxMovesForBondFormation(partner, sigmaBefore, out var lst3) && lst3 != null)
+                {
+                    foreach (var entry in lst3)
+                        sigmaRelaxById[entry.atom.GetInstanceID()] = entry;
+                }
             }
             CollectSigmaRelax(sourceAtom, targetAtom, sigmaBeforeSource);
             CollectSigmaRelax(targetAtom, sourceAtom, sigmaBeforeTarget);
@@ -1156,6 +1207,49 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             m.atom.transform.position = m.endWorld;
         var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom, sigmaNeighborCountBefore: sigmaBeforeSource);
         var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom, sigmaNeighborCountBefore: sigmaBeforeTarget);
+
+        AtomFunction rootForStagger = referenceAtom;
+        AtomFunction childForStagger = rootForStagger == sourceAtom ? targetAtom : sourceAtom;
+        float newmanPsi = 0f;
+        bool hasNewmanStagger = OrbitalAngleUtility.UseFull3DOrbitalGeometry
+            && childForStagger != null && rootForStagger != null
+            && childForStagger.AtomicNumber > 1
+            && childForStagger.GetPiBondCount() == 0
+            && childForStagger.TryComputeNewmanStaggerPsi(rootForStagger, true, out newmanPsi);
+
+        // Precalc Newman-staggered ends so step 2 lerps once to final staggered geometry (no per-frame twist, no post-loop snap).
+        if (hasNewmanStagger)
+        {
+            Vector3 cChild = childForStagger.transform.position;
+            Vector3 ax = rootForStagger.transform.position - cChild;
+            if (ax.sqrMagnitude <= 1e-10f)
+                hasNewmanStagger = false;
+            else
+            {
+                ax.Normalize();
+                Quaternion rPsi = Quaternion.AngleAxis(newmanPsi, ax);
+                for (int si = 0; si < sigmaRelaxList.Count; si++)
+                {
+                    var (atom, st, en) = sigmaRelaxList[si];
+                    if (atom != null && atom.AtomicNumber == 1
+                        && childForStagger.GetDistinctSigmaNeighborAtoms().Contains(atom) && atom != rootForStagger)
+                        en = cChild + rPsi * (en - cChild);
+                    sigmaRelaxList[si] = (atom, st, en);
+                }
+                foreach (var n in childForStagger.GetDistinctSigmaNeighborAtoms())
+                {
+                    if (n == null || n == rootForStagger || n.AtomicNumber != 1) continue;
+                    if (sigmaRelaxById.ContainsKey(n.GetInstanceID())) continue;
+                    Vector3 stH = n.transform.position;
+                    sigmaRelaxList.Add((n, stH, cChild + rPsi * (stH - cChild)));
+                }
+                if (childForStagger == sourceAtom)
+                    AtomFunction.TwistRedistributeTargetsForNewmanStaggerEnd(childForStagger, rootForStagger, newmanPsi, redistA);
+                else
+                    AtomFunction.TwistRedistributeTargetsForNewmanStaggerEnd(childForStagger, rootForStagger, newmanPsi, redistB);
+            }
+        }
+
         foreach (var m in sigmaRelaxList)
             m.atom.transform.position = m.startWorld;
 
@@ -1194,7 +1288,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         // Must check rotation too: position can match while quaternions differ (e.g. 180° flip); direction-only angle can still match both.
         bool orbitalAlreadyAtBond = Vector3.Distance(bondOrbitalStartWorldPos, bondOrbitalEnd.worldPos) < alignThreshold
             && Quaternion.Angle(bondOrbitalStartWorldRot, bondOrbitalEnd.worldRot) < rotThreshold;
-        bool skipStep2 = !needsRearrange && !needsRedistribute && !hasSigmaRelaxMovement && orbitalAlreadyAtBond;
+        bool skipStep2 = !needsRearrange && !needsRedistribute && !hasSigmaRelaxMovement && orbitalAlreadyAtBond && !hasNewmanStagger;
 
         var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
         var redistBStarts = new List<(Vector3 pos, Quaternion rot)>();
@@ -1218,9 +1312,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             float s = Mathf.Clamp01(t / bondAnimStep2Duration);
             s = s * s * (3f - 2f * s); // smoothstep for position
             float rotT = 1f - (1f - s) * (1f - s); // ease-out quad - rotation leads, expresses orbital rotation visibly
-
-            sourceOrbital.transform.position = Vector3.Lerp(bondOrbitalStartWorldPos, bondOrbitalEnd.worldPos, s);
-            sourceOrbital.transform.rotation = Quaternion.Slerp(bondOrbitalStartWorldRot, bondOrbitalEnd.worldRot, rotT);
 
             if (rearrangeTargetInfo.HasValue)
             {
@@ -1253,6 +1344,19 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             }
             foreach (var (atom, startW, endW) in sigmaRelaxList)
                 atom.transform.position = Vector3.Lerp(startW, endW, s);
+            var bondVisualAtoms = new HashSet<AtomFunction> { sourceAtom, targetAtom };
+            foreach (var (a, _, _) in sigmaRelaxList)
+                if (a != null) bondVisualAtoms.Add(a);
+            AtomFunction.UpdateSigmaBondVisualsForAtoms(bondVisualAtoms);
+            // Hybrid σ tip (orbitalRedistributionWorldDelta) only updates here during step 2 — without this, bond end rot ignores lerping lone lobes.
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
+                sourceAtom.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(targetAtom);
+                targetAtom.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(sourceAtom);
+            }
+            var bondEndLive = bond.GetOrbitalTargetWorldState();
+            sourceOrbital.transform.position = Vector3.Lerp(bondOrbitalStartWorldPos, bondEndLive.worldPos, s);
+            sourceOrbital.transform.rotation = OrbitalAngleUtility.SlerpShortest(bondOrbitalStartWorldRot, bondEndLive.worldRot, rotT);
             yield return null;
         }
 
@@ -1265,17 +1369,30 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 orbToMove.transform.localRotation = targetRot;
             }
         }
-        foreach (var (atom, startW, endW) in sigmaRelaxList)
-        {
-            AtomFunction.LogAttachAnchorCarbonMove("FormCovalentBondSigma step2 σRelax snap", atom, startW, endW);
+        foreach (var (atom, _, endW) in sigmaRelaxList)
             atom.transform.position = endW;
-        }
+
         sourceAtom.ApplyRedistributeTargets(redistA);
         targetAtom.ApplyRedistributeTargets(redistB);
+
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            sourceAtom.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(targetAtom);
+            targetAtom.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(sourceAtom);
+        }
+
+        LogSigmaFormationBondingOrb("afterApplyRedistributeTargets", "bondingOrb(stillOnSource)", sourceOrbital);
+        LogSigmaFormationNonbondTipsOnAtom("afterApplyRedistributeTargets", sourceAtom, targetAtom);
+        LogSigmaFormationNonbondTipsOnAtom("afterApplyRedistributeTargets", targetAtom, sourceAtom);
+
         sourceOrbital.transform.SetParent(bond.transform, worldPositionStays: true); // Reparent now (orbital was left on source atom so it could animate)
         bond.UpdateBondTransformToCurrentAtoms(); // Bond may be stale (atoms moved in step 1)
         bond.SnapOrbitalToBondPosition(); // Match step 3 start position (prevents teleport)
         bond.animatingOrbitalToBondPosition = false;
+
+        LogSigmaFormationBondingOrb("afterBondSnapOrbital", "bondingOrb(onBond)", sourceOrbital);
+        LogSigmaFormationNonbondTipsOnAtom("afterBondSnapOrbital", sourceAtom, targetAtom);
+        LogSigmaFormationNonbondTipsOnAtom("afterBondSnapOrbital", targetAtom, sourceAtom);
 
         // Step 3: Orbital-to-line transformation (bonding orbital shrinking, target orbital fading, line growing simultaneously)
         if (bond != null)
@@ -1283,8 +1400,16 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             yield return bond.AnimateOrbitalToLine(bondAnimStep3Duration, targetOrbital);
             sourceOrbital.ElectronCount = merged; // Show merged electrons only after step 3
         }
+
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
+
+        if (hasNewmanStagger)
+            childForStagger.RefreshSigmaBondTransformsAndChargesAroundAtom();
+
+        LogSigmaFormationBondingOrb("afterStep3_newmanRefresh_charge", "bondingOrb", sourceOrbital);
+        LogSigmaFormationNonbondTipsOnAtom("afterStep3_newmanRefresh_charge", sourceAtom, targetAtom);
+        LogSigmaFormationNonbondTipsOnAtom("afterStep3_newmanRefresh_charge", targetAtom, sourceAtom);
         }
         finally
         {
@@ -1551,6 +1676,12 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         sourceAtom.ApplyRedistributeTargets(redistA);
         targetAtom.ApplyRedistributeTargets(redistB);
 
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            sourceAtom.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(targetAtom);
+            targetAtom.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(sourceAtom);
+        }
+
         // Snap both orbitals to exact position step 3 expects (prevents teleport)
         if (bond != null)
         {
@@ -1691,15 +1822,36 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
-    public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPositionFromLocalDirection(Vector3 localDir, float bondRadius)
+    public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPositionFromLocalDirection(Vector3 localDir, float bondRadius) =>
+        GetCanonicalSlotPositionFromLocalDirection(localDir, bondRadius, null);
+
+    /// <param name="preferClosestLocalRotation">When set, pick among twists about <paramref name="localDir"/> (steps of 90°) so the quaternion is closest to the current lobe rotation — avoids ~180° visual spin when only the hybrid direction changes.</param>
+    public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPositionFromLocalDirection(Vector3 localDir, float bondRadius, Quaternion? preferClosestLocalRotation)
     {
         if (localDir.sqrMagnitude < 1e-8f)
             localDir = Vector3.right;
         localDir.Normalize();
         float offset = bondRadius * 0.6f;
         var pos = localDir * offset;
-        var rot = Quaternion.FromToRotation(Vector3.right, localDir);
-        return (pos, rot);
+        var qBase = Quaternion.FromToRotation(Vector3.right, localDir);
+        if (!preferClosestLocalRotation.HasValue)
+            return (pos, qBase);
+
+        float bestAng = float.MaxValue;
+        int bestK = 0;
+        Quaternion bestQ = qBase;
+        for (int k = 0; k < 4; k++)
+        {
+            var q = qBase * Quaternion.AngleAxis(k * 90f, localDir);
+            float a = Quaternion.Angle(preferClosestLocalRotation.Value, q);
+            if (a < bestAng - 0.02f || (Mathf.Abs(a - bestAng) <= 0.02f && k < bestK))
+            {
+                bestAng = a;
+                bestK = k;
+                bestQ = q;
+            }
+        }
+        return (pos, bestQ);
     }
 
     public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPosition(float angleDeg, float bondRadius)

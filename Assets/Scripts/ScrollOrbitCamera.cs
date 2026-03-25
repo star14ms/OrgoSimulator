@@ -33,6 +33,19 @@ public sealed class ScrollOrbitCamera : MonoBehaviour
 
     void Awake() => _focusPointInitial = focusPoint;
 
+    /// <summary>Current orbit pivot in world space (same as internal <c>focusPoint</c>).</summary>
+    public Vector3 OrbitFocusWorld => focusPoint;
+
+    /// <summary>
+    /// Restores camera pose and orbit pivot, then resyncs the molecule work plane. Used when edit operations must not alter the user’s view.
+    /// </summary>
+    public void RestoreCameraPoseAndFocus(Vector3 cameraWorldPosition, Quaternion cameraWorldRotation, Vector3 focusWorld)
+    {
+        transform.SetPositionAndRotation(cameraWorldPosition, cameraWorldRotation);
+        focusPoint = focusWorld;
+        SyncMoleculeWorkPlaneToView();
+    }
+
     /// <summary>
     /// True when orbit pivot matches the initial focus (default world origin), i.e. not snapped to the selected atom on the last scroll gesture.
     /// </summary>

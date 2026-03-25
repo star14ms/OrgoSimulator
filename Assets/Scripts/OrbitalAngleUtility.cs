@@ -54,4 +54,12 @@ public static class OrbitalAngleUtility
         while (deg < -180f) deg += 360f;
         return deg;
     }
+
+    /// <summary>SLERP on the shorter quaternion arc (flip b when dot &lt; 0) so orbitals do not spin ~360°.</summary>
+    public static Quaternion SlerpShortest(Quaternion a, Quaternion b, float t)
+    {
+        if (Quaternion.Dot(a, b) < 0f)
+            b = new Quaternion(-b.x, -b.y, -b.z, -b.w);
+        return Quaternion.Slerp(a, b, t);
+    }
 }

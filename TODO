@@ -1,10 +1,2 @@
-Form Staggered Conformation with the root atom's bonding direction when H-auto is applied
 Add a toggle button that toggle the charge mode: Oxidation State (current), and octet rule based charge (new)
 Avoid exchange the empty orbital with orbital electron-containing orbitals in atom.
-
-
-
-When you make a bond, you are updating the conformation of only adjacent atoms, not the groups which bonded to that adjacent atom. Make sure all subsequent groups follow its new orbital groups, by rotating the whole attached group with the origin of that adjacent molecule
-
-
-Also, if possible, attach hydrogens for H-mode after rotating the nonbonding orbitals to be staggered to the root atom, not eclipsed

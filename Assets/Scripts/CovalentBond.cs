@@ -12,14 +12,78 @@ using UnityEngine.Rendering;
 /// </summary>
 public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IPointerUpHandler
 {
-    /// <summary>Console + optional project <c>.log</c>: <c>[bond-break]</c> orbital tips. Default on; set false to silence.</summary>
-    public static bool DebugLogBreakBondOrbitalAngles = true;
+    /// <summary>Unity + project <c>.log</c>: <c>[ex-bond-pose]</c> — ex-bond / guide lobes on each fragment after σ cleavage. Default off.</summary>
+    public static bool DebugLogExBondOrbitalPose = false;
 
-    static void LogBondBreakLine(string line)
+    /// <summary>Non-bond lobe on <paramref name="parentNucleus"/>; optional <paramref name="partnerNucleus"/> for ∠(tip, axis toward partner).</summary>
+    public static void LogExBondOrbitalPose(string phase, string label, ElectronOrbitalFunction orb, AtomFunction parentNucleus, AtomFunction partnerNucleus = null)
     {
-        if (!DebugLogBreakBondOrbitalAngles) return;
+        if (!DebugLogExBondOrbitalPose || orb == null || parentNucleus == null) return;
+        Vector3 tipL = (orb.transform.localRotation * Vector3.right).normalized;
+        Vector3 tipW = parentNucleus.transform.TransformDirection(tipL);
+        if (tipW.sqrMagnitude > 1e-8f) tipW.Normalize();
+        Vector3 wpos = orb.transform.position;
+        string extra = "";
+        if (partnerNucleus != null)
+        {
+            Vector3 toPartner = partnerNucleus.transform.position - parentNucleus.transform.position;
+            if (toPartner.sqrMagnitude > 1e-8f)
+            {
+                toPartner.Normalize();
+                extra = $" towardPartner∠={Vector3.Angle(tipW, toPartner):F2}° dot={Vector3.Dot(tipW, toPartner):F4}";
+            }
+        }
+        string line =
+            $"[ex-bond-pose] {phase} {label} orbId={orb.GetInstanceID()} e={orb.ElectronCount} parentZ={parentNucleus.AtomicNumber} parentId={parentNucleus.GetInstanceID()} " +
+            $"localP=({orb.transform.localPosition.x:F4},{orb.transform.localPosition.y:F4},{orb.transform.localPosition.z:F4}) " +
+            $"worldP=({wpos.x:F4},{wpos.y:F4},{wpos.z:F4}) tipW=({tipW.x:F4},{tipW.y:F4},{tipW.z:F4}){extra}";
         Debug.Log(line);
         ProjectAgentDebugLog.MirrorToProjectDotLog(line);
+    }
+
+    /// <summary>Logs both post-break guide orbitals; partner axis = other bond nucleus from each parent.</summary>
+    public static void LogBreakGuideOrbitalsPose(string phase, AtomFunction nucleusA, AtomFunction nucleusB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, AtomFunction parentA, AtomFunction parentB)
+    {
+        if (!DebugLogExBondOrbitalPose) return;
+        if (orbA != null && parentA != null)
+        {
+            AtomFunction partnerA = parentA == nucleusA ? nucleusB : nucleusA;
+            LogExBondOrbitalPose(phase, "orbA", orbA, parentA, partnerA);
+        }
+        if (orbB != null && parentB != null)
+        {
+            AtomFunction partnerB = parentB == nucleusA ? nucleusB : nucleusA;
+            LogExBondOrbitalPose(phase, "orbB", orbB, parentB, partnerB);
+        }
+    }
+
+    static void LogBreakEmptyTeleportBoth(string phase, AtomFunction atomA, AtomFunction atomB, Vector3? refA, Vector3? refB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, AtomFunction nucleusForOrbA, AtomFunction nucleusForOrbB)
+    {
+        if (!AtomFunction.DebugLogBondBreakEmptyTeleport) return;
+        atomA?.LogEmptyNonbondSnapshotForBondBreak(phase + "/A", refA, BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, nucleusForOrbA, nucleusForOrbB));
+        atomB?.LogEmptyNonbondSnapshotForBondBreak(phase + "/B", refB, BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, nucleusForOrbA, nucleusForOrbB));
+    }
+
+    /// <summary>
+    /// σ cleavage: each ex-bond lobe should point from this nucleus toward the partner. Preview / bond-line capture often gives
+    /// both fragments the same world rotation, so one center keeps tip ∥ A→B while its partner needs tip ∥ B→A — fix 180° when
+    /// <see cref="ElectronOrbitalFunction"/> +X (tip) is anti-parallel to partner in local space.
+    /// </summary>
+    static (Vector3 position, Quaternion rotation) CorrectBreakGuideSlotTowardPartner(
+        (Vector3 position, Quaternion rotation) slot,
+        AtomFunction nucleus,
+        AtomFunction partner)
+    {
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || nucleus == null || partner == null) return slot;
+        Vector3 toPartner = partner.transform.position - nucleus.transform.position;
+        if (toPartner.sqrMagnitude < 1e-10f) return slot;
+        toPartner.Normalize();
+        Vector3 tipLocal = (slot.rotation * Vector3.right).normalized;
+        Vector3 wantLocal = nucleus.transform.InverseTransformDirection(toPartner).normalized;
+        if (Vector3.Dot(tipLocal, wantLocal) >= 0f) return slot;
+        Quaternion newR = Quaternion.FromToRotation(tipLocal, wantLocal) * slot.rotation;
+        Vector3 newDir = (newR * Vector3.right).normalized;
+        return ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(newDir, nucleus.BondRadius);
     }
 
     [SerializeField] AtomFunction atomA;
@@ -33,6 +97,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     float orbitalToLineAnimProgress = -1f; // -1 = done, 0..1 = animating
     internal bool animatingOrbitalToBondPosition; // Step 2: orbital moving from atom to bond
     internal bool orbitalRotationFlipped; // Sigma: flip when source opposite to bond so electrons don't overlap
+    /// <summary>Left-multiplies base σ-orbital world rotation after <see cref="AtomFunction.RedistributeOrbitals3D"/> so +X tracks VSEPR hybrid on the authoritative nucleus.</summary>
+    Quaternion orbitalRedistributionWorldDelta = Quaternion.identity;
     PointerEventData storedPressData;
     GameObject lineVisual;
     SpriteRenderer lineRenderer;
@@ -96,10 +162,36 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         orbital.transform.rotation = worldRot;
     }
 
+    /// <summary>
+    /// Applies <see cref="GetOrbitalTargetWorldState"/> immediately after changing <see cref="orbitalRedistributionWorldDelta"/>
+    /// so σ lobe +X and nucleus-local tip reads match before <c>LateUpdate</c>. Same guards as σ pose block in <c>LateUpdate</c>.
+    /// </summary>
+    public void SyncSigmaOrbitalWorldPoseFromRedistribution()
+    {
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || orbital == null || atomA == null || atomB == null) return;
+        if (!IsSigmaBondLine()) return;
+        bool userDragging = orbitalVisible && orbitalToLineAnimProgress < 0;
+        if (userDragging || animatingOrbitalToBondPosition) return;
+        UpdateBondTransformToCurrentAtoms();
+        var (worldPos, worldRot) = GetOrbitalTargetWorldState();
+        orbital.transform.position = worldPos;
+        orbital.transform.rotation = worldRot;
+        float orbScale = orbitalToLineAnimProgress < 0 ? 0.6f : 0.6f * (1f - orbitalToLineAnimProgress);
+        orbital.transform.localScale = Vector3.one * Mathf.Max(0.01f, orbScale);
+    }
+
     /// <summary>Returns the target world position and rotation for the bond orbital (for step 2 animation).</summary>
     public (Vector3 worldPos, Quaternion worldRot) GetOrbitalTargetWorldState()
     {
-        if (atomA == null || atomB == null) return (transform.position, transform.rotation * Quaternion.Euler(0, 0, 90f));
+        Quaternion BaseSigmaOrbitalWorldRotation(bool applyFlip)
+        {
+            var r = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
+            if (applyFlip && orbitalRotationFlipped) r = r * Quaternion.Euler(0f, 0f, 180f);
+            return r;
+        }
+
+        if (atomA == null || atomB == null)
+            return (transform.position, orbitalRedistributionWorldDelta * BaseSigmaOrbitalWorldRotation(false));
         var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
         var second = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomB : atomA;
         var posA = atomA.transform.position;
@@ -107,13 +199,82 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var center = (posA + posB) * 0.5f;
         var delta = second.transform.position - first.transform.position;
         var distance = delta.magnitude;
-        if (distance < 0.001f) return (center, transform.rotation * Quaternion.Euler(0, 0, 90f));
+        if (distance < 0.001f)
+            return (center, orbitalRedistributionWorldDelta * BaseSigmaOrbitalWorldRotation(false));
         var perpendicular = PerpendicularToBondDirection(delta / distance);
         float offset = GetLineOffset(GetBondIndex(), atomA.GetBondsTo(atomB));
         var worldPos = center + perpendicular * offset;
-        var worldRot = transform.rotation * Quaternion.Euler(0, 0, 90f);
-        if (orbitalRotationFlipped) worldRot = worldRot * Quaternion.Euler(0f, 0f, 180f);
+        var worldRot = orbitalRedistributionWorldDelta * BaseSigmaOrbitalWorldRotation(true);
         return (worldPos, worldRot);
+    }
+
+    /// <summary>Lower <see cref="AtomFunction.GetInstanceID"/> end sets shared σ orbital rotation after redistribution so both fragments agree on one world pose.</summary>
+    public AtomFunction AuthoritativeAtomForOrbitalRedistributionPose()
+    {
+        if (atomA == null) return atomB;
+        if (atomB == null) return atomA;
+        return atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
+    }
+
+    public bool IsSigmaBondLine() => GetBondIndex() == 0;
+
+    public void ResetOrbitalRedistributionDeltaIfAuthoritative(AtomFunction caller)
+    {
+        if (caller == null || caller != AuthoritativeAtomForOrbitalRedistributionPose()) return;
+        orbitalRedistributionWorldDelta = Quaternion.identity;
+    }
+
+    /// <summary>Align shared σ lobe +X with hybrid direction expressed from <paramref name="fromAtom"/> (must be atom A or B). Uses bond axis from <paramref name="fromAtom"/> toward partner for sign.</summary>
+    public void ApplySigmaOrbitalTipFromRedistribution(AtomFunction fromAtom, Vector3 hybridTipWorld)
+    {
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || orbital == null) return;
+        if (fromAtom == null || (fromAtom != atomA && fromAtom != atomB)) return;
+        if (!IsSigmaBondLine()) return;
+
+        var partner = fromAtom == atomA ? atomB : atomA;
+        if (partner == null) return;
+
+        UpdateBondTransformToCurrentAtoms();
+
+        Vector3 hybridIn = hybridTipWorld;
+        if (hybridTipWorld.sqrMagnitude < 1e-12f) return;
+        hybridTipWorld.Normalize();
+        Vector3 geom = partner.transform.position - fromAtom.transform.position;
+        if (geom.sqrMagnitude > 1e-10f)
+        {
+            geom.Normalize();
+            if (Vector3.Dot(hybridTipWorld, geom) < 0f)
+                hybridTipWorld = -hybridTipWorld;
+        }
+
+        var baseR = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
+        if (orbitalRotationFlipped) baseR = baseR * Quaternion.Euler(0f, 0f, 180f);
+        Vector3 tip0 = (baseR * Vector3.right).normalized;
+        Vector3 want = hybridTipWorld;
+        if (tip0.sqrMagnitude < 1e-10f || want.sqrMagnitude < 1e-10f) return;
+        if (Vector3.Dot(tip0, want) > 0.9999f)
+        {
+            orbitalRedistributionWorldDelta = Quaternion.identity;
+            if (AtomFunction.DebugLogCarbocationSigmaRedistributionTrace)
+            {
+                AtomFunction.LogCarbocationSigmaRedistributionTrace(
+                    $"ApplySigmaOrbitalTip δ=0 bondId={GetInstanceID()} fromAtomId={fromAtom.GetInstanceID()} partnerId={partner.GetInstanceID()} " +
+                    $"hybridIn={hybridIn.x:F4},{hybridIn.y:F4},{hybridIn.z:F4} hybridAfterSign={want.x:F4},{want.y:F4},{want.z:F4} tip0={tip0.x:F4},{tip0.y:F4},{tip0.z:F4}");
+            }
+            SyncSigmaOrbitalWorldPoseFromRedistribution();
+            return;
+        }
+
+        orbitalRedistributionWorldDelta = Quaternion.FromToRotation(tip0, want);
+        if (AtomFunction.DebugLogCarbocationSigmaRedistributionTrace)
+        {
+            float deltaDeg = Quaternion.Angle(Quaternion.identity, orbitalRedistributionWorldDelta);
+            AtomFunction.LogCarbocationSigmaRedistributionTrace(
+                $"ApplySigmaOrbitalTip bondId={GetInstanceID()} fromAtomId={fromAtom.GetInstanceID()} partnerId={partner.GetInstanceID()} " +
+                $"hybridIn={hybridIn.x:F4},{hybridIn.y:F4},{hybridIn.z:F4} hybridAfterSign={want.x:F4},{want.y:F4},{want.z:F4} " +
+                $"tip0={tip0.x:F4},{tip0.y:F4},{tip0.z:F4} ∠(tip0,want)={Vector3.Angle(tip0, want):F2}° δWorldDeg={deltaDeg:F2}°");
+        }
+        SyncSigmaOrbitalWorldPoseFromRedistribution();
     }
 
     int GetBondIndex()
@@ -219,6 +380,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomB = b;
         orbital = orb;
         orbitalContributor = contributor;
+        orbitalRedistributionWorldDelta = Quaternion.identity;
         useCylinderBondVisual = Camera.main != null && !Camera.main.orthographic;
 
         atomA.RegisterBond(this);
@@ -447,8 +609,9 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (orbital != null && !userDragging && !animatingOrbitalToBondPosition)
         {
             var orbWorldPos = center + perpendicular * offset;
-            var orbRot = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
-            if (orbitalRotationFlipped) orbRot = orbRot * Quaternion.Euler(0f, 0f, 180f);
+            var baseOrbRot = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
+            if (orbitalRotationFlipped) baseOrbRot = baseOrbRot * Quaternion.Euler(0f, 0f, 180f);
+            var orbRot = orbitalRedistributionWorldDelta * baseOrbRot;
             orbital.transform.position = orbWorldPos;
             orbital.transform.rotation = orbRot;
             float orbScale = orbitalToLineAnimProgress < 0 ? 0.6f : 0.6f * (1f - orbitalToLineAnimProgress);
@@ -704,7 +867,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbital.transform.SetPositionAndRotation(bondOrbitalWorldPos, bondOrbitalWorldRot);
             newOrbital.transform.SetPositionAndRotation(bondOrbitalWorldPos, bondOrbitalWorldRot);
             if (!preserveHeavyFrameworkForEditInstantHBreak &&
-                TryPreviewVseprSlotsForBreakBond(atomA, atomB, orbital, newOrbital, piAfterA, piAfterB, piBondAngleFromA, piBondAngleFromB, refWorldA, refWorldB, sigmaRelaxPins, sigmaOnlyUnchangedPiBoth, out var vseprSlotA, out var vseprSlotB))
+                TryPreviewVseprSlotsForBreakBond(atomA, atomB, orbital, newOrbital, returnOrbitalTo, otherAtom, piAfterA, piAfterB, piBondAngleFromA, piBondAngleFromB, refWorldA, refWorldB, sigmaRelaxPins, sigmaOnlyUnchangedPiBoth, out var vseprSlotA, out var vseprSlotB))
             {
                 slotA = vseprSlotA;
                 slotB = vseprSlotB;
@@ -728,6 +891,22 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbital.transform.localRotation = slotA.rotation;
             newOrbital.transform.localPosition = slotB.position;
             newOrbital.transform.localRotation = slotB.rotation;
+        }
+
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && returnOrbitalTo != null && otherAtom != null)
+        {
+            slotA = CorrectBreakGuideSlotTowardPartner(slotA, returnOrbitalTo, otherAtom);
+            slotB = CorrectBreakGuideSlotTowardPartner(slotB, otherAtom, returnOrbitalTo);
+            if (orbital != null && orbital.transform.parent == returnOrbitalTo.transform)
+            {
+                orbital.transform.localPosition = slotA.position;
+                orbital.transform.localRotation = slotA.rotation;
+            }
+            if (newOrbital != null && newOrbital.transform.parent == otherAtom.transform)
+            {
+                newOrbital.transform.localPosition = slotB.position;
+                newOrbital.transform.localRotation = slotB.rotation;
+            }
         }
 
         atomA?.RefreshCharge();
@@ -773,10 +952,10 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
         else
         {
-            atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbital, newOrbital));
-            atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbital, newOrbital));
-            atomA?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterA == 0 ? refWorldA : null, BondBreakGuideLoneOrbitalOnAtom(atomA, orbital, newOrbital), sigmaCleavageBetweenPartners);
-            atomB?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterB == 0 ? refWorldB : null, BondBreakGuideLoneOrbitalOnAtom(atomB, orbital, newOrbital), sigmaCleavageBetweenPartners);
+            atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbital, newOrbital, returnOrbitalTo, otherAtom));
+            atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbital, newOrbital, returnOrbitalTo, otherAtom));
+            atomA?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterA == 0 ? refWorldA : null, BondBreakGuideLoneOrbitalOnAtom(atomA, orbital, newOrbital, returnOrbitalTo, otherAtom), sigmaCleavageBetweenPartners);
+            atomB?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterB == 0 ? refWorldB : null, BondBreakGuideLoneOrbitalOnAtom(atomB, orbital, newOrbital, returnOrbitalTo, otherAtom), sigmaCleavageBetweenPartners);
         }
 
         orbital = null;
@@ -821,7 +1000,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return r;
     }
 
-    /// <summary>σ-relax end poses for bond-break animation: tet (AX₃E), linear, open-from-linear, trigonal (skipped for 3σ+carbocation empty), then sp² carbocation σ plane — aligned with <see cref="AtomFunction.RedistributeOrbitals"/> bond-break path.</summary>
+    /// <summary>σ-relax end poses for bond-break animation: tet (AX₃E), linear, open-from-linear, trigonal (skipped for 3σ+carbocation empty), then sp² σ placement (trigonal carbocation / tet radical).
+    /// <see cref="AtomFunction.TryAppendRigidSigmaCleavageSubstituentAtomMoves"/> runs only when sp² yields no moves — otherwise its tet rotation about ref would overwrite CH₃⁺ trigonal H targets.</summary>
     static Dictionary<AtomFunction, (Vector3 start, Vector3 end)> BuildSigmaRelaxMovesForBreakBond(
         AtomFunction atomA,
         AtomFunction atomB,
@@ -849,31 +1029,105 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 foreach (var (n, end) in opened)
                     moves[n] = (n.transform.position, end);
             }
-            // Match RedistributeOrbitals3D: generic trigonal relax places one σ along ref (same axis as empty p) — skip for carbocation; sp² placement runs next.
-            if (!atom.IsSp2BondBreakEmptyAlongRefCase() &&
+            // Match RedistributeOrbitals3D: generic trigonal relax places one σ along ref — skip for CH₃⁺ / CH₂⁺ carbocation; sp² placement runs next.
+            if (!atom.IsSp2BondBreakEmptyAlongRefCase() && !atom.IsBondBreakTrigonalPlanarFrameworkCase() &&
                 atom.TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(refLocal, out var trig) && trig != null)
             {
                 foreach (var (n, end) in trig)
                     moves[n] = (n.transform.position, end);
             }
-            if (piAfter == 0 && refWorld.HasValue &&
-                atom.TryComputeSp2BondBreakTrigonalPlanarSigmaNeighborRelaxTargets(refWorld, pinSigmaRelaxAtoms, out var sp2cc) && sp2cc != null)
+            List<(AtomFunction neighbor, Vector3 targetWorld)> sp2cc = null;
+            bool sp2Moves =
+                piAfter == 0 && refWorld.HasValue
+                && atom.TryComputeSp2BondBreakTrigonalPlanarSigmaNeighborRelaxTargets(refWorld, pinSigmaRelaxAtoms, out sp2cc)
+                && sp2cc != null && sp2cc.Count > 0;
+            if (sp2Moves)
             {
                 foreach (var (n, end) in sp2cc)
                     moves[n] = (n.transform.position, end);
             }
+            else if (piAfter == 0 && refWorld.HasValue && refWorld.Value.sqrMagnitude >= 0.01f)
+                atom.TryAppendRigidSigmaCleavageSubstituentAtomMoves(refWorld.Value, moves);
         }
         Collect(atomA, piAngleA, refA, piAfterA);
         Collect(atomB, piAngleB, refB, piAfterB);
         return moves;
     }
 
-    /// <summary>On each atom, the lobe parented there that came from the broken bond (return orbital vs new orbital) — VSEPR guide pin.</summary>
-    static ElectronOrbitalFunction BondBreakGuideLoneOrbitalOnAtom(AtomFunction atom, ElectronOrbitalFunction orbOnA, ElectronOrbitalFunction orbOnB)
+    /// <summary>On each atom, the lobe parented there that came from the broken bond (return orbital vs new orbital) — VSEPR guide pin.
+    /// <paramref name="nucleusForOrbOnA"/> / <paramref name="nucleusForOrbOnB"/> are the nuclei that will own <paramref name="orbOnA"/> / <paramref name="orbOnB"/> after break (e.g. <c>returnOrbitalTo</c> / <c>otherAtom</c>, or <c>parentA</c> / <c>parentB</c> in animation). They need not match <see cref="CovalentBond.AtomA"/> / <see cref="CovalentBond.AtomB"/> order.</summary>
+    static ElectronOrbitalFunction BondBreakGuideLoneOrbitalOnAtom(AtomFunction atom, ElectronOrbitalFunction orbOnA, ElectronOrbitalFunction orbOnB, AtomFunction nucleusForOrbOnA, AtomFunction nucleusForOrbOnB)
     {
         if (atom == null) return null;
         if (orbOnA != null && orbOnA.transform.parent == atom.transform) return orbOnA;
         if (orbOnB != null && orbOnB.transform.parent == atom.transform) return orbOnB;
+
+        static CovalentBond BondFromOrbParent(ElectronOrbitalFunction o)
+        {
+            if (o == null || o.transform.parent == null) return null;
+            return o.transform.parent.GetComponent<CovalentBond>();
+        }
+
+        var bA = BondFromOrbParent(orbOnA);
+        var bB = BondFromOrbParent(orbOnB);
+
+        // Both break lobes still under the bond: map by intended parent nuclei, not bond.AtomA/AtomB order.
+        if (bA != null && bB != null && bA == bB && bA.AtomA != null && bA.AtomB != null)
+        {
+            if (nucleusForOrbOnA != null && nucleusForOrbOnB != null)
+            {
+                if (atom == nucleusForOrbOnA) return orbOnA;
+                if (atom == nucleusForOrbOnB) return orbOnB;
+                return null;
+            }
+            if (atom == bA.AtomA) return orbOnA;
+            if (atom == bA.AtomB) return orbOnB;
+            return null;
+        }
+
+        // One lobe still on the bond, the other already parented to a nucleus — guide for the nucleus without the spawned lobe is the bond-side orbital.
+        if (bA != null && orbOnA != null && orbOnB != null)
+        {
+            Transform pB = orbOnB.transform.parent;
+            if (pB != null && pB != orbOnA.transform.parent && BondFromOrbParent(orbOnB) == null)
+            {
+                var hostOfB = pB.GetComponent<AtomFunction>();
+                if (hostOfB != null && bA.AtomA != null && bA.AtomB != null && (hostOfB == bA.AtomA || hostOfB == bA.AtomB))
+                {
+                    AtomFunction otherNucleus = null;
+                    if (nucleusForOrbOnA != null && nucleusForOrbOnB != null)
+                    {
+                        if (hostOfB == nucleusForOrbOnA) otherNucleus = nucleusForOrbOnB;
+                        else if (hostOfB == nucleusForOrbOnB) otherNucleus = nucleusForOrbOnA;
+                    }
+                    else
+                        otherNucleus = bA.AtomA == hostOfB ? bA.AtomB : bA.AtomA;
+                    if (otherNucleus != null && atom == otherNucleus) return orbOnA;
+                }
+            }
+        }
+
+        if (bB != null && orbOnA != null && orbOnB != null)
+        {
+            Transform pA = orbOnA.transform.parent;
+            if (pA != null && pA != orbOnB.transform.parent && BondFromOrbParent(orbOnA) == null)
+            {
+                var hostOfA = pA.GetComponent<AtomFunction>();
+                if (hostOfA != null && bB.AtomA != null && bB.AtomB != null && (hostOfA == bB.AtomA || hostOfA == bB.AtomB))
+                {
+                    AtomFunction otherNucleus = null;
+                    if (nucleusForOrbOnA != null && nucleusForOrbOnB != null)
+                    {
+                        if (hostOfA == nucleusForOrbOnA) otherNucleus = nucleusForOrbOnB;
+                        else if (hostOfA == nucleusForOrbOnB) otherNucleus = nucleusForOrbOnA;
+                    }
+                    else
+                        otherNucleus = bB.AtomA == hostOfA ? bB.AtomB : bB.AtomA;
+                    if (otherNucleus != null && atom == otherNucleus) return orbOnB;
+                }
+            }
+        }
+
         return null;
     }
 
@@ -887,6 +1141,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         AtomFunction atomB,
         ElectronOrbitalFunction orbA,
         ElectronOrbitalFunction orbB,
+        AtomFunction nucleusForOrbA,
+        AtomFunction nucleusForOrbB,
         int piAfterA,
         int piAfterB,
         float? piBondAngleFromA,
@@ -928,8 +1184,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         bool sigmaRelaxPreAppliedPreview = sigmaMoves != null && sigmaMoves.Count > 0;
 
         // Pass 1: σ-relaxed geometry + full VSEPR on occupied lone lobes (0e excluded); bond-break guide lobe pinned.
-        atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB));
-        atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB));
+        atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, nucleusForOrbA, nucleusForOrbB));
+        atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, nucleusForOrbA, nucleusForOrbB));
 
         Vector3 worldA = orbA.transform.position;
         Quaternion rotWorldA = orbA.transform.rotation;
@@ -960,8 +1216,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbB.transform.localPosition = slotB.position;
             orbB.transform.localRotation = slotB.rotation;
         }
-        atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB));
-        atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB));
+        atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, nucleusForOrbA, nucleusForOrbB));
+        atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, nucleusForOrbA, nucleusForOrbB));
 
         RestoreMoleculeAtoms(snap);
         // RestoreMoleculeAtoms only resets atom transforms; RedistributeOrbitals mutates lone-lobe locals. Without restoring
@@ -998,29 +1254,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         slotB = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(targetDir, atomB.BondRadius);
     }
 
-    static Vector3 BreakBondOrbitalTipLocal(ElectronOrbitalFunction orb) =>
-        orb != null ? (orb.transform.localRotation * Vector3.right).normalized : Vector3.zero;
-
-    static void LogBreakBondNewOrbitals(string phase, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, AtomFunction parentA, AtomFunction parentB)
-    {
-        if (!DebugLogBreakBondOrbitalAngles) return;
-        void One(string label, ElectronOrbitalFunction o, AtomFunction p)
-        {
-            if (o == null)
-            {
-                LogBondBreakLine($"[bond-break] {phase} {label}: (null)");
-                return;
-            }
-            Vector3 tipL = BreakBondOrbitalTipLocal(o);
-            Vector3 tipW = p != null ? p.transform.TransformDirection(tipL) : o.transform.TransformDirection(tipL);
-            if (tipW.sqrMagnitude > 1e-8f) tipW.Normalize();
-            LogBondBreakLine(
-                $"[bond-break] {phase} {label}: orbId={o.GetInstanceID()} parentZ={p?.AtomicNumber} localEuler={o.transform.localEulerAngles} tipLocal={tipL} tipWorld={tipW}");
-        }
-        One("orbA", orbA, parentA);
-        One("orbB", orbB, parentB);
-    }
-
     /// <summary>Same end state as <see cref="CoAnimateBreakBondRedistribution"/> without lerping — for breaks where one atom is destroyed in the same frame (edit-mode H replacement, eraser).</summary>
     static void ApplyInstantBreakBondRedistribution3D(
         AtomFunction atomA,
@@ -1047,16 +1280,72 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     kv.Key.transform.position = kv.Value.end;
             }
         }
+        float psiInstA = 0f, psiInstB = 0f;
+        bool breakNewmanInstA = OrbitalAngleUtility.UseFull3DOrbitalGeometry && atomA != null && atomA.GetPiBondCount() == 0
+            && atomA.TryComputeNewmanStaggerPsi(atomB, atomA.GetBondsTo(atomB) > 0, out psiInstA);
+        bool breakNewmanInstB = OrbitalAngleUtility.UseFull3DOrbitalGeometry && atomB != null && atomB.GetPiBondCount() == 0
+            && atomB.TryComputeNewmanStaggerPsi(atomA, atomB.GetBondsTo(atomA) > 0, out psiInstB);
+        AtomFunction partnerInstA = parentA == atomA ? atomB : atomA;
+        AtomFunction partnerInstB = parentB == atomA ? atomB : atomA;
+        var slotCorInstA = parentA != null
+            ? CorrectBreakGuideSlotTowardPartner(slotLocalA, parentA, partnerInstA)
+            : slotLocalA;
+        var slotCorInstB = parentB != null
+            ? CorrectBreakGuideSlotTowardPartner(slotLocalB, parentB, partnerInstB)
+            : slotLocalB;
+        (Vector3 position, Quaternion rotation) slotFinInstA = slotCorInstA;
+        (Vector3 position, Quaternion rotation) slotFinInstB = slotCorInstB;
+        if (parentA != null && orbA != null)
+        {
+            if (parentA == atomA && breakNewmanInstA && AtomFunction.TwistSlotLocalForNewmanStaggerEnd(parentA, atomB, psiInstA, slotCorInstA.position, slotCorInstA.rotation, out var spa, out var sra))
+                slotFinInstA = (spa, sra);
+            else if (parentA == atomB && breakNewmanInstB && AtomFunction.TwistSlotLocalForNewmanStaggerEnd(parentA, atomA, psiInstB, slotCorInstA.position, slotCorInstA.rotation, out var spa2, out var sra2))
+                slotFinInstA = (spa2, sra2);
+        }
+        if (parentB != null && orbB != null)
+        {
+            if (parentB == atomA && breakNewmanInstA && AtomFunction.TwistSlotLocalForNewmanStaggerEnd(parentB, atomB, psiInstA, slotCorInstB.position, slotCorInstB.rotation, out var spb, out var srb))
+                slotFinInstB = (spb, srb);
+            else if (parentB == atomB && breakNewmanInstB && AtomFunction.TwistSlotLocalForNewmanStaggerEnd(parentB, atomA, psiInstB, slotCorInstB.position, slotCorInstB.rotation, out var spb2, out var srb2))
+                slotFinInstB = (spb2, srb2);
+        }
         if (orbA != null && parentA != null)
         {
-            orbA.transform.localPosition = slotLocalA.position;
-            orbA.transform.localRotation = slotLocalA.rotation;
+            // Do not use GetOrbitalTargetWorldState here: that pose is on the bond cylinder (midpoint + line offset), not on
+            // the nucleus — parenting to the heavy atom leaves the lobe "stuck" in space and +X can face away from the ex-partner.
+            bool preserveHeavyGuide = preserveHeavyFrameworkAfterInstantHydrogenPartnerBreak && parentA.AtomicNumber > 1;
+            if (preserveHeavyGuide)
+            {
+                Vector3? refTowardExPartner = parentA == atomA ? refA : refB;
+                if (refTowardExPartner.HasValue && refTowardExPartner.Value.sqrMagnitude >= 0.01f)
+                {
+                    Vector3 dLocal = parentA.transform.InverseTransformDirection(refTowardExPartner.Value.normalized);
+                    if (dLocal.sqrMagnitude < 1e-8f) dLocal = Vector3.right;
+                    else dLocal.Normalize();
+                    var (lp, lr) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(dLocal, parentA.BondRadius, orbA.transform.localRotation);
+                    orbA.transform.localPosition = lp;
+                    orbA.transform.localRotation = lr;
+                }
+                else
+                {
+                    orbA.transform.localPosition = slotFinInstA.position;
+                    orbA.transform.localRotation = slotFinInstA.rotation;
+                }
+            }
+            else
+            {
+                orbA.transform.localPosition = slotFinInstA.position;
+                orbA.transform.localRotation = slotFinInstA.rotation;
+            }
         }
         if (orbB != null && parentB != null)
         {
-            orbB.transform.localPosition = slotLocalB.position;
-            orbB.transform.localRotation = slotLocalB.rotation;
+            orbB.transform.localPosition = slotFinInstB.position;
+            orbB.transform.localRotation = slotFinInstB.rotation;
         }
+
+        LogBreakGuideOrbitalsPose("instant_afterSlotSnap", atomA, atomB, orbA, orbB, parentA, parentB);
+        LogBreakEmptyTeleportBoth("instant_postSlotSnap", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
 
         bool skipFinalSigmaRelax = moves.Count > 0;
         bool heavyA = atomA != null && atomA.AtomicNumber > 1;
@@ -1071,7 +1360,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth,
             pinAtomsForSigmaRelax: pinSigmaRelaxAtoms,
             skipSigmaNeighborRelax: skipFinalSigmaRelax || minimalA,
-            bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB));
+            bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, parentA, parentB));
         atomB?.RedistributeOrbitals(
             piAfterB == 0 ? piAngleB : null,
             piAfterB == 0 ? refB : null,
@@ -1079,17 +1368,28 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth,
             pinAtomsForSigmaRelax: pinSigmaRelaxAtoms,
             skipSigmaNeighborRelax: skipFinalSigmaRelax || minimalB,
-            bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB));
+            bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, parentA, parentB));
+
+        LogBreakEmptyTeleportBoth("instant_preRedistributeOrbitals", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
+        LogBreakGuideOrbitalsPose("instant_afterRedistributeOrbitals", atomA, atomB, orbA, orbB, parentA, parentB);
+        LogBreakEmptyTeleportBoth("instant_postRedistributeOrbitals", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
 
         if (!minimalA)
-            atomA?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterA == 0 ? refA : null, BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB), sigmaCleavageBetweenPartners);
+            atomA?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterA == 0 ? refA : null, BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, parentA, parentB), sigmaCleavageBetweenPartners);
         if (!minimalB)
-            atomB?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterB == 0 ? refB : null, BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB), sigmaCleavageBetweenPartners);
+            atomB?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterB == 0 ? refB : null, BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, parentA, parentB), sigmaCleavageBetweenPartners);
+
+        LogBreakGuideOrbitalsPose("instant_afterOrientEmpty", atomA, atomB, orbA, orbB, parentA, parentB);
+        LogBreakEmptyTeleportBoth("instant_postOrientEmpty", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
 
         atomA?.RefreshCharge();
         atomB?.RefreshCharge();
         atomA?.RefreshElectronSyncOnBondedOrbitals();
         atomB?.RefreshElectronSyncOnBondedOrbitals();
+
+        LogBreakGuideOrbitalsPose("instant_final_afterRefreshElectronSync", atomA, atomB, orbA, orbB, parentA, parentB);
+        LogBreakEmptyTeleportBoth("instant_postRefreshElectronSync", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
+
         AtomFunction.SetupGlobalIgnoreCollisions();
     }
 
@@ -1115,31 +1415,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var moves = BuildSigmaRelaxMovesForBreakBond(atomA, atomB, piAngleA, refA, piAfterA, piAngleB, refB, piAfterB, pinSigmaRelaxAtoms);
         bool sigmaRelaxPreApplied = moves.Count > 0;
 
-        // Slot targets at t=0 (parent may move during σ-neighbor relaxation — lerp must use per-frame slot world pose).
-        Vector3 endWorldA0 = parentA != null && orbA != null
-            ? parentA.transform.TransformPoint(slotLocalA.position)
-            : bondWorldPos;
-        Quaternion endRotA0 = parentA != null && orbA != null
-            ? parentA.transform.rotation * slotLocalA.rotation
-            : bondWorldRot;
-        Vector3 endWorldB0 = parentB != null && orbB != null
-            ? parentB.transform.TransformPoint(slotLocalB.position)
-            : bondWorldPos;
-        Quaternion endRotB0 = parentB != null && orbB != null
-            ? parentB.transform.rotation * slotLocalB.rotation
-            : bondWorldRot;
-
         const float posEps = 0.0004f;
         const float rotEps = 0.35f;
-        bool animOrbA = orbA != null && parentA != null &&
-            (Vector3.SqrMagnitude(bondWorldPos - endWorldA0) > posEps * posEps || Quaternion.Angle(bondWorldRot, endRotA0) > rotEps);
-        bool animOrbB = orbB != null && parentB != null &&
-            (Vector3.SqrMagnitude(bondWorldPos - endWorldB0) > posEps * posEps || Quaternion.Angle(bondWorldRot, endRotB0) > rotEps);
-        if (sigmaOnlyUnchangedPiBoth)
-        {
-            if (orbA != null && parentA != null) animOrbA = true;
-            if (orbB != null && parentB != null) animOrbB = true;
-        }
 
         // π count changed on an atom → use normal GetRedistributeTargets π check; σ-only break → bypass so layout still runs.
         bool topologyBypassA = piBeforeA == piAfterA;
@@ -1165,21 +1442,95 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbB.transform.localRotation = slotLocalB.rotation;
         }
 
-        var redistARaw = atomA != null ? atomA.GetRedistributeTargets(piBeforeA, null, topologyBypassA, sigmaOnlyUnchangedPiBoth, piAfterA == 0 ? piAngleA : null, piAfterA == 0 ? refA : null, BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB), sigmaNeighborCountBefore: -1) : new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
-        var redistBRaw = atomB != null ? atomB.GetRedistributeTargets(piBeforeB, null, topologyBypassB, sigmaOnlyUnchangedPiBoth, piAfterB == 0 ? piAngleB : null, piAfterB == 0 ? refB : null, BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB), sigmaNeighborCountBefore: -1) : new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
+        var redistARaw = atomA != null ? atomA.GetRedistributeTargets(piBeforeA, null, topologyBypassA, sigmaOnlyUnchangedPiBoth, piAfterA == 0 ? piAngleA : null, piAfterA == 0 ? refA : null, BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, parentA, parentB), sigmaNeighborCountBefore: -1) : new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
+        var redistBRaw = atomB != null ? atomB.GetRedistributeTargets(piBeforeB, null, topologyBypassB, sigmaOnlyUnchangedPiBoth, piAfterB == 0 ? piAngleB : null, piAfterB == 0 ? refB : null, BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, parentA, parentB), sigmaNeighborCountBefore: -1) : new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
         var redistA = FilterRedistExcludingBreakOrbitals(redistARaw, orbA, orbB);
         var redistB = FilterRedistExcludingBreakOrbitals(redistBRaw, orbA, orbB);
-        int afterFilterA = redistA.Count;
-        int afterFilterB = redistB.Count;
         // 0e lobes (perpendicular / carbocation along ref) — include σ-only so empty lobes ease instead of popping after the coroutine.
-        atomA?.AppendBondBreakEmptyOrbitalAnimTargets(redistA, piAfterA == 0 ? refA : null, sigmaCleavageBetweenPartners);
-        atomB?.AppendBondBreakEmptyOrbitalAnimTargets(redistB, piAfterB == 0 ? refB : null, sigmaCleavageBetweenPartners);
+        atomA?.AppendBondBreakEmptyOrbitalAnimTargets(redistA, piAfterA == 0 ? refA : null, sigmaCleavageBetweenPartners, BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, parentA, parentB));
+        atomB?.AppendBondBreakEmptyOrbitalAnimTargets(redistB, piAfterB == 0 ? refB : null, sigmaCleavageBetweenPartners, BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, parentA, parentB));
+
+        float psiBreakA = 0f, psiBreakB = 0f;
+        bool breakNewmanA = OrbitalAngleUtility.UseFull3DOrbitalGeometry && atomA != null && atomA.GetPiBondCount() == 0
+            && atomA.TryComputeNewmanStaggerPsi(atomB, atomA.GetBondsTo(atomB) > 0, out psiBreakA);
+        bool breakNewmanB = OrbitalAngleUtility.UseFull3DOrbitalGeometry && atomB != null && atomB.GetPiBondCount() == 0
+            && atomB.TryComputeNewmanStaggerPsi(atomA, atomB.GetBondsTo(atomA) > 0, out psiBreakB);
+
+        AtomFunction partnerOfParentA = parentA == atomA ? atomB : atomA;
+        AtomFunction partnerOfParentB = parentB == atomA ? atomB : atomA;
+        var slotCorA = parentA != null
+            ? CorrectBreakGuideSlotTowardPartner(slotLocalA, parentA, partnerOfParentA)
+            : slotLocalA;
+        var slotCorB = parentB != null
+            ? CorrectBreakGuideSlotTowardPartner(slotLocalB, parentB, partnerOfParentB)
+            : slotLocalB;
+
+        (Vector3 position, Quaternion rotation) slotFinA = slotCorA;
+        (Vector3 position, Quaternion rotation) slotFinB = slotCorB;
+        if (parentA != null && orbA != null)
+        {
+            if (parentA == atomA && breakNewmanA && AtomFunction.TwistSlotLocalForNewmanStaggerEnd(parentA, atomB, psiBreakA, slotCorA.position, slotCorA.rotation, out var spa, out var sra))
+                slotFinA = (spa, sra);
+            else if (parentA == atomB && breakNewmanB && AtomFunction.TwistSlotLocalForNewmanStaggerEnd(parentA, atomA, psiBreakB, slotCorA.position, slotCorA.rotation, out var spa2, out var sra2))
+                slotFinA = (spa2, sra2);
+        }
+        if (parentB != null && orbB != null)
+        {
+            if (parentB == atomA && breakNewmanA && AtomFunction.TwistSlotLocalForNewmanStaggerEnd(parentB, atomB, psiBreakA, slotCorB.position, slotCorB.rotation, out var spb, out var srb))
+                slotFinB = (spb, srb);
+            else if (parentB == atomB && breakNewmanB && AtomFunction.TwistSlotLocalForNewmanStaggerEnd(parentB, atomA, psiBreakB, slotCorB.position, slotCorB.rotation, out var spb2, out var srb2))
+                slotFinB = (spb2, srb2);
+        }
 
         RestoreMoleculeAtoms(moleculeSnap);
         if (orbA != null)
             orbA.transform.SetPositionAndRotation(bondWorldPos, bondWorldRot);
         if (orbB != null)
             orbB.transform.SetPositionAndRotation(bondWorldPos, bondWorldRot);
+
+        // Bond→slot lerp ends at Newman-adjusted locals when stagger applies; anim threshold uses restored parent + slotFin.
+        Vector3 endWorldA0 = parentA != null && orbA != null
+            ? parentA.transform.TransformPoint(slotFinA.position)
+            : bondWorldPos;
+        Quaternion endRotA0 = parentA != null && orbA != null
+            ? parentA.transform.rotation * slotFinA.rotation
+            : bondWorldRot;
+        Vector3 endWorldB0 = parentB != null && orbB != null
+            ? parentB.transform.TransformPoint(slotFinB.position)
+            : bondWorldPos;
+        Quaternion endRotB0 = parentB != null && orbB != null
+            ? parentB.transform.rotation * slotFinB.rotation
+            : bondWorldRot;
+        bool animOrbA = orbA != null && parentA != null &&
+            (Vector3.SqrMagnitude(bondWorldPos - endWorldA0) > posEps * posEps || Quaternion.Angle(bondWorldRot, endRotA0) > rotEps);
+        bool animOrbB = orbB != null && parentB != null &&
+            (Vector3.SqrMagnitude(bondWorldPos - endWorldB0) > posEps * posEps || Quaternion.Angle(bondWorldRot, endRotB0) > rotEps);
+        if (sigmaOnlyUnchangedPiBoth)
+        {
+            if (orbA != null && parentA != null) animOrbA = true;
+            if (orbB != null && parentB != null) animOrbB = true;
+        }
+
+        var breakNewmanFixedStartA = new Dictionary<int, Vector3>();
+        var breakNewmanFixedStartB = new Dictionary<int, Vector3>();
+        if (breakNewmanA && atomA != null)
+        {
+            foreach (var n in atomA.GetDistinctSigmaNeighborAtoms())
+            {
+                if (n == null || n == atomB || n.AtomicNumber != 1) continue;
+                if (!moves.ContainsKey(n))
+                    breakNewmanFixedStartA[n.GetInstanceID()] = n.transform.position;
+            }
+        }
+        if (breakNewmanB && atomB != null)
+        {
+            foreach (var n in atomB.GetDistinctSigmaNeighborAtoms())
+            {
+                if (n == null || n == atomA || n.AtomicNumber != 1) continue;
+                if (!moves.ContainsKey(n))
+                    breakNewmanFixedStartB[n.GetInstanceID()] = n.transform.position;
+            }
+        }
 
         var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
         var redistBStarts = new List<(Vector3 pos, Quaternion rot)>();
@@ -1227,7 +1578,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         foreach (var e in redistB)
             if (e.orb != null) e.orb.SetPointerBlocked(true);
 
-        bool runStep = moves.Count > 0 || animOrbA || animOrbB || hasRedistAnim;
+        bool runStep = moves.Count > 0 || animOrbA || animOrbB || hasRedistAnim || breakNewmanA || breakNewmanB;
         if (runStep)
         {
             for (float t = 0; t < BreakRedistributionDuration; t += Time.deltaTime)
@@ -1235,21 +1586,39 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 float s = Mathf.Clamp01(t / BreakRedistributionDuration);
                 s = s * s * (3f - 2f * s); // smoothstep
                 float rotS = 1f - (1f - s) * (1f - s); // ease-out quad (matches π step 2)
+                if (breakNewmanA && atomA != null)
+                {
+                    foreach (var n in atomA.GetDistinctSigmaNeighborAtoms())
+                    {
+                        if (n == null || n == atomB || n.AtomicNumber != 1) continue;
+                        if (breakNewmanFixedStartA.TryGetValue(n.GetInstanceID(), out Vector3 p0))
+                            n.transform.position = p0;
+                    }
+                }
+                if (breakNewmanB && atomB != null)
+                {
+                    foreach (var n in atomB.GetDistinctSigmaNeighborAtoms())
+                    {
+                        if (n == null || n == atomA || n.AtomicNumber != 1) continue;
+                        if (breakNewmanFixedStartB.TryGetValue(n.GetInstanceID(), out Vector3 p0))
+                            n.transform.position = p0;
+                    }
+                }
                 foreach (var kv in moves)
                     kv.Key.transform.position = Vector3.Lerp(kv.Value.start, kv.Value.end, s);
                 if (animOrbA && parentA != null && orbA != null)
                 {
-                    Vector3 endWA = parentA.transform.TransformPoint(slotLocalA.position);
-                    Quaternion endRA = parentA.transform.rotation * slotLocalA.rotation;
+                    Vector3 endWA = parentA.transform.TransformPoint(slotFinA.position);
+                    Quaternion endRA = parentA.transform.rotation * slotFinA.rotation;
                     orbA.transform.position = Vector3.Lerp(bondWorldPos, endWA, s);
-                    orbA.transform.rotation = Quaternion.Slerp(bondWorldRot, endRA, rotS);
+                    orbA.transform.rotation = OrbitalAngleUtility.SlerpShortest(bondWorldRot, endRA, rotS);
                 }
                 if (animOrbB && parentB != null && orbB != null)
                 {
-                    Vector3 endWB = parentB.transform.TransformPoint(slotLocalB.position);
-                    Quaternion endRB = parentB.transform.rotation * slotLocalB.rotation;
+                    Vector3 endWB = parentB.transform.TransformPoint(slotFinB.position);
+                    Quaternion endRB = parentB.transform.rotation * slotFinB.rotation;
                     orbB.transform.position = Vector3.Lerp(bondWorldPos, endWB, s);
-                    orbB.transform.rotation = Quaternion.Slerp(bondWorldRot, endRB, rotS);
+                    orbB.transform.rotation = OrbitalAngleUtility.SlerpShortest(bondWorldRot, endRB, rotS);
                 }
                 if (hasRedistAnim)
                 {
@@ -1259,7 +1628,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                         if (e.orb == null || e.orb.transform.parent != atomA.transform) continue;
                         var (sp, sr) = redistAStarts[i];
                         e.orb.transform.localPosition = Vector3.Lerp(sp, e.pos, s);
-                        e.orb.transform.localRotation = Quaternion.Slerp(sr, e.rot, rotS);
+                        e.orb.transform.localRotation = OrbitalAngleUtility.SlerpShortest(sr, e.rot, rotS);
                     }
                     for (int i = 0; i < redistB.Count; i++)
                     {
@@ -1267,24 +1636,66 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                         if (e.orb == null || e.orb.transform.parent != atomB.transform) continue;
                         var (sp, sr) = redistBStarts[i];
                         e.orb.transform.localPosition = Vector3.Lerp(sp, e.pos, s);
-                        e.orb.transform.localRotation = Quaternion.Slerp(sr, e.rot, rotS);
+                        e.orb.transform.localRotation = OrbitalAngleUtility.SlerpShortest(sr, e.rot, rotS);
                     }
                 }
+                if (breakNewmanA && atomA != null && atomB != null)
+                {
+                    Vector3 axA = atomB.transform.position - atomA.transform.position;
+                    if (axA.sqrMagnitude > 1e-10f)
+                        atomA.ApplyNewmanStaggerTwistProgress(psiBreakA, s, axA.normalized, atomB, false, parentA == atomA ? orbA : orbB);
+                }
+                if (breakNewmanB && atomA != null && atomB != null)
+                {
+                    Vector3 axB = atomA.transform.position - atomB.transform.position;
+                    if (axB.sqrMagnitude > 1e-10f)
+                        atomB.ApplyNewmanStaggerTwistProgress(psiBreakB, s, axB.normalized, atomA, false, parentA == atomB ? orbA : orbB);
+                }
+                // Same frame as lobe lerps + σ-relax: refresh σ line / bond-orbital poses (non-bond lobes do not use Bond).
+                AtomFunction.UpdateSigmaBondVisualsForAtoms(atomsToBlock);
                 yield return null;
             }
             foreach (var kv in moves)
-                kv.Key.transform.position = kv.Value.end;
+            {
+                var moved = kv.Key;
+                var end = kv.Value.end;
+                bool placed = false;
+                if (breakNewmanA && moved != null && moved.AtomicNumber == 1 && atomA != null
+                    && atomA.GetDistinctSigmaNeighborAtoms().Contains(moved) && moved != atomB)
+                {
+                    Vector3 c = atomA.transform.position;
+                    Vector3 ax = atomB.transform.position - c;
+                    if (ax.sqrMagnitude > 1e-10f)
+                    {
+                        moved.transform.position = c + Quaternion.AngleAxis(psiBreakA, ax.normalized) * (end - c);
+                        placed = true;
+                    }
+                }
+                if (!placed && breakNewmanB && moved != null && moved.AtomicNumber == 1 && atomB != null
+                    && atomB.GetDistinctSigmaNeighborAtoms().Contains(moved) && moved != atomA)
+                {
+                    Vector3 c = atomB.transform.position;
+                    Vector3 ax = atomA.transform.position - c;
+                    if (ax.sqrMagnitude > 1e-10f)
+                    {
+                        moved.transform.position = c + Quaternion.AngleAxis(psiBreakB, ax.normalized) * (end - c);
+                        placed = true;
+                    }
+                }
+                if (!placed)
+                    moved.transform.position = end;
+            }
         }
 
         if (orbA != null && parentA != null)
         {
-            orbA.transform.localPosition = slotLocalA.position;
-            orbA.transform.localRotation = slotLocalA.rotation;
+            orbA.transform.localPosition = slotFinA.position;
+            orbA.transform.localRotation = slotFinA.rotation;
         }
         if (orbB != null && parentB != null)
         {
-            orbB.transform.localPosition = slotLocalB.position;
-            orbB.transform.localRotation = slotLocalB.rotation;
+            orbB.transform.localPosition = slotFinB.position;
+            orbB.transform.localRotation = slotFinB.rotation;
         }
         if (hasRedistAnim)
         {
@@ -1293,8 +1704,11 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 var e = redistA[i];
                 if (e.orb != null && e.orb.transform.parent == atomA.transform)
                 {
-                    e.orb.transform.localPosition = e.pos;
-                    e.orb.transform.localRotation = e.rot;
+                    if (!breakNewmanA || e.orb.ElectronCount <= 0)
+                    {
+                        e.orb.transform.localPosition = e.pos;
+                        e.orb.transform.localRotation = e.rot;
+                    }
                 }
             }
             for (int i = 0; i < redistB.Count; i++)
@@ -1302,13 +1716,22 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 var e = redistB[i];
                 if (e.orb != null && e.orb.transform.parent == atomB.transform)
                 {
-                    e.orb.transform.localPosition = e.pos;
-                    e.orb.transform.localRotation = e.rot;
+                    if (!breakNewmanB || e.orb.ElectronCount <= 0)
+                    {
+                        e.orb.transform.localPosition = e.pos;
+                        e.orb.transform.localRotation = e.rot;
+                    }
                 }
             }
         }
 
-        LogBreakBondNewOrbitals("afterAnimSnap (before Redistribute)", orbA, orbB, parentA, parentB);
+        if (breakNewmanA)
+            atomA?.RefreshSigmaBondTransformsAndChargesAroundAtom();
+        if (breakNewmanB)
+            atomB?.RefreshSigmaBondTransformsAndChargesAroundAtom();
+
+        LogBreakGuideOrbitalsPose("afterAnimSlot_redistSnap_refreshSigma", atomA, atomB, orbA, orbB, parentA, parentB);
+        LogBreakEmptyTeleportBoth("co_postAnim_redistSnap_refreshSigma", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
 
         bool skipFinalSigmaRelax = sigmaRelaxPreApplied;
 
@@ -1317,11 +1740,19 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         foreach (var e in redistB)
             if (e.orb != null) e.orb.SetPointerBlocked(false);
 
-        atomA?.RedistributeOrbitals(piAfterA == 0 ? piAngleA : null, piAfterA == 0 ? refA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: skipFinalSigmaRelax, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB));
-        atomB?.RedistributeOrbitals(piAfterB == 0 ? piAngleB : null, piAfterB == 0 ? refB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: skipFinalSigmaRelax, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB));
+        LogBreakEmptyTeleportBoth("co_preRedistributeOrbitals", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
+        bool skipSparseSpreadAfterBreakAnim = runStep && sigmaOnlyUnchangedPiBoth;
+        atomA?.RedistributeOrbitals(piAfterA == 0 ? piAngleA : null, piAfterA == 0 ? refA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: skipFinalSigmaRelax, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, parentA, parentB), skipBondBreakSparseNonbondSpread: skipSparseSpreadAfterBreakAnim);
+        atomB?.RedistributeOrbitals(piAfterB == 0 ? piAngleB : null, piAfterB == 0 ? refB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: skipFinalSigmaRelax, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, parentA, parentB), skipBondBreakSparseNonbondSpread: skipSparseSpreadAfterBreakAnim);
 
-        atomA?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterA == 0 ? refA : null, BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB), sigmaCleavageBetweenPartners);
-        atomB?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterB == 0 ? refB : null, BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB), sigmaCleavageBetweenPartners);
+        LogBreakGuideOrbitalsPose("afterRedistributeOrbitals", atomA, atomB, orbA, orbB, parentA, parentB);
+        LogBreakEmptyTeleportBoth("co_postRedistributeOrbitals", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
+
+        atomA?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterA == 0 ? refA : null, BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, parentA, parentB), sigmaCleavageBetweenPartners);
+        atomB?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterB == 0 ? refB : null, BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, parentA, parentB), sigmaCleavageBetweenPartners);
+
+        LogBreakGuideOrbitalsPose("afterOrientEmpty", atomA, atomB, orbA, orbB, parentA, parentB);
+        LogBreakEmptyTeleportBoth("co_postOrientEmpty", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
 
         if (AtomFunction.DebugLogCcBondBreakGeometry)
         {
@@ -1334,7 +1765,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomA?.RefreshElectronSyncOnBondedOrbitals();
         atomB?.RefreshElectronSyncOnBondedOrbitals();
 
-        LogBreakBondNewOrbitals("afterRedistribute fullVsepr", orbA, orbB, parentA, parentB);
+        LogBreakGuideOrbitalsPose("final_afterRefreshElectronSync", atomA, atomB, orbA, orbB, parentA, parentB);
+        LogBreakEmptyTeleportBoth("co_postRefreshElectronSync", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
 
         if (orbA != null) orbA.SetPointerBlocked(false);
         if (orbB != null) orbB.SetPointerBlocked(false);

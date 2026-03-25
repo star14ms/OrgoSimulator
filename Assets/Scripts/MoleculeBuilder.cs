@@ -259,7 +259,7 @@ public class MoleculeBuilder : MonoBehaviour
             Vector3 dirToAnchor = (anchorAtom.transform.position - atoms[0].transform.position).normalized;
             var orb0 = atoms[0].GetLoneOrbitalWithOneElectron(dirToAnchor);
             if (orb0 != null)
-                FormSigmaBondInstant(anchorAtom, atoms[0], anchorOrbital, orb0);
+                FormSigmaBondInstant(anchorAtom, atoms[0], anchorOrbital, orb0, true, true);
         }
 
         foreach (var a in atoms)
@@ -329,7 +329,7 @@ public class MoleculeBuilder : MonoBehaviour
             Vector3 dirToAnchor = (anchorAtom.transform.position - atoms[0].transform.position).normalized;
             var orb0 = atoms[0].GetLoneOrbitalWithOneElectron(dirToAnchor);
             if (orb0 != null)
-                FormSigmaBondInstant(anchorAtom, atoms[0], anchorOrbital, orb0, redistributeEndpoints: false);
+                FormSigmaBondInstant(anchorAtom, atoms[0], anchorOrbital, orb0, false, false);
         }
 
         for (int i = 0; i < 3; i++)
@@ -376,10 +376,16 @@ public class MoleculeBuilder : MonoBehaviour
         var orbB = atomB.GetLoneOrbitalWithOneElectron(dirBtoA);
         if (orbA == null || orbB == null) return;
 
-        FormSigmaBondInstant(atomA, atomB, orbA, orbB, redistributeEndpoints);
+        FormSigmaBondInstant(atomA, atomB, orbA, orbB, redistributeEndpoints, redistributeEndpoints);
     }
 
-    void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, bool redistributeEndpoints = true)
+    void FormSigmaBondInstant(
+        AtomFunction atomA,
+        AtomFunction atomB,
+        ElectronOrbitalFunction orbA,
+        ElectronOrbitalFunction orbB,
+        bool redistributeAtomA = true,
+        bool redistributeAtomB = true)
     {
         if (atomA == null || atomB == null || orbA == null || orbB == null) return;
 
@@ -394,11 +400,10 @@ public class MoleculeBuilder : MonoBehaviour
         {
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
-            if (redistributeEndpoints)
-            {
+            if (redistributeAtomA)
                 atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA);
+            if (redistributeAtomB)
                 atomB.RedistributeOrbitals(newSigmaBondPartnerHint: atomA, sigmaNeighborCountBeforeHint: sigmaBeforeB);
-            }
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }
@@ -490,15 +495,15 @@ public class MoleculeBuilder : MonoBehaviour
         return a;
     }
 
-    /// <summary>σ bond with immediate RedistributeOrbitals on both atoms so the next bond from the same center picks correct lone lobes (VSEPR, no FG-specific hardcoding).</summary>
-    bool BondSigma(AtomFunction a, AtomFunction b)
+    /// <summary>σ bond with optional per-end RedistributeOrbitals (both true = next bond from each center sees updated VSEPR).</summary>
+    bool BondSigma(AtomFunction a, AtomFunction b, bool redistributeAtomA = true, bool redistributeAtomB = true)
     {
         Vector3 dAB = (b.transform.position - a.transform.position).normalized;
         Vector3 dBA = -dAB;
         var oa = a.GetLoneOrbitalForBondFormation(dAB);
         var ob = b.GetLoneOrbitalWithOneElectron(dBA);
         if (oa == null || ob == null) return false;
-        FormSigmaBondInstant(a, b, oa, ob, redistributeEndpoints: true);
+        FormSigmaBondInstant(a, b, oa, ob, redistributeAtomA, redistributeAtomB);
         return true;
     }
 
@@ -507,6 +512,17 @@ public class MoleculeBuilder : MonoBehaviour
         if (anyAtomInFragment == null) return;
         foreach (var atom in anyAtomInFragment.GetConnectedMolecule())
             if (atom != null) atom.RedistributeOrbitals();
+    }
+
+    /// <summary>Like <see cref="RedistributeOrbitalsOnConnectedMolecule"/> but skips <paramref name="skipAtom"/> (e.g. attachment carbon when preserving —CH₃ lobe/H geometry).</summary>
+    static void RedistributeOrbitalsOnConnectedMoleculeExcept(AtomFunction anyAtomInFragment, AtomFunction skipAtom)
+    {
+        if (anyAtomInFragment == null) return;
+        foreach (var atom in anyAtomInFragment.GetConnectedMolecule())
+        {
+            if (atom == null || atom == skipAtom) continue;
+            atom.RedistributeOrbitals();
+        }
     }
 
     /// <summary>
@@ -607,7 +623,14 @@ public class MoleculeBuilder : MonoBehaviour
     }
 
     /// <summary>First atom of the group is placed at <paramref name="anchorWorldPos"/> and σ-bonded to <paramref name="parent"/>.</summary>
-    public bool BuildFunctionalGroup(FunctionalGroupKind kind, AtomFunction parent, Vector3 anchorWorldPos, EditModeManager edit, out AtomFunction selectionAnchor)
+    /// <param name="preserveAttachmentParentGeometry">When true (free 1e orbital attach): do not VSEPR-redistribute <paramref name="parent"/> or the whole molecule on parent — keeps existing C—H / lobe directions on that center (same idea as edit add-atom <c>redistributeAtomA: false</c>).</param>
+    public bool BuildFunctionalGroup(
+        FunctionalGroupKind kind,
+        AtomFunction parent,
+        Vector3 anchorWorldPos,
+        EditModeManager edit,
+        out AtomFunction selectionAnchor,
+        bool preserveAttachmentParentGeometry = false)
     {
         selectionAnchor = null;
         if (parent == null || atomPrefab == null) return false;
@@ -639,7 +662,10 @@ public class MoleculeBuilder : MonoBehaviour
         int anchorFormalCharge = kind == FunctionalGroupKind.Nitro ? 1 : 0;
         var anchor = SpawnAtomElement(z0, anchorWorldPos, anchorFormalCharge);
         if (anchor == null) return false;
-        if (!BondSigma(parent, anchor))
+        bool bondOk = preserveAttachmentParentGeometry
+            ? BondSigma(parent, anchor, redistributeAtomA: false, redistributeAtomB: true)
+            : BondSigma(parent, anchor);
+        if (!bondOk)
         {
             Destroy(anchor.gameObject);
             return false;
@@ -773,7 +799,10 @@ public class MoleculeBuilder : MonoBehaviour
             }
 
             // Whole fragment (parent + FG): π changes lone/σ layout on atoms not always in `touched` ordering.
-            RedistributeOrbitalsOnConnectedMolecule(anchor);
+            if (preserveAttachmentParentGeometry)
+                RedistributeOrbitalsOnConnectedMoleculeExcept(anchor, parent);
+            else
+                RedistributeOrbitalsOnConnectedMolecule(anchor);
 
             if (traceNitroOrCarboxyl)
                 LogFgOrbit($"After RedistributeOrbitals #1:\n{DescribeConnectedFragment(anchor)}");
@@ -788,7 +817,10 @@ public class MoleculeBuilder : MonoBehaviour
                     edit.SaturateAtomsWithHydrogenPass(fgOnly);
             }
 
-            RedistributeOrbitalsOnConnectedMolecule(anchor);
+            if (preserveAttachmentParentGeometry)
+                RedistributeOrbitalsOnConnectedMoleculeExcept(anchor, parent);
+            else
+                RedistributeOrbitalsOnConnectedMolecule(anchor);
 
             if (traceNitroOrCarboxyl)
             {

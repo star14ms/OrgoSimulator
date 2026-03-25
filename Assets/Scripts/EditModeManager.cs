@@ -13,11 +13,6 @@ using System.Linq;
 public class EditModeManager : MonoBehaviour
 {
     [SerializeField] GameObject atomPrefab;
-    [Tooltip("Logs [attach-anchor-pos] for carbon world positions during H→atom replace, add-atom attach, and related paths (mirrors to project .log when enabled).")]
-    [SerializeField] bool debugLogAttachAnchorCarbonPosition = true;
-    [Tooltip("Logs [attach-added-group] for the new non-H fragment: position, σN, non-bond orbital counts through attach + optional per-H H-auto steps.")]
-    [SerializeField] bool debugLogAttachAddedGroup = true;
-
     bool editModeActive = true;
     bool hAutoMode;
     bool eraserMode;
@@ -139,8 +134,6 @@ public class EditModeManager : MonoBehaviour
     {
         moleculeBuilder = FindFirstObjectByType<MoleculeBuilder>();
         CreateBackgroundForDeselect();
-        AtomFunction.DebugLogAttachAnchorCarbonPosition = debugLogAttachAnchorCarbonPosition;
-        AtomFunction.DebugLogAttachAddedGroup = debugLogAttachAddedGroup;
     }
 
     void CreateBackgroundForDeselect()
@@ -473,11 +466,73 @@ public class EditModeManager : MonoBehaviour
         if (selectedAtom.AtomicNumber == 1 && !orbitalExplicitlySelected)
             return TryReplaceHydrogenWithAtom(atomicNumber);
 
-        var orb = selectedOrbital ?? selectedAtom.GetOrbitalClosestToAngle(0f);
-        if (orb == null || orb.Bond != null || orb.ElectronCount != 1) return false;
+        // Bond from anchor only when there is a usable 1e lone. If the user explicitly picked an orbital that is no
+        // longer 1e (bonded / filled), do not silently fall back to another lobe — spawn nearby and select the new atom instead.
+        var oneELones = selectedAtom.GetLoneOrbitalsWithOneElectronSortedByAngle();
+        ElectronOrbitalFunction orb = null;
+        if (oneELones.Count > 0)
+        {
+            if (orbitalExplicitlySelected)
+            {
+                if (selectedOrbital != null && selectedOrbital.Bond == null && selectedOrbital.ElectronCount == 1 &&
+                    oneELones.Contains(selectedOrbital))
+                    orb = selectedOrbital;
+            }
+            else
+            {
+                if (selectedOrbital != null && selectedOrbital.Bond == null && selectedOrbital.ElectronCount == 1 &&
+                    oneELones.Contains(selectedOrbital))
+                    orb = selectedOrbital;
+                if (orb == null)
+                    orb = selectedAtom.GetOrbitalClosestToAngle(0f);
+            }
+        }
 
-        Vector3 dir = orb.transform.TransformDirection(Vector3.right);
-        Vector3 newPos = selectedAtom.transform.position + dir * GetBondLength();
+        // Toolbar H on heavy: match H-auto / VSEPR (tetrahedral or π-aware planar), not "orbital closest to 0°" in view.
+        Vector3? hydrogenBondDirWorld = null;
+        if (atomicNumber == 1 && selectedAtom.AtomicNumber > 1 && oneELones.Count > 0 && !orbitalExplicitlySelected)
+        {
+            Vector3 dirN;
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
+                var sigmaWorld = CollectSigmaBondNeighborDirectionsWorld(selectedAtom);
+                dirN = ComputeNextHydrogenDirectionWorldForSaturate(selectedAtom, sigmaWorld);
+            }
+            else
+            {
+                var dirsXY = CollectSigmaBondNeighborDirectionsWorldXY(selectedAtom);
+                dirN = ComputeNextHydrogenDirectionWorldForSaturatePlanarXY(selectedAtom, dirsXY);
+            }
+            var idealOrb = selectedAtom.GetLoneOrbitalWithOneElectron(dirN);
+            if (idealOrb != null)
+            {
+                orb = idealOrb;
+                hydrogenBondDirWorld = dirN.sqrMagnitude > 1e-10f ? dirN.normalized : (Vector3?)null;
+            }
+        }
+
+        bool anchorHasBondingLone = orb != null;
+
+        Vector3 newPos;
+        if (anchorHasBondingLone)
+        {
+            Vector3 dir = hydrogenBondDirWorld ?? orb.transform.TransformDirection(Vector3.right);
+            if (dir.sqrMagnitude < 1e-10f) dir = Vector3.right;
+            else dir.Normalize();
+            newPos = selectedAtom.transform.position + dir * GetBondLength();
+        }
+        else
+        {
+            float bl = GetBondLength();
+            Vector3 offset = Vector3.right * bl;
+            if (Camera.main != null)
+            {
+                Vector3 fd = Camera.main.transform.forward;
+                if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry) fd.z = 0f;
+                if (fd.sqrMagnitude > 1e-6f) offset = fd.normalized * bl;
+            }
+            newPos = selectedAtom.transform.position + offset;
+        }
 
         var newAtomGo = Instantiate(atomPrefab, newPos, Quaternion.identity);
         if (!newAtomGo.TryGetComponent<AtomFunction>(out var newAtom))
@@ -487,35 +542,94 @@ public class EditModeManager : MonoBehaviour
         }
         newAtom.AtomicNumber = atomicNumber;
         newAtom.ForceInitialize();
-        Vector3? addedGroupBaseline = newAtom.AtomicNumber > 1 ? newAtom.transform.position : (Vector3?)null;
-        AtomFunction.LogAttachAddedGroupPhase("TryAddAtom: after ForceInitialize", newAtom, addedGroupBaseline);
 
-        Vector3 dirToSelected = (selectedAtom.transform.position - newAtom.transform.position).normalized;
-        var newOrb = newAtom.GetLoneOrbitalWithOneElectron(dirToSelected);
-        if (newOrb == null)
+        if (anchorHasBondingLone)
         {
-            Destroy(newAtomGo);
-            return false;
+            Vector3 dirToSelected = (selectedAtom.transform.position - newAtom.transform.position).normalized;
+            var newOrb = newAtom.GetLoneOrbitalWithOneElectron(dirToSelected);
+            if (newOrb == null)
+            {
+                Destroy(newAtomGo);
+                return false;
+            }
+
+            var anchor = selectedAtom;
+            bool heavyHeavy = atomicNumber > 1 && anchor.AtomicNumber > 1;
+            bool hOnHeavy = atomicNumber == 1 && anchor.AtomicNumber > 1;
+            bool anchorHasHeavySigmaNeighbor = false;
+            if (hOnHeavy)
+            {
+                foreach (var n in anchor.GetDistinctSigmaNeighborAtoms())
+                {
+                    if (n != null && n.AtomicNumber > 1)
+                    {
+                        anchorHasHeavySigmaNeighbor = true;
+                        break;
+                    }
+                }
+            }
+            // Heavy–heavy: keep anchor geometry (chain extend). H next to another heavy (e.g. —CH₂—): VSEPR relax on anchor.
+            // H on a center σ-bonded only to other H's (CH₄ / —CH₃): skip full anchor relax — it re-clamps to a canonical
+            // tetrahedron and visibly spins the molecule on the last H.
+            bool redistributeAnchor = !heavyHeavy && (!hOnHeavy || anchorHasHeavySigmaNeighbor);
+            FormSigmaBondInstant(anchor, newAtom, orb, newOrb, redistributeAtomA: redistributeAnchor, redistributeAtomB: true);
+
+            if (atomicNumber == 1 && anchor.AtomicNumber > 1 && OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+                anchor.TryPlaceTetrahedralHydrogenSubstituentsAboutSingleHeavyNeighbor(GetBondLength());
+
+            selectedOrbital?.SetHighlighted(false);
+            orbitalExplicitlySelected = false;
+
+            if (hAutoMode)
+                SaturateWithHydrogen(newAtom);
+
+            if (hAutoMode && OrbitalAngleUtility.UseFull3DOrbitalGeometry && newAtom.AtomicNumber > 1)
+                newAtom.TryStaggerNewmanRelativeToPartner(anchor);
+
+            // Same-element heavy (e.g. C on C): continue from the new tip so repeated toolbar adds extend the chain.
+            bool sameHeavyExtend = atomicNumber > 1 && anchor.AtomicNumber == atomicNumber;
+            if (sameHeavyExtend)
+            {
+                anchor.SetSelectionHighlight(false);
+                selectedAtom = newAtom;
+                selectedMolecule = newAtom.GetConnectedMolecule();
+                selectedOrbital = newAtom.GetOrbitalClosestToAngle(0f);
+            }
+            else
+            {
+                selectedOrbital = anchor.GetOrbitalClosestToAngle(0f);
+            }
+            if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
+            selectedAtom.SetSelectionHighlight(true);
+            ApplySelectionHighlights();
+            RefreshSelectedMoleculeAfterBondChange();
+        }
+        else
+        {
+            // Only take over selection when the new center actually exposes a 1e lone (user can continue bonding from it).
+            var newOnes = newAtom.GetLoneOrbitalsWithOneElectronSortedByAngle();
+            if (newOnes.Count == 0)
+            {
+                Destroy(newAtomGo);
+                return false;
+            }
+
+            selectedAtom.SetSelectionHighlight(false);
+            selectedOrbital?.SetHighlighted(false);
+            selectedAtom = newAtom;
+            selectedMolecule = newAtom.GetConnectedMolecule();
+            selectedOrbital = newOnes[0];
+            orbitalExplicitlySelected = true;
+            selectedAtom.SetSelectionHighlight(true);
+            if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
+            ApplySelectionHighlights();
+            RefreshSelectedMoleculeAfterBondChange();
+
+            if (hAutoMode)
+                SaturateWithHydrogen(newAtom);
         }
 
-        Vector3 anchorBaseline = selectedAtom.AtomicNumber == 6 ? selectedAtom.transform.position : default;
-        AtomFunction.LogAttachAnchorCarbonPhase("TryAddAtom: before FormSigmaBondInstant", selectedAtom, selectedAtom.AtomicNumber == 6 ? anchorBaseline : null);
-        AtomFunction.LogAttachAddedGroupPhase("TryAddAtom: before FormSigmaBondInstant", newAtom, addedGroupBaseline);
-        // Redistribute / tet σ-relax on the new fragment only — do not move the anchor's existing substituents.
-        FormSigmaBondInstant(selectedAtom, newAtom, orb, newOrb, redistributeAtomA: false, redistributeAtomB: true);
-        AtomFunction.LogAttachAddedGroupPhase("TryAddAtom: after FormSigmaBondInstant", newAtom, addedGroupBaseline);
-
-        selectedOrbital?.SetHighlighted(false);
-        selectedOrbital = selectedAtom.GetOrbitalClosestToAngle(0f);
-        if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
-
-        if (hAutoMode)
-            SaturateWithHydrogen(newAtom, logAddedGroupAfterEachHydrogen: true, addedGroupPositionBaseline: addedGroupBaseline);
-
-        AtomFunction.LogAttachAnchorCarbonPhase("TryAddAtom: after Saturate+HAuto", selectedAtom, selectedAtom.AtomicNumber == 6 ? anchorBaseline : null);
-        AtomFunction.LogAttachAddedGroupPhase("TryAddAtom: end", newAtom, addedGroupBaseline);
         AtomFunction.SetupGlobalIgnoreCollisions();
-        AtomFunction.LogAttachAnchorCarbonPhase("TryAddAtom: end", selectedAtom, selectedAtom.AtomicNumber == 6 ? anchorBaseline : null);
         return true;
     }
 
@@ -533,10 +647,7 @@ public class EditModeManager : MonoBehaviour
         if (parentAtom == null || bondToBreak == null) return false;
 
         Vector3 hPos = hydrogen.transform.position;
-        Vector3 parentBaseline = parentAtom.transform.position;
-        AtomFunction.LogAttachAnchorCarbonPhase("TryReplaceH: before BreakBond", parentAtom, parentBaseline);
         bondToBreak.BreakBond(parentAtom, instantRedistributionForDestroyPartner: true);
-        AtomFunction.LogAttachAnchorCarbonPhase("TryReplaceH: after BreakBond", parentAtom, parentBaseline);
         selectedAtom?.SetSelectionHighlight(false);
         selectedOrbital?.SetHighlighted(false);
         Destroy(hydrogen.gameObject);
@@ -549,8 +660,6 @@ public class EditModeManager : MonoBehaviour
         }
         newAtom.AtomicNumber = atomicNumber;
         newAtom.ForceInitialize();
-        Vector3? addedGroupBaseline = newAtom.AtomicNumber > 1 ? newAtom.transform.position : (Vector3?)null;
-        AtomFunction.LogAttachAddedGroupPhase("TryReplaceH: after ForceInitialize", newAtom, addedGroupBaseline);
 
         Vector3 dirToNewAtom = (newAtom.transform.position - parentAtom.transform.position).normalized;
         var parentOrb = parentAtom.GetLoneOrbitalForBondFormation(dirToNewAtom);
@@ -568,35 +677,56 @@ public class EditModeManager : MonoBehaviour
             return false;
         }
 
-        AtomFunction.LogAttachAnchorCarbonPhase("TryReplaceH: before FormSigmaBondInstant", parentAtom, parentBaseline);
-        AtomFunction.LogAttachAddedGroupPhase("TryReplaceH: before FormSigmaBondInstant", newAtom, addedGroupBaseline);
-        FormSigmaBondInstant(parentAtom, newAtom, parentOrb, newOrb, redistributeAtomA: false, redistributeAtomB: true);
-        AtomFunction.LogAttachAnchorCarbonPhase("TryReplaceH: after FormSigmaBondInstant", parentAtom, parentBaseline);
-        AtomFunction.LogAttachAddedGroupPhase("TryReplaceH: after FormSigmaBondInstant", newAtom, addedGroupBaseline);
+        // H-auto saturation (and work-plane sync) can shift apparent framing; freeze perspective camera + orbit pivot for this replace sequence.
+        bool preserveCamView = hAutoMode && Camera.main != null && !Camera.main.orthographic;
+        ScrollOrbitCamera orbitCam = null;
+        Vector3 savedCamPos = default;
+        Quaternion savedCamRot = default;
+        Vector3 savedOrbitFocus = default;
+        if (preserveCamView)
+        {
+            var cam = Camera.main;
+            savedCamPos = cam.transform.position;
+            savedCamRot = cam.transform.rotation;
+            orbitCam = cam.GetComponent<ScrollOrbitCamera>();
+            if (orbitCam != null) savedOrbitFocus = orbitCam.OrbitFocusWorld;
+        }
 
-        selectedAtom = newAtom;
-        selectedOrbital = newAtom.GetOrbitalClosestToAngle(0f);
-        selectedAtom.SetSelectionHighlight(true);
-        if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
+        try
+        {
+            // Do not σ-relax or re-snap the parent: keep its electron/orbital layout as-is; the added atom redistributes (and H-auto / Newman stagger only affect the new center).
+            FormSigmaBondInstant(parentAtom, newAtom, parentOrb, newOrb, redistributeAtomA: false, redistributeAtomB: true);
 
-        if (hAutoMode)
-            SaturateWithHydrogen(newAtom, logAddedGroupAfterEachHydrogen: true, addedGroupPositionBaseline: addedGroupBaseline);
+            selectedAtom = newAtom;
+            selectedOrbital = newAtom.GetOrbitalClosestToAngle(0f);
+            selectedAtom.SetSelectionHighlight(true);
+            if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
 
-        AtomFunction.LogAttachAnchorCarbonPhase("TryReplaceH: after Saturate+HAuto", parentAtom, parentBaseline);
-        AtomFunction.LogAttachAddedGroupPhase("TryReplaceH: after Saturate+HAuto", newAtom, addedGroupBaseline);
-        AtomFunction.SetupGlobalIgnoreCollisions();
-        AtomFunction.LogAttachAnchorCarbonPhase("TryReplaceH: end", parentAtom, parentBaseline);
-        AtomFunction.LogAttachAddedGroupPhase("TryReplaceH: end", newAtom, addedGroupBaseline);
-        return true;
+            if (hAutoMode)
+                SaturateWithHydrogen(newAtom);
+
+            // Stagger vs parent whenever attaching a heavy atom in 3D (not only when H-auto ran), so replace-H matches toolbar C→C behavior.
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && newAtom.AtomicNumber > 1)
+                newAtom.TryStaggerNewmanRelativeToPartner(parentAtom);
+
+            AtomFunction.SetupGlobalIgnoreCollisions();
+            return true;
+        }
+        finally
+        {
+            if (preserveCamView && Camera.main != null)
+            {
+                var cam = Camera.main;
+                if (orbitCam != null)
+                    orbitCam.RestoreCameraPoseAndFocus(savedCamPos, savedCamRot, savedOrbitFocus);
+                else
+                    cam.transform.SetPositionAndRotation(savedCamPos, savedCamRot);
+            }
+        }
     }
 
     void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, bool redistributeAtomA = true, bool redistributeAtomB = true)
     {
-        Vector3? a0 = atomA != null && atomA.AtomicNumber == 6 ? atomA.transform.position : (Vector3?)null;
-        Vector3? b0 = atomB != null && atomB.AtomicNumber == 6 ? atomB.transform.position : (Vector3?)null;
-        AtomFunction.LogAttachAnchorCarbonPhase("FormSigmaInstant: entry", atomA);
-        AtomFunction.LogAttachAnchorCarbonPhase("FormSigmaInstant: entry", atomB);
-
         int merged = orbA.ElectronCount + orbB.ElectronCount;
         int sigmaBeforeA = atomA.GetDistinctSigmaNeighborCount();
         int sigmaBeforeB = atomB.GetDistinctSigmaNeighborCount();
@@ -628,9 +758,6 @@ public class EditModeManager : MonoBehaviour
             else if (atomB != null && atomB.AtomicNumber > 1 && atomA != null && atomA.AtomicNumber == 1)
                 atomB.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bl);
         }
-
-        if (a0.HasValue && atomA != null) AtomFunction.LogAttachAnchorCarbonPhase("FormSigmaInstant: after bond+redist", atomA, a0.Value);
-        if (b0.HasValue && atomB != null) AtomFunction.LogAttachAnchorCarbonPhase("FormSigmaInstant: after bond+redist", atomB, b0.Value);
 
         RefreshSelectedMoleculeAfterBondChange();
     }
@@ -810,20 +937,11 @@ public class EditModeManager : MonoBehaviour
 
     public void SaturateWithHydrogen(AtomFunction atom)
     {
-        SaturateWithHydrogen(atom, false, null);
-    }
-
-    /// <param name="logAddedGroupAfterEachHydrogen">When true with a baseline, logs <c>[attach-added-group]</c> after each H bond + redistribute (edit attach debug).</param>
-    public void SaturateWithHydrogen(AtomFunction atom, bool logAddedGroupAfterEachHydrogen, Vector3? addedGroupPositionBaseline)
-    {
         if (atom == null || atomPrefab == null || Camera.main == null) return;
 
         atom.ForceInitialize();
-        if (logAddedGroupAfterEachHydrogen && addedGroupPositionBaseline.HasValue)
-            AtomFunction.LogAttachAddedGroupPhase("SaturateWithHydrogen: enter", atom, addedGroupPositionBaseline);
 
         float bondLength = GetBondLength();
-        int hStep = 0;
 
         while (true)
         {
@@ -862,7 +980,6 @@ public class EditModeManager : MonoBehaviour
                 break;
             }
 
-            hStep++;
             FormSigmaBondInstant(atom, hAtom, orb, hOrb);
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
@@ -875,16 +992,11 @@ public class EditModeManager : MonoBehaviour
                 var bondAngle = atom.GetPrimaryBondDirectionAngle();
                 atom.RedistributeOrbitals(piBondAngleOverride: bondAngle);
             }
-            if (logAddedGroupAfterEachHydrogen && addedGroupPositionBaseline.HasValue)
-                AtomFunction.LogAttachAddedGroupPhase($"SaturateWithHydrogen: after H#{hStep} bond+redist", atom, addedGroupPositionBaseline);
             AtomFunction.SetupGlobalIgnoreCollisions();
         }
 
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && atom != null && atom.AtomicNumber > 1)
             atom.TryPlaceTetrahedralHydrogenSubstituentsAboutSingleHeavyNeighbor(bondLength);
-
-        if (logAddedGroupAfterEachHydrogen && addedGroupPositionBaseline.HasValue)
-            AtomFunction.LogAttachAddedGroupPhase("SaturateWithHydrogen: exit", atom, addedGroupPositionBaseline);
     }
 
     /// <summary>
@@ -1080,7 +1192,7 @@ public class EditModeManager : MonoBehaviour
         float bl = GetBondLength();
         Vector3 anchorPos = selectedAtom.transform.position + dir * bl;
 
-        if (!moleculeBuilder.BuildFunctionalGroup(kind, selectedAtom, anchorPos, this, out _))
+        if (!moleculeBuilder.BuildFunctionalGroup(kind, selectedAtom, anchorPos, this, out _, preserveAttachmentParentGeometry: true))
             return false;
 
         selectedOrbital?.SetHighlighted(false);
