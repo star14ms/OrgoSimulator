@@ -896,8 +896,10 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
         else
         {
-            atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbital, newOrbital, returnOrbitalTo, otherAtom));
-            atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbital, newOrbital, returnOrbitalTo, otherAtom));
+            var gA = BondBreakGuideLoneOrbitalOnAtom(atomA, orbital, newOrbital, returnOrbitalTo, otherAtom);
+            var gB = BondBreakGuideLoneOrbitalOnAtom(atomB, orbital, newOrbital, returnOrbitalTo, otherAtom);
+            atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins, bondBreakGuideLoneOrbital: gA);
+            atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins, bondBreakGuideLoneOrbital: gB);
             atomA?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterA == 0 ? refWorldA : null, BondBreakGuideLoneOrbitalOnAtom(atomA, orbital, newOrbital, returnOrbitalTo, otherAtom), sigmaCleavageBetweenPartners);
             atomB?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(piAfterB == 0 ? refWorldB : null, BondBreakGuideLoneOrbitalOnAtom(atomB, orbital, newOrbital, returnOrbitalTo, otherAtom), sigmaCleavageBetweenPartners);
         }
@@ -1128,8 +1130,10 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         bool sigmaRelaxPreAppliedPreview = sigmaMoves != null && sigmaMoves.Count > 0;
 
         // Pass 1: σ-relaxed geometry + full VSEPR on occupied lone lobes (0e excluded); bond-break guide lobe pinned.
-        atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, nucleusForOrbA, nucleusForOrbB));
-        atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, nucleusForOrbA, nucleusForOrbB));
+        var gPreviewA = BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, nucleusForOrbA, nucleusForOrbB);
+        var gPreviewB = BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, nucleusForOrbA, nucleusForOrbB);
+        atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: gPreviewA);
+        atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: gPreviewB);
 
         Vector3 worldA = orbA.transform.position;
         Quaternion rotWorldA = orbA.transform.rotation;
@@ -1160,8 +1164,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbB.transform.localPosition = slotB.position;
             orbB.transform.localRotation = slotB.rotation;
         }
-        atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, nucleusForOrbA, nucleusForOrbB));
-        atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, nucleusForOrbA, nucleusForOrbB));
+        atomA?.RedistributeOrbitals(piAfterA == 0 ? piBondAngleFromA : null, piAfterA == 0 ? refWorldA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: gPreviewA);
+        atomB?.RedistributeOrbitals(piAfterB == 0 ? piBondAngleFromB : null, piAfterB == 0 ? refWorldB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: skipLoneLobeLayoutForSigmaOnlyBreak, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: sigmaRelaxPreAppliedPreview, bondBreakGuideLoneOrbital: gPreviewB);
 
         RestoreMoleculeAtoms(snap);
         // RestoreMoleculeAtoms only resets atom transforms; RedistributeOrbitals mutates lone-lobe locals. Without restoring
@@ -1297,6 +1301,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         bool minimalA = preserveHeavyFrameworkAfterInstantHydrogenPartnerBreak && heavyA;
         bool minimalB = preserveHeavyFrameworkAfterInstantHydrogenPartnerBreak && heavyB;
 
+        var gInstA = BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, parentA, parentB);
+        var gInstB = BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, parentA, parentB);
         atomA?.RedistributeOrbitals(
             piAfterA == 0 ? piAngleA : null,
             piAfterA == 0 ? refA : null,
@@ -1304,7 +1310,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth,
             pinAtomsForSigmaRelax: pinSigmaRelaxAtoms,
             skipSigmaNeighborRelax: skipFinalSigmaRelax || minimalA,
-            bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, parentA, parentB));
+            bondBreakGuideLoneOrbital: gInstA);
         atomB?.RedistributeOrbitals(
             piAfterB == 0 ? piAngleB : null,
             piAfterB == 0 ? refB : null,
@@ -1312,7 +1318,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth,
             pinAtomsForSigmaRelax: pinSigmaRelaxAtoms,
             skipSigmaNeighborRelax: skipFinalSigmaRelax || minimalB,
-            bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, parentA, parentB));
+            bondBreakGuideLoneOrbital: gInstB);
 
         LogBreakEmptyTeleportBoth("instant_preRedistributeOrbitals", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
         LogBreakGuideOrbitalsPose("instant_afterRedistributeOrbitals", atomA, atomB, orbA, orbB, parentA, parentB);
@@ -1686,8 +1692,10 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         LogBreakEmptyTeleportBoth("co_preRedistributeOrbitals", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
         bool skipSparseSpreadAfterBreakAnim = runStep && sigmaOnlyUnchangedPiBoth;
-        atomA?.RedistributeOrbitals(piAfterA == 0 ? piAngleA : null, piAfterA == 0 ? refA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: skipFinalSigmaRelax, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, parentA, parentB), skipBondBreakSparseNonbondSpread: skipSparseSpreadAfterBreakAnim);
-        atomB?.RedistributeOrbitals(piAfterB == 0 ? piAngleB : null, piAfterB == 0 ? refB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: skipFinalSigmaRelax, bondBreakGuideLoneOrbital: BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, parentA, parentB), skipBondBreakSparseNonbondSpread: skipSparseSpreadAfterBreakAnim);
+        var gCoA = BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, parentA, parentB);
+        var gCoB = BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, parentA, parentB);
+        atomA?.RedistributeOrbitals(piAfterA == 0 ? piAngleA : null, piAfterA == 0 ? refA : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: skipFinalSigmaRelax, bondBreakGuideLoneOrbital: gCoA, skipBondBreakSparseNonbondSpread: skipSparseSpreadAfterBreakAnim);
+        atomB?.RedistributeOrbitals(piAfterB == 0 ? piAngleB : null, piAfterB == 0 ? refB : null, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: skipFinalSigmaRelax, bondBreakGuideLoneOrbital: gCoB, skipBondBreakSparseNonbondSpread: skipSparseSpreadAfterBreakAnim);
 
         LogBreakGuideOrbitalsPose("afterRedistributeOrbitals", atomA, atomB, orbA, orbB, parentA, parentB);
         LogBreakEmptyTeleportBoth("co_postRedistributeOrbitals", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);

@@ -1744,6 +1744,22 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return vol < 0.12f;
     }
 
+    /// <summary>True if three unit vectors from one center are pairwise separated by tetrahedral edge angle (~109.47°).</summary>
+    static bool AreThreeSigmaDirectionsMutuallyTetrahedral(List<Vector3> unitDirsFromCenter, float toleranceDeg)
+    {
+        if (unitDirsFromCenter == null || unitDirsFromCenter.Count != 3) return false;
+        const float tetEdgeDeg = 109.471f;
+        for (int i = 0; i < 3; i++)
+        {
+            for (int j = i + 1; j < 3; j++)
+            {
+                if (Mathf.Abs(Vector3.Angle(unitDirsFromCenter[i], unitDirsFromCenter[j]) - tetEdgeDeg) > toleranceDeg)
+                    return false;
+            }
+        }
+        return true;
+    }
+
     /// <summary>Reference axis for VSEPR / σ-relax (π bond toward partner, else override / first σ).</summary>
     public Vector3 GetRedistributeReferenceLocal(float? piBondAngleOverride = null, Vector3? refBondWorldDirection = null) =>
         ResolveReferenceBondDirectionLocal(piBondAngleOverride, refBondWorldDirection);
@@ -1981,9 +1997,18 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             worldDirs.Add(d.normalized);
         }
 
+        // Radical / tet σN=3: already-tetrahedral skeleton only differs by global orientation vs the canonical frame.
+        // Skip BuildSigmaNeighborTargetsWithFragmentRigidRotation — it would rigid-spin whole substituents (e.g. remote CH₃) with no real conformation gain.
+        bool sp2TrigonalFramework = IsSp2BondBreakEmptyAlongRefCase() || IsBondBreakTrigonalPlanarFrameworkCase();
+        if (!sp2TrigonalFramework && sigmaN == 3 && AreThreeSigmaDirectionsMutuallyTetrahedral(worldDirs, 12f))
+        {
+            targets = null;
+            return false;
+        }
+
         Vector3 refN = refLocal.normalized;
         var idealWorld = new List<Vector3>(3);
-        if (IsSp2BondBreakEmptyAlongRefCase() || IsBondBreakTrigonalPlanarFrameworkCase())
+        if (sp2TrigonalFramework)
         {
             // sp²: σ + e⁻ non-bonds coplanar; ref ⟂ that plane — carbocation-style empties ⊥ framework (<see cref="IsCarbocationStyleBondBreakThreeDomainsWithEmptyCase"/>).
             var ideal3 = VseprLayout.GetIdealLocalDirections(3);
