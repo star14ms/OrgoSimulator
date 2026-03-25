@@ -611,7 +611,8 @@ public class EditModeManager : MonoBehaviour
             if (idealOrb != null)
             {
                 orb = idealOrb;
-                hydrogenBondDirWorld = dirN.sqrMagnitude > 1e-10f ? dirN.normalized : (Vector3?)null;
+                // VSEPR dirN ignores lone-pair domains; place H along the actual 1e lobe we bond with.
+                hydrogenBondDirWorld = OrbitalAngleUtility.GetOrbitalDirectionWorld(idealOrb.transform);
             }
         }
 
@@ -855,7 +856,7 @@ public class EditModeManager : MonoBehaviour
         atomA.UnbondOrbital(orbA);
         atomB.UnbondOrbital(orbB);
 
-        var bond = CovalentBond.Create(atomA, atomB, orbA, atomA, animateOrbitalToBond: true);
+        var bond = CovalentBond.Create(atomA, atomB, orbA, atomA, animateOrbitalToBond: false);
         if (bond != null)
         {
             orbA.ElectronCount = merged;
@@ -957,8 +958,10 @@ public class EditModeManager : MonoBehaviour
                 if (!TryPickTwoLoneOrbitalsForDirections(atom, h1, h2, out var carbonOrb1, out var carbonOrb2))
                     continue;
 
-                Vector3 pos1 = c + h1 * bondLength;
-                Vector3 pos2 = c + h2 * bondLength;
+                Vector3 place1 = OrbitalAngleUtility.GetOrbitalDirectionWorld(carbonOrb1.transform);
+                Vector3 place2 = OrbitalAngleUtility.GetOrbitalDirectionWorld(carbonOrb2.transform);
+                Vector3 pos1 = c + place1 * bondLength;
+                Vector3 pos2 = c + place2 * bondLength;
 
                 var hGo1 = Instantiate(atomPrefab, pos1, Quaternion.identity);
                 var hGo2 = Instantiate(atomPrefab, pos2, Quaternion.identity);
@@ -973,8 +976,8 @@ public class EditModeManager : MonoBehaviour
                 hAtom1.ForceInitialize();
                 hAtom2.ForceInitialize();
 
-                var hOrb1 = hAtom1.GetLoneOrbitalWithOneElectron(-h1);
-                var hOrb2 = hAtom2.GetLoneOrbitalWithOneElectron(-h2);
+                var hOrb1 = hAtom1.GetLoneOrbitalWithOneElectron(-place1);
+                var hOrb2 = hAtom2.GetLoneOrbitalWithOneElectron(-place2);
                 if (hOrb1 == null || hOrb2 == null)
                 {
                     Destroy(hGo1);
@@ -1007,7 +1010,8 @@ public class EditModeManager : MonoBehaviour
                 var carbonOrb = atom.GetLoneOrbitalWithOneElectron(hDir);
                 if (carbonOrb == null) continue;
 
-                Vector3 pos = c + hDir * bondLength;
+                Vector3 placeDir = OrbitalAngleUtility.GetOrbitalDirectionWorld(carbonOrb.transform);
+                Vector3 pos = c + placeDir * bondLength;
                 var hGo = Instantiate(atomPrefab, pos, Quaternion.identity);
                 if (!hGo.TryGetComponent<AtomFunction>(out var hAtom))
                 {
@@ -1016,7 +1020,7 @@ public class EditModeManager : MonoBehaviour
                 }
                 hAtom.AtomicNumber = 1;
                 hAtom.ForceInitialize();
-                var hOrb = hAtom.GetLoneOrbitalWithOneElectron(-hDir);
+                var hOrb = hAtom.GetLoneOrbitalWithOneElectron(-placeDir);
                 if (hOrb == null)
                 {
                     Destroy(hGo);
@@ -1038,6 +1042,7 @@ public class EditModeManager : MonoBehaviour
         var orb = atom.GetLoneOrbitalWithOneElectron(dir);
         if (orb == null) return;
 
+        dir = OrbitalAngleUtility.GetOrbitalDirectionWorld(orb.transform);
         Vector3 hPos = atom.transform.position + dir * bondLength;
         var hGo = Instantiate(atomPrefab, hPos, Quaternion.identity);
         if (!hGo.TryGetComponent<AtomFunction>(out var hAtom))
@@ -1104,6 +1109,8 @@ public class EditModeManager : MonoBehaviour
 
             if (orb == null) break;
 
+            // Prefer world pose of the 1e lobe; σ-only VSEPR can aim at a lone-pair domain instead.
+            dirN = OrbitalAngleUtility.GetOrbitalDirectionWorld(orb.transform);
             Vector3 hPos = atom.transform.position + dirN * bondLength;
 
             var hGo = Instantiate(atomPrefab, hPos, Quaternion.identity);

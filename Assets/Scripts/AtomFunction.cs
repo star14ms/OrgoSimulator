@@ -6032,7 +6032,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return best;
     }
 
-    /// <summary>Returns a lone orbital with exactly 1 electron, preferring the one closest to preferredDirection. For programmatic bonding.</summary>
+    /// <summary>Returns a lone orbital with exactly 1 electron, preferring the one closest to preferredDirection. For programmatic bonding.
+    /// After choosing the orbital, place the partner along <see cref="OrbitalAngleUtility.GetOrbitalDirectionWorld"/> for that lobe when
+    /// preferredDirection comes from σ-only VSEPR (lone-pair domains are otherwise ignored).</summary>
     public ElectronOrbitalFunction GetLoneOrbitalWithOneElectron(Vector3 preferredDirectionWorld)
     {
         ElectronOrbitalFunction best = null;
