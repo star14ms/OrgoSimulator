@@ -8,7 +8,9 @@ using System.Linq;
 /// Manages edit mode: selection (click atom to select, background to deselect), add-atom-to-selected,
 /// H-auto mode (saturate new atoms with hydrogen). Toggle edit mode with E.
 /// Eraser (D): removes only “end” atoms — fewer than two bonds to non-hydrogen neighbors (plus attached H on that center).
-/// Left/right arrows cycle the selected atom within the molecule whenever an atom is selected; up/down orbitals only in edit mode.
+/// Left/right arrows cycle a fixed DFS order (no permuting by selection): root = selected heavy or σ-parent of selected H;
+/// all σ-H on a center (stable instance-id order) before backbone heavies — CH4 cycles C,H,H,H,H (e.g. [C]HHHH ↔ CHHH[H] ↔ C[H]HHH).
+/// Up/down orbitals only in edit mode.
 /// </summary>
 public class EditModeManager : MonoBehaviour
 {
@@ -210,7 +212,84 @@ public class EditModeManager : MonoBehaviour
         selectedOrbital.SetHighlighted(true);
     }
 
-    static List<AtomFunction> BuildOrderedMoleculeAtomList(HashSet<AtomFunction> mol)
+    static int CompareAtomInstanceId(AtomFunction a, AtomFunction b) =>
+        a.GetInstanceID().CompareTo(b.GetInstanceID());
+
+    static AtomFunction PickDfsRootHeavy_MinInstanceId(HashSet<AtomFunction> mol)
+    {
+        AtomFunction best = null;
+        foreach (var a in mol)
+        {
+            if (a == null || a.AtomicNumber <= 1) continue;
+            if (best == null || CompareAtomInstanceId(a, best) < 0)
+                best = a;
+        }
+        return best;
+    }
+
+    /// <summary>Heavy atom σ-bound to this hydrogen within the molecule; null if none.</summary>
+    static AtomFunction SigmaParentHeavyInMolecule(AtomFunction hydrogen, HashSet<AtomFunction> mol)
+    {
+        if (hydrogen == null || hydrogen.AtomicNumber != 1 || mol == null) return null;
+        AtomFunction parent = null;
+        foreach (var n in hydrogen.GetDistinctSigmaNeighborAtoms())
+        {
+            if (n == null || !mol.Contains(n) || n.AtomicNumber <= 1) continue;
+            if (parent == null || CompareAtomInstanceId(n, parent) < 0)
+                parent = n;
+        }
+        return parent;
+    }
+
+    /// <summary>
+    /// DFS root = selected heavy, or σ-parent of selected H, else lowest-instance-id heavy (fallback).
+    /// Yields [C]HC… after adding H on selected empty orbital of [C]C.
+    /// </summary>
+    static AtomFunction PickDfsRootForMoleculeOrdering(HashSet<AtomFunction> mol, AtomFunction selectionForOrdering)
+    {
+        if (selectionForOrdering != null && mol != null && mol.Contains(selectionForOrdering))
+        {
+            if (selectionForOrdering.AtomicNumber > 1)
+                return selectionForOrdering;
+            var p = SigmaParentHeavyInMolecule(selectionForOrdering, mol);
+            if (p != null)
+                return p;
+        }
+        return PickDfsRootHeavy_MinInstanceId(mol);
+    }
+
+    /// <summary>
+    /// Stable DFS: σ-H neighbors (instance id) before σ-heavy neighbors. Selection must not reorder this list or arrow cycles skip atoms.
+    /// </summary>
+    static void DfsAppendMoleculeAtomOrder(
+        AtomFunction node,
+        HashSet<AtomFunction> mol,
+        HashSet<AtomFunction> visited,
+        List<AtomFunction> result)
+    {
+        if (node == null || !mol.Contains(node) || visited.Contains(node)) return;
+        visited.Add(node);
+        result.Add(node);
+
+        var heavies = new List<AtomFunction>();
+        var hydrogens = new List<AtomFunction>();
+        foreach (var n in node.GetDistinctSigmaNeighborAtoms())
+        {
+            if (n == null || !mol.Contains(n)) continue;
+            if (n.AtomicNumber > 1) heavies.Add(n);
+            else hydrogens.Add(n);
+        }
+
+        heavies.Sort(CompareAtomInstanceId);
+        hydrogens.Sort(CompareAtomInstanceId);
+
+        foreach (var h in hydrogens)
+            DfsAppendMoleculeAtomOrder(h, mol, visited, result);
+        foreach (var v in heavies)
+            DfsAppendMoleculeAtomOrder(v, mol, visited, result);
+    }
+
+    static List<AtomFunction> FallbackMoleculeListPositionSort(HashSet<AtomFunction> mol)
     {
         var list = mol.Where(a => a != null).ToList();
         list.Sort((a, b) =>
@@ -223,15 +302,40 @@ public class EditModeManager : MonoBehaviour
             if (c != 0) return c;
             c = pa.z.CompareTo(pb.z);
             if (c != 0) return c;
-            return a.GetInstanceID().CompareTo(b.GetInstanceID());
+            return CompareAtomInstanceId(a, b);
         });
         return list;
+    }
+
+    static List<AtomFunction> BuildOrderedMoleculeAtomList(HashSet<AtomFunction> mol, AtomFunction selectionForOrdering)
+    {
+        if (mol == null || mol.Count == 0) return new List<AtomFunction>();
+
+        var root = PickDfsRootForMoleculeOrdering(mol, selectionForOrdering);
+        if (root == null)
+            return FallbackMoleculeListPositionSort(mol);
+
+        var visited = new HashSet<AtomFunction>();
+        var result = new List<AtomFunction>(mol.Count);
+        DfsAppendMoleculeAtomOrder(root, mol, visited, result);
+
+        var leftovers = new List<AtomFunction>();
+        foreach (var a in mol)
+        {
+            if (a != null && !visited.Contains(a))
+                leftovers.Add(a);
+        }
+        leftovers.Sort(CompareAtomInstanceId);
+        foreach (var a in leftovers)
+            DfsAppendMoleculeAtomOrder(a, mol, visited, result);
+
+        return result;
     }
 
     void CycleSelectedAtomInMolecule(int delta)
     {
         if (selectedMolecule == null || selectedMolecule.Count == 0 || selectedAtom == null) return;
-        var ordered = BuildOrderedMoleculeAtomList(selectedMolecule);
+        var ordered = BuildOrderedMoleculeAtomList(selectedMolecule, selectedAtom);
         if (ordered.Count == 0) return;
         int idx = ordered.IndexOf(selectedAtom);
         if (idx < 0) idx = 0;
@@ -572,7 +676,23 @@ public class EditModeManager : MonoBehaviour
             // H on a center σ-bonded only to other H's (CH₄ / —CH₃): skip full anchor relax — it re-clamps to a canonical
             // tetrahedron and visibly spins the molecule on the last H.
             bool redistributeAnchor = !heavyHeavy && (!hOnHeavy || anchorHasHeavySigmaNeighbor);
-            FormSigmaBondInstant(anchor, newAtom, orb, newOrb, redistributeAtomA: redistributeAnchor, redistributeAtomB: true);
+            HashSet<AtomFunction> pinChildSigmaRelax = atomicNumber > 1
+                ? new HashSet<AtomFunction>(newAtom.GetAtomsOnSideOfSigmaBond(anchor))
+                : null;
+            HashSet<AtomFunction> pinAnchorSigmaRelax = null;
+            if (redistributeAnchor)
+            {
+                AtomFunction backbone = null;
+                foreach (var n in anchor.GetDistinctSigmaNeighborAtoms())
+                {
+                    if (n == null || n == newAtom) continue;
+                    if (n.AtomicNumber > 1) { backbone = n; break; }
+                    if (backbone == null) backbone = n;
+                }
+                if (backbone != null)
+                    pinAnchorSigmaRelax = new HashSet<AtomFunction>(anchor.GetAtomsOnSideOfSigmaBond(backbone));
+            }
+            FormSigmaBondInstant(anchor, newAtom, orb, newOrb, redistributeAtomA: redistributeAnchor, redistributeAtomB: true, pinSigmaRelaxForAtomA: pinAnchorSigmaRelax, pinSigmaRelaxForAtomB: pinChildSigmaRelax);
 
             if (atomicNumber == 1 && anchor.AtomicNumber > 1 && OrbitalAngleUtility.UseFull3DOrbitalGeometry)
                 anchor.TryPlaceTetrahedralHydrogenSubstituentsAboutSingleHeavyNeighbor(GetBondLength());
@@ -580,11 +700,11 @@ public class EditModeManager : MonoBehaviour
             selectedOrbital?.SetHighlighted(false);
             orbitalExplicitlySelected = false;
 
-            if (hAutoMode)
-                SaturateWithHydrogen(newAtom);
-
             if (hAutoMode && OrbitalAngleUtility.UseFull3DOrbitalGeometry && newAtom.AtomicNumber > 1)
                 newAtom.TryStaggerNewmanRelativeToPartner(anchor);
+
+            if (hAutoMode)
+                SaturateWithHydrogen(newAtom, pinChildSigmaRelax);
 
             // Same-element heavy (e.g. C on C): continue from the new tip so repeated toolbar adds extend the chain.
             bool sameHeavyExtend = atomicNumber > 1 && anchor.AtomicNumber == atomicNumber;
@@ -695,19 +815,20 @@ public class EditModeManager : MonoBehaviour
         try
         {
             // Do not σ-relax or re-snap the parent: keep its electron/orbital layout as-is; the added atom redistributes (and H-auto / Newman stagger only affect the new center).
-            FormSigmaBondInstant(parentAtom, newAtom, parentOrb, newOrb, redistributeAtomA: false, redistributeAtomB: true);
+            var pinFramework = new HashSet<AtomFunction>(newAtom.GetAtomsOnSideOfSigmaBond(parentAtom));
+            FormSigmaBondInstant(parentAtom, newAtom, parentOrb, newOrb, redistributeAtomA: false, redistributeAtomB: true, pinSigmaRelaxForAtomB: pinFramework);
 
             selectedAtom = newAtom;
             selectedOrbital = newAtom.GetOrbitalClosestToAngle(0f);
             selectedAtom.SetSelectionHighlight(true);
             if (selectedOrbital != null) selectedOrbital.SetHighlighted(true);
 
-            if (hAutoMode)
-                SaturateWithHydrogen(newAtom);
-
-            // Stagger vs parent whenever attaching a heavy atom in 3D (not only when H-auto ran), so replace-H matches toolbar C→C behavior.
+            // Stagger vs parent (~60° Newman) before H-auto adds substituent H, so saturation uses staggered heavy geometry.
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && newAtom.AtomicNumber > 1)
                 newAtom.TryStaggerNewmanRelativeToPartner(parentAtom);
+
+            if (hAutoMode)
+                SaturateWithHydrogen(newAtom, pinFramework);
 
             AtomFunction.SetupGlobalIgnoreCollisions();
             return true;
@@ -725,7 +846,7 @@ public class EditModeManager : MonoBehaviour
         }
     }
 
-    void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, bool redistributeAtomA = true, bool redistributeAtomB = true)
+    void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, bool redistributeAtomA = true, bool redistributeAtomB = true, HashSet<AtomFunction> pinSigmaRelaxForAtomA = null, HashSet<AtomFunction> pinSigmaRelaxForAtomB = null)
     {
         int merged = orbA.ElectronCount + orbB.ElectronCount;
         int sigmaBeforeA = atomA.GetDistinctSigmaNeighborCount();
@@ -738,13 +859,22 @@ public class EditModeManager : MonoBehaviour
         {
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
+            if (AtomFunction.DebugLogFrameworkPinSigmaRelaxTrace)
+            {
+                AtomFunction.LogFrameworkPinSigmaRelax(
+                    "FormSigmaBondInstant A=" + AtomFunction.FormatAtomBrief(atomA)
+                    + " B=" + AtomFunction.FormatAtomBrief(atomB)
+                    + $" redistA={redistributeAtomA} redistB={redistributeAtomB}"
+                    + " " + AtomFunction.FormatPinSummary(pinSigmaRelaxForAtomA)
+                    + " | " + AtomFunction.FormatPinSummary(pinSigmaRelaxForAtomB));
+            }
             if (redistributeAtomA)
-                atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA);
+                atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA, pinAtomsForSigmaRelax: pinSigmaRelaxForAtomA);
             if (redistributeAtomB)
             {
                 Vector3 dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
                 float bondAngleFromB = Mathf.Atan2(dirBtoA.y, dirBtoA.x) * Mathf.Rad2Deg;
-                atomB.RedistributeOrbitals(piBondAngleOverride: bondAngleFromB, refBondWorldDirection: dirBtoA, newSigmaBondPartnerHint: atomA, sigmaNeighborCountBeforeHint: sigmaBeforeB);
+                atomB.RedistributeOrbitals(piBondAngleOverride: bondAngleFromB, refBondWorldDirection: dirBtoA, newSigmaBondPartnerHint: atomA, sigmaNeighborCountBeforeHint: sigmaBeforeB, pinAtomsForSigmaRelax: pinSigmaRelaxForAtomB);
             }
             atomA.RefreshCharge();
             atomB.RefreshCharge();
@@ -760,6 +890,20 @@ public class EditModeManager : MonoBehaviour
         }
 
         RefreshSelectedMoleculeAfterBondChange();
+    }
+
+    /// <summary>Pins everything on the framework side of <paramref name="heavyCenter"/>'s σ bond to a heavy neighbor (same as H-auto saturating a terminal C).</summary>
+    HashSet<AtomFunction> TryBuildSigmaRelaxPinForHeavyCenter(AtomFunction heavyCenter)
+    {
+        if (heavyCenter == null || !OrbitalAngleUtility.UseFull3DOrbitalGeometry || heavyCenter.AtomicNumber <= 1)
+            return null;
+        AtomFunction heavyNeighbor = null;
+        foreach (var n in heavyCenter.GetDistinctSigmaNeighborAtoms())
+        {
+            if (n != null && n.AtomicNumber > 1) { heavyNeighbor = n; break; }
+        }
+        if (heavyNeighbor == null) return null;
+        return new HashSet<AtomFunction>(heavyCenter.GetAtomsOnSideOfSigmaBond(heavyNeighbor));
     }
 
     static bool TryPickTwoLoneOrbitalsForDirections(AtomFunction carbon, Vector3 h1World, Vector3 h2World, out ElectronOrbitalFunction orb1, out ElectronOrbitalFunction orb2)
@@ -920,26 +1064,30 @@ public class EditModeManager : MonoBehaviour
         }
 
         float bondLen = GetBondLength();
-        FormSigmaBondInstant(atom, hAtom, orb, hOrb);
+        HashSet<AtomFunction> pinAddH = TryBuildSigmaRelaxPinForHeavyCenter(atom);
+        FormSigmaBondInstant(atom, hAtom, orb, hOrb, pinSigmaRelaxForAtomA: pinAddH, pinSigmaRelaxForAtomB: pinAddH);
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
         {
-            atom.RedistributeOrbitals(refBondWorldDirection: dir.normalized);
+            atom.RedistributeOrbitals(refBondWorldDirection: dir.normalized, pinAtomsForSigmaRelax: pinAddH);
             if (atom.AtomicNumber > 1)
                 atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLen);
         }
         else
         {
             var bondAngle = atom.GetPrimaryBondDirectionAngle();
-            atom.RedistributeOrbitals(piBondAngleOverride: bondAngle);
+            atom.RedistributeOrbitals(piBondAngleOverride: bondAngle, pinAtomsForSigmaRelax: pinAddH);
         }
         AtomFunction.SetupGlobalIgnoreCollisions();
     }
 
-    public void SaturateWithHydrogen(AtomFunction atom)
+    public void SaturateWithHydrogen(AtomFunction atom, HashSet<AtomFunction> pinSigmaRelaxNeighbors = null)
     {
         if (atom == null || atomPrefab == null || Camera.main == null) return;
 
         atom.ForceInitialize();
+
+        if (pinSigmaRelaxNeighbors == null)
+            pinSigmaRelaxNeighbors = TryBuildSigmaRelaxPinForHeavyCenter(atom);
 
         float bondLength = GetBondLength();
 
@@ -980,17 +1128,17 @@ public class EditModeManager : MonoBehaviour
                 break;
             }
 
-            FormSigmaBondInstant(atom, hAtom, orb, hOrb);
+            FormSigmaBondInstant(atom, hAtom, orb, hOrb, pinSigmaRelaxForAtomA: pinSigmaRelaxNeighbors, pinSigmaRelaxForAtomB: pinSigmaRelaxNeighbors);
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
-                atom.RedistributeOrbitals(refBondWorldDirection: dirN);
+                atom.RedistributeOrbitals(refBondWorldDirection: dirN, pinAtomsForSigmaRelax: pinSigmaRelaxNeighbors);
                 if (atom.AtomicNumber > 1)
                     atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
             }
             else
             {
                 var bondAngle = atom.GetPrimaryBondDirectionAngle();
-                atom.RedistributeOrbitals(piBondAngleOverride: bondAngle);
+                atom.RedistributeOrbitals(piBondAngleOverride: bondAngle, pinAtomsForSigmaRelax: pinSigmaRelaxNeighbors);
             }
             AtomFunction.SetupGlobalIgnoreCollisions();
         }
@@ -1003,7 +1151,7 @@ public class EditModeManager : MonoBehaviour
     /// H-auto-style saturation on <paramref name="atoms"/> only (same logic as <see cref="SaturateWithHydrogen"/>, repeated until no progress).
     /// Used after functional-group attachment so substituent OH / NH₂ / etc. fill without touching the rest of the molecule or the anchor atom.
     /// </summary>
-    public void SaturateAtomsWithHydrogenPass(IReadOnlyList<AtomFunction> atoms)
+    public void SaturateAtomsWithHydrogenPass(IReadOnlyList<AtomFunction> atoms, HashSet<AtomFunction> pinSigmaRelaxNeighbors = null)
     {
         if (atoms == null || atoms.Count == 0 || atomPrefab == null || Camera.main == null) return;
         for (int round = 0; round < 16; round++)
@@ -1014,7 +1162,7 @@ public class EditModeManager : MonoBehaviour
                 if (a == null) continue;
                 int before = a.GetLoneOrbitalsWithOneElectronSortedByAngle().Count;
                 if (before == 0) continue;
-                SaturateWithHydrogen(a);
+                SaturateWithHydrogen(a, pinSigmaRelaxNeighbors);
                 int after = a.GetLoneOrbitalsWithOneElectronSortedByAngle().Count;
                 if (after < before) anyProgress = true;
             }
@@ -1162,7 +1310,7 @@ public class EditModeManager : MonoBehaviour
             if (selectedOrbital != null) selectedOrbital.SetHighlighted(false);
             Destroy(hydrogen.gameObject);
 
-            if (!moleculeBuilder.BuildFunctionalGroup(kind, parentAtom, hPos, this, out var sel))
+            if (!moleculeBuilder.BuildFunctionalGroup(kind, parentAtom, hPos, this, out var sel, preserveAttachmentParentGeometry: true))
                 return false;
 
             selectedAtom = sel;

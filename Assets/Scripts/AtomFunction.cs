@@ -34,6 +34,40 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>Console + optional project <c>.log</c>: <c>[vsepr3d]</c> trace. Default off; enable for VSEPR redistribution triage.</summary>
     public static bool DebugLogVseprRedistribute3D = false;
 
+    /// <summary>Console + project <c>.log</c>: <c>[fw-pin]</c> — which code paths move nuclei during redistribute / σ-relax / H snap (framework drag triage). Set true in inspector via script or temporarily in code.</summary>
+    public static bool DebugLogFrameworkPinSigmaRelaxTrace = false;
+
+    /// <summary>Writes <c>[fw-pin]</c> lines when <see cref="DebugLogFrameworkPinSigmaRelaxTrace"/> is enabled.</summary>
+    public static void LogFrameworkPinSigmaRelax(string message)
+    {
+        if (!DebugLogFrameworkPinSigmaRelaxTrace) return;
+        string line = "[fw-pin] " + message;
+        Debug.Log(line);
+        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
+    }
+
+    public static string FormatAtomBrief(AtomFunction a) =>
+        a == null ? "null" : $"id={a.GetInstanceID()} Z={a.AtomicNumber} name={a.name}";
+
+    public static string FormatPinSummary(HashSet<AtomFunction> pin, int maxList = 14)
+    {
+        if (pin == null) return "pin=null";
+        if (pin.Count == 0) return "pin=∅";
+        var parts = new List<string>(maxList + 1);
+        int n = 0;
+        foreach (var a in pin)
+        {
+            if (a == null) continue;
+            parts.Add(FormatAtomBrief(a));
+            if (++n >= maxList)
+            {
+                parts.Add("…");
+                break;
+            }
+        }
+        return $"pin[count={pin.Count}] " + string.Join("; ", parts);
+    }
+
     static void LogVsepr3D(string message)
     {
         if (!DebugLogVseprRedistribute3D) return;
@@ -953,7 +987,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             else
                 axis.Normalize();
 
+            Vector3 before = other.transform.position;
             other.transform.position = transform.position + axis * distance;
+            if (DebugLogFrameworkPinSigmaRelaxTrace && Vector3.Distance(before, other.transform.position) > 1e-4f)
+                LogFrameworkPinSigmaRelax(
+                    $"SnapHydrogenΣAxes center={FormatAtomBrief(this)} H={FormatAtomBrief(other)} Δ={Vector3.Distance(before, other.transform.position):F5}");
             b.UpdateBondTransformToCurrentAtoms();
             b.SnapOrbitalToBondPosition();
         }
@@ -1005,7 +1043,13 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         var bondsSnapshot = new List<CovalentBond>(covalentBonds);
         for (int i = 0; i < hs.Count; i++)
+        {
+            Vector3 pb = hs[i].transform.position;
             hs[i].transform.position = transform.position + mapping[i].newDir * bondLength;
+            if (DebugLogFrameworkPinSigmaRelaxTrace && Vector3.Distance(pb, hs[i].transform.position) > 1e-4f)
+                LogFrameworkPinSigmaRelax(
+                    $"TryPlaceTetrahedralHAbout1Heavy center={FormatAtomBrief(this)} H={FormatAtomBrief(hs[i])} Δ={Vector3.Distance(pb, hs[i].transform.position):F5}");
+        }
 
         foreach (var b in bondsSnapshot)
         {
@@ -1112,6 +1156,28 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             }
         }
 
+        // Heteroatom / lone-pair "front" (no σ-H on this center): eclipse-sum minimum is often at ψ=0 even when lone pairs
+        // still eclipse the parent substituents (e.g. CH₃→CHR₂—OH replace). Pick ψ by maximizing min angle to back set.
+        if (Mathf.Abs(bestPsi) < 0.01f && childHDirWorld.Count == 0 && childRadialForScore.Count >= 1 && parentProj.Count >= 2)
+        {
+            float b0 = NewmanBottleneckMinAngleToBack(parentProj, childRadialForScore, axis, Quaternion.identity);
+            float bestB = b0;
+            float psiPick = 0f;
+            const float fineStep = 5f;
+            for (float psi = fineStep; psi < 359.99f; psi += fineStep)
+            {
+                Quaternion r = Quaternion.AngleAxis(psi, axis);
+                float b = NewmanBottleneckMinAngleToBack(parentProj, childRadialForScore, axis, r);
+                if (b > bestB + 0.05f)
+                {
+                    bestB = b;
+                    psiPick = psi;
+                }
+            }
+            if (bestB > b0 + 1.5f)
+                bestPsi = psiPick;
+        }
+
         if (Mathf.Abs(bestPsi) < 0.01f) return false;
         psiDeg = bestPsi;
         return true;
@@ -1135,7 +1201,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         foreach (var n in GetDistinctSigmaNeighborAtoms())
         {
             if (n == null || n == sigmaPartner || n.AtomicNumber != 1) continue;
+            Vector3 pb = n.transform.position;
             n.transform.position = c + apply * (n.transform.position - c);
+            if (DebugLogFrameworkPinSigmaRelaxTrace && Vector3.Distance(pb, n.transform.position) > 1e-4f)
+                LogFrameworkPinSigmaRelax(
+                    $"NewmanTwistH center={FormatAtomBrief(this)} partner={(sigmaPartner == null ? "null" : FormatAtomBrief(sigmaPartner))} H={FormatAtomBrief(n)} ψ={psiDeg:F2}° Δ={Vector3.Distance(pb, n.transform.position):F5}");
         }
 
         foreach (var orb in bondedOrbitals)
@@ -1629,6 +1699,21 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 targets.Add((a, newPos));
             }
         }
+
+        if (DebugLogFrameworkPinSigmaRelaxTrace && targets.Count > 0)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"BuildSigmaRigid pivot={FormatAtomBrief(pivot)} overlap={overlap} nΣ={n} ");
+            sb.Append(FormatPinSummary(pinWorld)).Append(" targets=").Append(targets.Count);
+            const float te = 1e-4f;
+            foreach (var (atom, tw) in targets)
+            {
+                float d = Vector3.Distance(atom.transform.position, tw);
+                if (d > te)
+                    sb.Append(" | ").Append(FormatAtomBrief(atom)).Append(" Δ=").Append(d.ToString("F5"));
+            }
+            LogFrameworkPinSigmaRelax(sb.ToString());
+        }
     }
 
     static bool AreThreeDirectionsCoplanar(IReadOnlyList<Vector3> unitDirsFromCenter)
@@ -1718,6 +1803,13 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var moved = new HashSet<AtomFunction>();
         foreach (var (atom, targetWorld) in targets)
         {
+            if (DebugLogFrameworkPinSigmaRelaxTrace)
+            {
+                float d = Vector3.Distance(atom.transform.position, targetWorld);
+                if (d > 1e-4f)
+                    LogFrameworkPinSigmaRelax(
+                        $"TryRelaxCoplanarSigma→Tet center={FormatAtomBrief(this)} APPLY {FormatAtomBrief(atom)} Δ={d:F5}");
+            }
             atom.transform.position = targetWorld;
             moved.Add(atom);
         }
@@ -1733,7 +1825,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// targets move neighbors onto 120° in-plane. Used for π step-2 animation; instant apply uses <see cref="TryRelaxSigmaNeighborsToTrigonalPlanar3D"/>.
     /// </summary>
     public bool TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(Vector3 refLocalNormalized,
-        out List<(AtomFunction neighbor, Vector3 targetWorld)> targets)
+        out List<(AtomFunction neighbor, Vector3 targetWorld)> targets,
+        HashSet<AtomFunction> pinWorld = null)
     {
         targets = null;
         if (GetPiBondCount() < 1) return false;
@@ -1761,7 +1854,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var newDirs = new List<Vector3>(3);
         for (int i = 0; i < 3; i++)
             newDirs.Add(mapping[i].newDir.normalized);
-        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, null);
+        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld);
         return targets != null && targets.Count > 0;
     }
 
@@ -1770,13 +1863,21 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// three σ neighbors + π should be trigonal planar; if σ directions are not coplanar, snap neighbors onto 120° in-plane.
     /// Skips when already coplanar (FG builds, undistorted sp²).
     /// </summary>
-    void TryRelaxSigmaNeighborsToTrigonalPlanar3D(Vector3 refLocalNormalized)
+    void TryRelaxSigmaNeighborsToTrigonalPlanar3D(Vector3 refLocalNormalized, HashSet<AtomFunction> pinWorld = null)
     {
-        if (!TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(refLocalNormalized, out var targets) || targets == null) return;
+        if (!TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(refLocalNormalized, out var targets, pinWorld) || targets == null) return;
 
         var moved = new HashSet<AtomFunction>();
         foreach (var (atom, targetWorld) in targets)
         {
+            if (pinWorld != null && pinWorld.Contains(atom)) continue;
+            if (DebugLogFrameworkPinSigmaRelaxTrace)
+            {
+                float d = Vector3.Distance(atom.transform.position, targetWorld);
+                if (d > 1e-4f)
+                    LogFrameworkPinSigmaRelax(
+                        $"TryRelaxTrigonalPlanar center={FormatAtomBrief(this)} APPLY {FormatAtomBrief(atom)} Δ={d:F5}");
+            }
             atom.transform.position = targetWorld;
             moved.Add(atom);
         }
@@ -2021,7 +2122,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public bool TryGetTetrahedralFourSigmaNeighborRelaxMovesForBondFormation(
         AtomFunction partnerAlongRef,
         int sigmaNeighborCountBefore,
-        out List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)> moves)
+        out List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)> moves,
+        HashSet<AtomFunction> mergePins = null)
     {
         moves = null;
         if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry) return false;
@@ -2044,6 +2146,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         {
             pin.Add(partnerAlongRef);
         }
+        if (mergePins != null)
+        {
+            foreach (var p in mergePins)
+                if (p != null) pin.Add(p);
+        }
 
         if (!TryComputeTetrahedralFourSigmaNeighborRelaxTargets(alignAlong, pin, out var t) || t == null || t.Count == 0) return false;
         moves = new List<(AtomFunction, Vector3, Vector3)>();
@@ -2059,7 +2166,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public bool TryGetTetrahedralThreeSigmaAx3ERelaxMovesForBondFormation(
         AtomFunction partnerAlongRef,
         int sigmaNeighborCountBefore,
-        out List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)> moves)
+        out List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)> moves,
+        HashSet<AtomFunction> mergePins = null)
     {
         moves = null;
         if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry) return false;
@@ -2074,6 +2182,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         else refLocal.Normalize();
 
         var pin = new HashSet<AtomFunction> { partnerAlongRef };
+        if (mergePins != null)
+        {
+            foreach (var p in mergePins)
+                if (p != null) pin.Add(p);
+        }
         if (!TryComputeCoplanarTetrahedralSigmaNeighborRelaxTargets(refLocal, out var targets, pin, requireCoplanarBondAxes: false) || targets == null || targets.Count == 0)
             return false;
 
@@ -2083,22 +2196,43 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return true;
     }
 
-    void MaybeApplyTetrahedralSigmaRelaxForBondFormation(AtomFunction partnerAlongRef, int sigmaNeighborCountBefore)
+    void MaybeApplyTetrahedralSigmaRelaxForBondFormation(AtomFunction partnerAlongRef, int sigmaNeighborCountBefore, HashSet<AtomFunction> mergePins = null)
     {
         List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)> moves = null;
-        if (TryGetTetrahedralFourSigmaNeighborRelaxMovesForBondFormation(partnerAlongRef, sigmaNeighborCountBefore, out var m4) && m4 != null)
+        string relaxBranch = null;
+        if (TryGetTetrahedralFourSigmaNeighborRelaxMovesForBondFormation(partnerAlongRef, sigmaNeighborCountBefore, out var m4, mergePins) && m4 != null)
+        {
             moves = m4;
-        else if (TryGetTetrahedralThreeSigmaAx3ERelaxMovesForBondFormation(partnerAlongRef, sigmaNeighborCountBefore, out var m3) && m3 != null)
+            relaxBranch = "fourσ";
+        }
+        else if (TryGetTetrahedralThreeSigmaAx3ERelaxMovesForBondFormation(partnerAlongRef, sigmaNeighborCountBefore, out var m3, mergePins) && m3 != null)
+        {
             moves = m3;
+            relaxBranch = "threeσAx3E";
+        }
         if (moves == null) return;
         const float moveEps = 1e-4f;
         bool any = false;
         foreach (var (_, s, e) in moves)
             if (Vector3.Distance(s, e) > moveEps) any = true;
         if (!any) return;
+        if (DebugLogFrameworkPinSigmaRelaxTrace)
+            LogFrameworkPinSigmaRelax(
+                $"MaybeApplyTetrahedralSigmaRelax {relaxBranch} center={FormatAtomBrief(this)} "
+                + FormatPinSummary(mergePins) + $" rawMoves={moves.Count}");
         var moved = new HashSet<AtomFunction>();
-        foreach (var (atom, _, end) in moves)
+        foreach (var (atom, start, end) in moves)
         {
+            if (mergePins != null && mergePins.Contains(atom))
+            {
+                if (DebugLogFrameworkPinSigmaRelaxTrace && Vector3.Distance(start, end) > moveEps)
+                    LogFrameworkPinSigmaRelax(
+                        $"  tetRelax SKIP (pinned) {FormatAtomBrief(atom)} Δ={Vector3.Distance(start, end):F5}");
+                continue;
+            }
+            if (DebugLogFrameworkPinSigmaRelaxTrace && Vector3.Distance(start, end) > moveEps)
+                LogFrameworkPinSigmaRelax(
+                    $"  tetRelax APPLY {FormatAtomBrief(atom)} Δ={Vector3.Distance(start, end):F5}");
             atom.transform.position = end;
             moved.Add(atom);
         }
@@ -3975,6 +4109,13 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var moved = new HashSet<AtomFunction>();
         foreach (var (atom, targetWorld) in targets)
         {
+            if (DebugLogFrameworkPinSigmaRelaxTrace)
+            {
+                float d = Vector3.Distance(atom.transform.position, targetWorld);
+                if (d > 1e-4f)
+                    LogFrameworkPinSigmaRelax(
+                        $"TryRelaxLinearΣ center={FormatAtomBrief(this)} APPLY {FormatAtomBrief(atom)} Δ={d:F5}");
+            }
             atom.transform.position = targetWorld;
             moved.Add(atom);
         }
@@ -3992,6 +4133,13 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var moved = new HashSet<AtomFunction>();
         foreach (var (atom, targetWorld) in targets)
         {
+            if (DebugLogFrameworkPinSigmaRelaxTrace)
+            {
+                float d = Vector3.Distance(atom.transform.position, targetWorld);
+                if (d > 1e-4f)
+                    LogFrameworkPinSigmaRelax(
+                        $"TryRelaxOpenedFromLinear center={FormatAtomBrief(this)} APPLY {FormatAtomBrief(atom)} Δ={d:F5}");
+            }
             atom.transform.position = targetWorld;
             moved.Add(atom);
         }
@@ -4011,8 +4159,19 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             return;
         }
 
+        if (DebugLogFrameworkPinSigmaRelaxTrace)
+        {
+            LogFrameworkPinSigmaRelax(
+                "RedistributeOrbitals3D enter center=" + FormatAtomBrief(this)
+                + $" σN={GetDistinctSigmaNeighborCount()} π={GetPiBondCount()}"
+                + $" skipΣRelax={skipSigmaNeighborRelax} coplanarTet={relaxCoplanarSigmaToTetrahedral} skipLone={skipLoneLobeLayout}"
+                + " " + FormatPinSummary(pinAtomsForSigmaRelax)
+                + $" partnerHint={(newSigmaBondPartnerHint == null ? "null" : FormatAtomBrief(newSigmaBondPartnerHint))}"
+                + $" σBeforeHint={sigmaNeighborCountBeforeHint}");
+        }
+
         if (!skipSigmaNeighborRelax)
-            MaybeApplyTetrahedralSigmaRelaxForBondFormation(newSigmaBondPartnerHint, sigmaNeighborCountBeforeHint);
+            MaybeApplyTetrahedralSigmaRelaxForBondFormation(newSigmaBondPartnerHint, sigmaNeighborCountBeforeHint, pinAtomsForSigmaRelax);
 
         float mergeToleranceDeg = 360f / (2f * maxSlots);
         Vector3 refLocal = ResolveReferenceBondDirectionLocal(piBondAngleOverride, refBondWorldDirection, bondBreakGuideLoneOrbital);
@@ -4035,8 +4194,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             }
             else
             {
-                TryRelaxSigmaNeighborsToTrigonalPlanar3D(refLocal);
-                TryRelaxSigmaNeighborsToLinear3D(refLocal);
+                TryRelaxSigmaNeighborsToTrigonalPlanar3D(refLocal, pinAtomsForSigmaRelax);
+                TryRelaxSigmaNeighborsToLinear3D(refLocal, pinAtomsForSigmaRelax);
             }
         }
 
