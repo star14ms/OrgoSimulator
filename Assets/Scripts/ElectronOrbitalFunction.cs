@@ -25,55 +25,14 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     /// <summary>Unity Console logs for π-bond orbital redistribution (tag <c>[π-redist]</c>).</summary>
     public static bool DebugPiOrbitalRedistribution;
 
-    public static void LogPiRedistDebug(string message)
-    {
-        if (!DebugPiOrbitalRedistribution) return;
-        Debug.Log($"[π-redist] {message}");
-    }
+    public static void LogPiRedistDebug(string message) { }
 
     /// <summary>Unity + project <c>.log</c>: <c>[σ-form-pose]</c> — bonding orbital + non-bond tips during σ formation. Default off.</summary>
     public static bool DebugLogSigmaBondFormationOrbitalPose = false;
 
-    static void LogSigmaFormationBondingOrb(string phase, string label, ElectronOrbitalFunction orb)
-    {
-        if (!DebugLogSigmaBondFormationOrbitalPose || orb == null) return;
-        Transform pr = orb.transform.parent;
-        Vector3 tipL = (orb.transform.localRotation * Vector3.right).normalized;
-        Vector3 tipW = orb.transform.TransformDirection(tipL);
-        if (tipW.sqrMagnitude > 1e-8f) tipW.Normalize();
-        Vector3 wpos = orb.transform.position;
-        string line =
-            $"[σ-form-pose] {phase} {label} orbId={orb.GetInstanceID()} e={orb.ElectronCount} parent={(pr != null ? pr.name : "null")} " +
-            $"worldP=({wpos.x:F4},{wpos.y:F4},{wpos.z:F4}) tipW=({tipW.x:F4},{tipW.y:F4},{tipW.z:F4})";
-        Debug.Log(line);
-        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
-    }
+    static void LogSigmaFormationBondingOrb(string phase, string label, ElectronOrbitalFunction orb) { }
 
-    static void LogSigmaFormationNonbondTipsOnAtom(string phase, AtomFunction atom, AtomFunction towardPartner)
-    {
-        if (!DebugLogSigmaBondFormationOrbitalPose || atom == null) return;
-        Vector3? axis = null;
-        if (towardPartner != null)
-        {
-            Vector3 d = towardPartner.transform.position - atom.transform.position;
-            if (d.sqrMagnitude > 1e-8f) axis = d.normalized;
-        }
-        foreach (var o in atom.GetComponentsInChildren<ElectronOrbitalFunction>(true))
-        {
-            if (o == null || o.transform.parent != atom.transform || o.Bond != null) continue;
-            Vector3 tipL = (o.transform.localRotation * Vector3.right).normalized;
-            Vector3 tipW = atom.transform.TransformDirection(tipL);
-            if (tipW.sqrMagnitude > 1e-8f) tipW.Normalize();
-            string extra = "";
-            if (axis.HasValue)
-                extra = $" towardPartner∠={Vector3.Angle(tipW, axis.Value):F2}° dot={Vector3.Dot(tipW, axis.Value):F4}";
-            string line =
-                $"[σ-form-pose] {phase} nonbond atomZ={atom.AtomicNumber} orbId={o.GetInstanceID()} e={o.ElectronCount} " +
-                $"tipW=({tipW.x:F4},{tipW.y:F4},{tipW.z:F4}){extra}";
-            Debug.Log(line);
-            ProjectAgentDebugLog.MirrorToProjectDotLog(line);
-        }
-    }
+    static void LogSigmaFormationNonbondTipsOnAtom(string phase, AtomFunction atom, AtomFunction towardPartner) { }
 
     AtomFunction bondedAtom;
     CovalentBond bond;
@@ -951,6 +910,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         foreach (var orb in orbitals)
         {
             if (orb == this || orb.Bond != null) continue;
+            if ((ElectronCount == 0) != (orb.ElectronCount == 0)) continue;
             bool hit3d = orb.ContainsPoint(tip);
             bool hitView = cam != null && OrbitalViewOverlaps(cam, this, orb);
             if (!hit3d && !hitView) continue;
@@ -1825,7 +1785,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPositionFromLocalDirection(Vector3 localDir, float bondRadius) =>
         GetCanonicalSlotPositionFromLocalDirection(localDir, bondRadius, null);
 
-    /// <param name="preferClosestLocalRotation">When set, pick among twists about <paramref name="localDir"/> (steps of 90°) so the quaternion is closest to the current lobe rotation — avoids ~180° visual spin when only the hybrid direction changes.</param>
+    /// <param name="preferClosestLocalRotation">When set, pick 0°/90°/… rolls about orbital +X after base align (<c>AngleAxis</c> uses <c>Vector3.right</c>, not <paramref name="localDir"/>, so hybrid +X stays along <paramref name="localDir"/>).</param>
     public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPositionFromLocalDirection(Vector3 localDir, float bondRadius, Quaternion? preferClosestLocalRotation)
     {
         if (localDir.sqrMagnitude < 1e-8f)
@@ -1842,7 +1802,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         Quaternion bestQ = qBase;
         for (int k = 0; k < 4; k++)
         {
-            var q = qBase * Quaternion.AngleAxis(k * 90f, localDir);
+            var q = qBase * Quaternion.AngleAxis(k * 90f, Vector3.right);
             float a = Quaternion.Angle(preferClosestLocalRotation.Value, q);
             if (a < bestAng - 0.02f || (Mathf.Abs(a - bestAng) <= 0.02f && k < bestK))
             {

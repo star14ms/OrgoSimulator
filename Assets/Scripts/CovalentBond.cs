@@ -12,57 +12,11 @@ using UnityEngine.Rendering;
 /// </summary>
 public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IPointerUpHandler
 {
-    /// <summary>Unity + project <c>.log</c>: <c>[ex-bond-pose]</c> — ex-bond / guide lobes on each fragment after σ cleavage. Default off.</summary>
-    public static bool DebugLogExBondOrbitalPose = false;
+    public static void LogExBondOrbitalPose(string _, string __, ElectronOrbitalFunction ___, AtomFunction ____, AtomFunction _____ = null) { }
 
-    /// <summary>Non-bond lobe on <paramref name="parentNucleus"/>; optional <paramref name="partnerNucleus"/> for ∠(tip, axis toward partner).</summary>
-    public static void LogExBondOrbitalPose(string phase, string label, ElectronOrbitalFunction orb, AtomFunction parentNucleus, AtomFunction partnerNucleus = null)
-    {
-        if (!DebugLogExBondOrbitalPose || orb == null || parentNucleus == null) return;
-        Vector3 tipL = (orb.transform.localRotation * Vector3.right).normalized;
-        Vector3 tipW = parentNucleus.transform.TransformDirection(tipL);
-        if (tipW.sqrMagnitude > 1e-8f) tipW.Normalize();
-        Vector3 wpos = orb.transform.position;
-        string extra = "";
-        if (partnerNucleus != null)
-        {
-            Vector3 toPartner = partnerNucleus.transform.position - parentNucleus.transform.position;
-            if (toPartner.sqrMagnitude > 1e-8f)
-            {
-                toPartner.Normalize();
-                extra = $" towardPartner∠={Vector3.Angle(tipW, toPartner):F2}° dot={Vector3.Dot(tipW, toPartner):F4}";
-            }
-        }
-        string line =
-            $"[ex-bond-pose] {phase} {label} orbId={orb.GetInstanceID()} e={orb.ElectronCount} parentZ={parentNucleus.AtomicNumber} parentId={parentNucleus.GetInstanceID()} " +
-            $"localP=({orb.transform.localPosition.x:F4},{orb.transform.localPosition.y:F4},{orb.transform.localPosition.z:F4}) " +
-            $"worldP=({wpos.x:F4},{wpos.y:F4},{wpos.z:F4}) tipW=({tipW.x:F4},{tipW.y:F4},{tipW.z:F4}){extra}";
-        Debug.Log(line);
-        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
-    }
+    public static void LogBreakGuideOrbitalsPose(string _, AtomFunction __, AtomFunction ___, ElectronOrbitalFunction ____, ElectronOrbitalFunction _____, AtomFunction ______, AtomFunction _______) { }
 
-    /// <summary>Logs both post-break guide orbitals; partner axis = other bond nucleus from each parent.</summary>
-    public static void LogBreakGuideOrbitalsPose(string phase, AtomFunction nucleusA, AtomFunction nucleusB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, AtomFunction parentA, AtomFunction parentB)
-    {
-        if (!DebugLogExBondOrbitalPose) return;
-        if (orbA != null && parentA != null)
-        {
-            AtomFunction partnerA = parentA == nucleusA ? nucleusB : nucleusA;
-            LogExBondOrbitalPose(phase, "orbA", orbA, parentA, partnerA);
-        }
-        if (orbB != null && parentB != null)
-        {
-            AtomFunction partnerB = parentB == nucleusA ? nucleusB : nucleusA;
-            LogExBondOrbitalPose(phase, "orbB", orbB, parentB, partnerB);
-        }
-    }
-
-    static void LogBreakEmptyTeleportBoth(string phase, AtomFunction atomA, AtomFunction atomB, Vector3? refA, Vector3? refB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, AtomFunction nucleusForOrbA, AtomFunction nucleusForOrbB)
-    {
-        if (!AtomFunction.DebugLogBondBreakEmptyTeleport) return;
-        atomA?.LogEmptyNonbondSnapshotForBondBreak(phase + "/A", refA, BondBreakGuideLoneOrbitalOnAtom(atomA, orbA, orbB, nucleusForOrbA, nucleusForOrbB));
-        atomB?.LogEmptyNonbondSnapshotForBondBreak(phase + "/B", refB, BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, nucleusForOrbA, nucleusForOrbB));
-    }
+    static void LogBreakEmptyTeleportBoth(string _, AtomFunction __, AtomFunction ___, Vector3? ____, Vector3? _____, ElectronOrbitalFunction ______, ElectronOrbitalFunction _______, AtomFunction ________, AtomFunction _________) { }
 
     /// <summary>
     /// σ cleavage: each ex-bond lobe should point from this nucleus toward the partner. Preview / bond-line capture often gives
@@ -135,6 +89,17 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (bondElectrons % 2 == 0) return bondElectrons / 2;
         if (orbitalContributor == null) return bondElectrons / 2; // Fallback when contributor unknown
         return orbitalContributor == atom ? (bondElectrons + 1) / 2 : (bondElectrons - 1) / 2;
+    }
+
+    /// <summary>Lewis formal charge: each end gets half the σ bonding e⁻; odd totals split by stable instance-id order.</summary>
+    public int GetFormalChargeElectronsOwnedBy(AtomFunction atom)
+    {
+        if (atom == null || atomA == null || atomB == null || (atom != atomA && atom != atomB)) return 0;
+        int bondElectrons = ElectronCount;
+        if (orbitalBeingFadedForCharge != null)
+            bondElectrons += orbitalBeingFadedForCharge.ElectronCount;
+        var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
+        return atom == first ? (bondElectrons + 1) / 2 : bondElectrons / 2;
     }
 
     /// <summary>Updates bond transform to current atom positions. Call before SnapOrbitalToBondPosition when animatingOrbitalToBondPosition was true (bond may be stale).</summary>
@@ -236,7 +201,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         UpdateBondTransformToCurrentAtoms();
 
-        Vector3 hybridIn = hybridTipWorld;
         if (hybridTipWorld.sqrMagnitude < 1e-12f) return;
         hybridTipWorld.Normalize();
         Vector3 geom = partner.transform.position - fromAtom.transform.position;
@@ -255,25 +219,11 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (Vector3.Dot(tip0, want) > 0.9999f)
         {
             orbitalRedistributionWorldDelta = Quaternion.identity;
-            if (AtomFunction.DebugLogCarbocationSigmaRedistributionTrace)
-            {
-                AtomFunction.LogCarbocationSigmaRedistributionTrace(
-                    $"ApplySigmaOrbitalTip δ=0 bondId={GetInstanceID()} fromAtomId={fromAtom.GetInstanceID()} partnerId={partner.GetInstanceID()} " +
-                    $"hybridIn={hybridIn.x:F4},{hybridIn.y:F4},{hybridIn.z:F4} hybridAfterSign={want.x:F4},{want.y:F4},{want.z:F4} tip0={tip0.x:F4},{tip0.y:F4},{tip0.z:F4}");
-            }
             SyncSigmaOrbitalWorldPoseFromRedistribution();
             return;
         }
 
         orbitalRedistributionWorldDelta = Quaternion.FromToRotation(tip0, want);
-        if (AtomFunction.DebugLogCarbocationSigmaRedistributionTrace)
-        {
-            float deltaDeg = Quaternion.Angle(Quaternion.identity, orbitalRedistributionWorldDelta);
-            AtomFunction.LogCarbocationSigmaRedistributionTrace(
-                $"ApplySigmaOrbitalTip bondId={GetInstanceID()} fromAtomId={fromAtom.GetInstanceID()} partnerId={partner.GetInstanceID()} " +
-                $"hybridIn={hybridIn.x:F4},{hybridIn.y:F4},{hybridIn.z:F4} hybridAfterSign={want.x:F4},{want.y:F4},{want.z:F4} " +
-                $"tip0={tip0.x:F4},{tip0.y:F4},{tip0.z:F4} ∠(tip0,want)={Vector3.Angle(tip0, want):F2}° δWorldDeg={deltaDeg:F2}°");
-        }
         SyncSigmaOrbitalWorldPoseFromRedistribution();
     }
 
@@ -841,12 +791,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         int piAfterA = atomA != null ? atomA.GetPiBondCount() : 0;
         int piAfterB = atomB != null ? atomB.GetPiBondCount() : 0;
-        if (AtomFunction.DebugLogCcBondBreakGeometry)
-        {
-            string cc = $"[bond-break-cc] BreakBond sigmaCleavageBetweenPartners={sigmaCleavageBetweenPartners} piAfterA={piAfterA} piAfterB={piAfterB} (true=full σ cleavage CH₃–CH₃ style; false=π component break σ remains)";
-            Debug.Log(cc);
-            ProjectAgentDebugLog.MirrorToProjectDotLog(cc);
-        }
         bool sigmaOnlyUnchangedPiBoth = piBeforeA == piAfterA && piBeforeB == piAfterB;
         Vector3? refWorldA = dirAtoB.sqrMagnitude >= 0.01f ? dirAtoB : (Vector3?)null;
         Vector3? refWorldB = dirBtoA.sqrMagnitude >= 0.01f ? dirBtoA : (Vector3?)null;
@@ -1753,12 +1697,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         LogBreakGuideOrbitalsPose("afterOrientEmpty", atomA, atomB, orbA, orbB, parentA, parentB);
         LogBreakEmptyTeleportBoth("co_postOrientEmpty", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
-
-        if (AtomFunction.DebugLogCcBondBreakGeometry)
-        {
-            atomA?.LogCcBondBreakGeometryDiagnostics("afterCoAnimateBreakBond-Final");
-            atomB?.LogCcBondBreakGeometryDiagnostics("afterCoAnimateBreakBond-Final");
-        }
 
         atomA?.RefreshCharge();
         atomB?.RefreshCharge();

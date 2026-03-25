@@ -359,6 +359,65 @@ public class AtomQuickAddUI : MonoBehaviour
         row2.transform.SetParent(toolbar.transform, false);
 
         BuildTogglesPanelUpperRight(canvas);
+        BuildChargeModeToggleLowerLeft(canvas);
+    }
+
+    void BuildChargeModeToggleLowerLeft(Canvas canvas)
+    {
+        var wrap = new GameObject("ChargeModePanel");
+        wrap.transform.SetParent(canvas.transform, false);
+        var wrapRect = wrap.AddComponent<RectTransform>();
+        wrapRect.anchorMin = new Vector2(0, 0);
+        wrapRect.anchorMax = new Vector2(0, 0);
+        wrapRect.pivot = new Vector2(0, 0);
+        wrapRect.anchoredPosition = new Vector2(Px(10f), Px(10f));
+        wrapRect.sizeDelta = new Vector2(Px(178f), layoutButtonSize);
+
+        var activeAtomicCharge = new Color(0.42f, 0.72f, 0.52f);
+        var activeOx = new Color(0.75f, 0.62f, 0.40f);
+
+        var go = new GameObject("ChargeModeToggle");
+        go.transform.SetParent(wrap.transform, false);
+        var rect = go.AddComponent<RectTransform>();
+        rect.anchorMin = Vector2.zero;
+        rect.anchorMax = Vector2.one;
+        rect.offsetMin = Vector2.zero;
+        rect.offsetMax = Vector2.zero;
+
+        var image = go.AddComponent<Image>();
+        var btn = go.AddComponent<Button>();
+
+        var labelGo = new GameObject("Label");
+        labelGo.transform.SetParent(go.transform, false);
+        var labelRect = labelGo.AddComponent<RectTransform>();
+        labelRect.anchorMin = Vector2.zero;
+        labelRect.anchorMax = Vector2.one;
+        labelRect.offsetMin = Vector2.zero;
+        labelRect.offsetMax = Vector2.zero;
+
+        var tmp = labelGo.AddComponent<TextMeshProUGUI>();
+        tmp.font = AtomFunction.GetDefaultFont();
+        tmp.fontSize = Mathf.Max(8, layoutFontSize - 2);
+        tmp.alignment = TextAlignmentOptions.Center;
+        tmp.raycastTarget = false;
+        tmp.color = new Color(0.95f, 0.95f, 0.98f, 1f);
+
+        void ApplyVisuals()
+        {
+            bool oxidation = AtomFunction.ChargeDisplayMode == AtomChargeDisplayMode.OxidationState;
+            image.color = oxidation ? activeOx : activeAtomicCharge;
+            tmp.text = oxidation ? "Oxidation State" : "Atomic charge";
+        }
+
+        ApplyVisuals();
+        btn.onClick.AddListener(() =>
+        {
+            AtomFunction.ChargeDisplayMode = AtomFunction.ChargeDisplayMode == AtomChargeDisplayMode.OxidationState
+                ? AtomChargeDisplayMode.OctetFormal
+                : AtomChargeDisplayMode.OxidationState;
+            ApplyVisuals();
+            AtomFunction.RefreshAllDisplayedCharges();
+        });
     }
 
     void BuildTogglesPanelUpperRight(Canvas canvas)

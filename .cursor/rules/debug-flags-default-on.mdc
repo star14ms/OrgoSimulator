@@ -1,0 +1,25 @@
+---
+description: New debug log toggles default to true so diagnostics are visible without manual enabling.
+alwaysApply: true
+---
+
+# Debug logs: default flags on
+
+When adding **new** diagnostic logging (e.g. `Debug.Log`, `ProjectAgentDebugLog.MirrorToProjectDotLog`, or a dedicated `LogXyz` helper) that is gated by a `bool` flag (`static`, `[SerializeField]`, or instance field):
+
+1. **Initialize the flag to `true` by default** so output appears in Play mode and in `.log` without the developer hunting for toggles.
+2. Document in the **summary comment** on that flag that it defaults on for triage and can be set to `false` for quiet runs.
+3. **Exception**: If the log would run **every frame** or **flood** the console (e.g. per-orbital `Update`), default **`false`** and say so in the comment; offer a one-line note in the rule summary when you choose this.
+
+Pattern:
+
+```csharp
+// ✅ When introducing a new triage flag — default on
+/// <summary>… Default on for triage; set false for quiet runs.</summary>
+public static bool DebugLogMyFeature = true;
+
+// ❌ Avoid for new flags unless exception (high-frequency / spam risk)
+public static bool DebugLogMyFeature = false;
+```
+
+Existing legacy flags may stay default-off; apply this rule to **newly added** debug gates in the same change as the logs.

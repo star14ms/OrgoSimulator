@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Text;
 using UnityEngine;
 
 /// <summary>Edit-mode toolbar functional groups: attach to a free orbital or replace selected hydrogen.</summary>
@@ -21,36 +20,8 @@ public enum FunctionalGroupKind
 /// </summary>
 public class MoleculeBuilder : MonoBehaviour
 {
-    /// <summary>Console logs tagged [FG-OrbDist] for Nitro / Carboxyl attach (orbital redistribution path).</summary>
-    public static bool DebugFunctionalGroupOrbitalDistribution;
-
     [SerializeField] GameObject atomPrefab;
     [SerializeField] float viewportMargin = 0.1f;
-
-    static void LogFgOrbit(string msg)
-    {
-        if (!DebugFunctionalGroupOrbitalDistribution) return;
-        Debug.Log($"[FG-OrbDist] {msg}");
-    }
-
-    static string DescribeConnectedFragment(AtomFunction anchor)
-    {
-        if (anchor == null) return "anchor=null\n";
-        var sb = new StringBuilder();
-        foreach (var a in anchor.GetConnectedMolecule())
-        {
-            if (a == null) continue;
-            int loneLobes = 0;
-            foreach (var o in a.GetComponentsInChildren<ElectronOrbitalFunction>())
-            {
-                if (o.transform.parent != a.transform) continue;
-                if (o.Bond == null) loneLobes++;
-            }
-            sb.AppendLine(
-                $"  Z={a.AtomicNumber} id={a.GetInstanceID()} π={a.GetPiBondCount()} bondObjs={a.CovalentBonds.Count} loneLobes(Bond==null)={loneLobes} 1eOrbs={a.GetLoneOrbitalsWithOneElectronSortedByAngle().Count}");
-        }
-        return sb.ToString();
-    }
 
     /// <summary>Bond length matches manual bonding: 2 * (bondRadius * 0.6) = 1.2 * bondRadius, from GetCanonicalSlotPosition in ElectronOrbitalFunction.</summary>
     float GetBondLength() => atomPrefab != null && atomPrefab.TryGetComponent<AtomFunction>(out var a) ? 1.2f * a.BondRadius : 0.96f;
@@ -606,8 +577,6 @@ public class MoleculeBuilder : MonoBehaviour
         int reserved = GetMinReservedBondOrderForPiPass(center);
         int initialOneE = center.GetLoneOrbitalsWithOneElectronSortedByAngle().Count;
         int maxPiBonds = Mathf.Min(initialOneE, Mathf.Max(0, v - s0 - reserved));
-        LogFgOrbit(
-            $"TryFormPiBonds center Z={center.AtomicNumber} id={center.GetInstanceID()}: valenceCap={v} sumBO={s0} reservedπ={reserved} 1eLone={initialOneE} maxPiForm={maxPiBonds} πNow={center.GetPiBondCount()}");
         if (maxPiBonds <= 0) return;
 
         for (int round = 0; round < 8; round++)
@@ -704,11 +673,6 @@ public class MoleculeBuilder : MonoBehaviour
         Vector3 dirOut = anchorWorldPos - parent.transform.position;
         if (dirOut.sqrMagnitude < 1e-10f) return false;
         dirOut.Normalize();
-
-        bool traceNitroOrCarboxyl = DebugFunctionalGroupOrbitalDistribution
-            && (kind == FunctionalGroupKind.Nitro || kind == FunctionalGroupKind.Carboxyl);
-        if (traceNitroOrCarboxyl)
-            LogFgOrbit($"BuildFunctionalGroup BEGIN kind={kind} use3D={OrbitalAngleUtility.UseFull3DOrbitalGeometry}");
 
         int z0 = kind switch
         {
@@ -857,50 +821,29 @@ public class MoleculeBuilder : MonoBehaviour
             return false;
         }
 
-            if (traceNitroOrCarboxyl)
-            {
-                LogFgOrbit($"After σ framework (before π): anchorZ={anchor.AtomicNumber} parentZ={parent.AtomicNumber}");
-                LogFgOrbit($"Connected fragment snapshot:\n{DescribeConnectedFragment(anchor)}");
-            }
+        TryFormPiBondsForFunctionalGroupCenter(anchor, parent);
 
-            TryFormPiBondsForFunctionalGroupCenter(anchor, parent);
+        RedistributeOrbitalsFunctionalGroupSide(parent, anchor);
 
-            if (traceNitroOrCarboxyl)
-            {
-                LogFgOrbit($"After TryFormPiBonds: anchor π={anchor.GetPiBondCount()} sumBO={anchor.GetSumBondOrderToNeighbors()}");
-                LogFgOrbit($"Fragment before RedistributeOrbitals (post-π):\n{DescribeConnectedFragment(anchor)}");
-            }
+        if (edit != null)
+        {
+            var fgOnly = new List<AtomFunction>();
+            foreach (var a in touched)
+                if (a != null && a != parent)
+                    fgOnly.Add(a);
+            if (fgOnly.Count > 0)
+                edit.SaturateAtomsWithHydrogenPass(
+                    fgOnly,
+                    pinSigmaRelaxNeighbors: null,
+                    incrementalIgnoreSubstrateParent: parent,
+                    incrementalIgnoreGroupAnchor: anchor,
+                    freezeSigmaNeighborSubtreeRoot: parent);
+        }
 
-            RedistributeOrbitalsFunctionalGroupSide(parent, anchor);
+        RedistributeOrbitalsFunctionalGroupSide(parent, anchor);
 
-            if (traceNitroOrCarboxyl)
-                LogFgOrbit($"After RedistributeOrbitals #1:\n{DescribeConnectedFragment(anchor)}");
-
-            if (edit != null)
-            {
-                var fgOnly = new List<AtomFunction>();
-                foreach (var a in touched)
-                    if (a != null && a != parent)
-                        fgOnly.Add(a);
-                if (fgOnly.Count > 0)
-                    edit.SaturateAtomsWithHydrogenPass(
-                        fgOnly,
-                        pinSigmaRelaxNeighbors: null,
-                        incrementalIgnoreSubstrateParent: parent,
-                        incrementalIgnoreGroupAnchor: anchor,
-                        freezeSigmaNeighborSubtreeRoot: parent);
-            }
-
-            RedistributeOrbitalsFunctionalGroupSide(parent, anchor);
-
-            // H saturation and post-saturation redistribute rebuild local tetrahedra; Newman stagger must run last.
-            TryStaggerFunctionalGroupBackboneHeaviesTowardParent(parent, touched);
-
-            if (traceNitroOrCarboxyl)
-            {
-                LogFgOrbit($"After RedistributeOrbitals #2 (post H-saturation):\n{DescribeConnectedFragment(anchor)}");
-                LogFgOrbit("BuildFunctionalGroup END");
-            }
+        // H saturation and post-saturation redistribute rebuild local tetrahedra; Newman stagger must run last.
+        TryStaggerFunctionalGroupBackboneHeaviesTowardParent(parent, touched);
 
         return true;
         }

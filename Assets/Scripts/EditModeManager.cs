@@ -855,20 +855,11 @@ public class EditModeManager : MonoBehaviour
         atomA.UnbondOrbital(orbA);
         atomB.UnbondOrbital(orbB);
 
-        var bond = CovalentBond.Create(atomA, atomB, orbA, atomA, animateOrbitalToBond: false);
+        var bond = CovalentBond.Create(atomA, atomB, orbA, atomA, animateOrbitalToBond: true);
         if (bond != null)
         {
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
-            if (AtomFunction.DebugLogFrameworkPinSigmaRelaxTrace)
-            {
-                AtomFunction.LogFrameworkPinSigmaRelax(
-                    "FormSigmaBondInstant A=" + AtomFunction.FormatAtomBrief(atomA)
-                    + " B=" + AtomFunction.FormatAtomBrief(atomB)
-                    + $" redistA={redistributeAtomA} redistB={redistributeAtomB}"
-                    + " " + AtomFunction.FormatPinSummary(pinSigmaRelaxForAtomA)
-                    + " | " + AtomFunction.FormatPinSummary(pinSigmaRelaxForAtomB));
-            }
             if (redistributeAtomA)
                 atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA, pinAtomsForSigmaRelax: pinSigmaRelaxForAtomA, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
             if (redistributeAtomB)
@@ -1135,8 +1126,6 @@ public class EditModeManager : MonoBehaviour
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
                 atom.RedistributeOrbitals(refBondWorldDirection: dirN, pinAtomsForSigmaRelax: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
-                if (atom.AtomicNumber > 1)
-                    atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
             }
             else
             {
@@ -1149,8 +1138,8 @@ public class EditModeManager : MonoBehaviour
                 AtomFunction.SetupGlobalIgnoreCollisions();
         }
 
-        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && atom != null && atom.AtomicNumber > 1)
-            atom.TryPlaceTetrahedralHydrogenSubstituentsAboutSingleHeavyNeighbor(bondLength);
+        // if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && atom != null && atom.AtomicNumber > 1)
+        //     atom.TryPlaceTetrahedralHydrogenSubstituentsAboutSingleHeavyNeighbor(bondLength);
     }
 
     /// <summary>

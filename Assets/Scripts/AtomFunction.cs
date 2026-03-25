@@ -6,6 +6,13 @@ using System.Collections.Generic;
 using System.Linq;
 using TMPro;
 
+/// <summary>How to derive the int shown on <c>ChargeLabel</c>: Lewis formal (octet) vs oxidation state (Pauling EN).</summary>
+public enum AtomChargeDisplayMode
+{
+    OctetFormal,
+    OxidationState
+}
+
 public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IPointerUpHandler
 {
     [SerializeField] float bondRadius = 0.8f;
@@ -31,20 +38,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public int AtomicNumber { get => atomicNumber; set => atomicNumber = Mathf.Clamp(value, 1, 118); }
     public int Charge { get => charge; set { charge = value; RefreshChargeLabel(); } }
 
-    /// <summary>Console + optional project <c>.log</c>: <c>[vsepr3d]</c> trace. Default off; enable for VSEPR redistribution triage.</summary>
-    public static bool DebugLogVseprRedistribute3D = false;
+    /// <summary>Whether charge labels use Lewis formal charge (half bonds) or oxidation state (electronegativity). Default: formal/octet.</summary>
+    public static AtomChargeDisplayMode ChargeDisplayMode = AtomChargeDisplayMode.OctetFormal;
 
-    /// <summary>Console + project <c>.log</c>: <c>[fw-pin]</c> — which code paths move nuclei during redistribute / σ-relax / H snap (framework drag triage). Set true in inspector via script or temporarily in code.</summary>
-    public static bool DebugLogFrameworkPinSigmaRelaxTrace = false;
-
-    /// <summary>Writes <c>[fw-pin]</c> lines when <see cref="DebugLogFrameworkPinSigmaRelaxTrace"/> is enabled.</summary>
-    public static void LogFrameworkPinSigmaRelax(string message)
-    {
-        if (!DebugLogFrameworkPinSigmaRelaxTrace) return;
-        string line = "[fw-pin] " + message;
-        Debug.Log(line);
-        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
-    }
+    /// <summary>Geometric ideal ∠(domain, domain) for a regular tetrahedron: <c>arccos(-⅓)</c>.</summary>
+    public const float TetrahedralInterdomainAngleDeg = 109.47122f;
 
     public static string FormatAtomBrief(AtomFunction a) =>
         a == null ? "null" : $"id={a.GetInstanceID()} Z={a.AtomicNumber} name={a.name}";
@@ -68,212 +66,159 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return $"pin[count={pin.Count}] " + string.Join("; ", parts);
     }
 
-    static void LogVsepr3D(string message)
-    {
-        if (!DebugLogVseprRedistribute3D) return;
-        string line = "[vsepr3d] " + message;
-        Debug.Log(line);
-        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
-    }
+    static void LogVsepr3D(string _) { }
 
-    /// <summary>Console + project <c>.log</c>: <c>[bond-break-cc]</c> C–C σ-cleavage geometry branches. Default off; use <see cref="DebugLogCarbocationTrigonalPlanarityDiag"/> for carbocation planarity.</summary>
+    void LogReplaceHRedistributeOrbitalSnapshot(string _) { }
+
+    void LogTetrahedralElectronDomainAngleDiagnostic(string _, List<(Vector3 bondAxisLocal, Vector3 idealLocal)> __) { }
+
+    public static void LogTetrahedralDomainAnglesLine(string _) { }
+
+    public static void LogReplaceHRedistribute(string _) { }
+
+    public static void LogVseprLoneLobeMotionLine(string _) { }
+
+    public static void LogBondBreakRedistributeFlowLine(string _) { }
+
+    public static void LogFrameworkPinSigmaRelax(string _) { }
+
+    /// <summary>Legacy triage toggles; kept for call sites; logs are no-ops above.</summary>
+    public static bool DebugLogVseprRedistribute3D = false;
+    public static bool DebugLogReplaceHRedistribute = false;
+    public static bool DebugLogTetrahedralDomainAngles = false;
+    public static bool DebugLogVseprLoneLobeMotion = false;
+    public static bool DebugLogBondBreakRedistributeFlow = false;
+    public static bool DebugLogFrameworkPinSigmaRelaxTrace = false;
     public static bool DebugLogCcBondBreakGeometry = false;
-
-    /// <summary>Console + project <c>.log</c>: <c>[bond-break-cc:trace]</c> — per-call TrySpread / carbocation diagnostics (shell e⁻ counts, guide parent, perm null, redistribute gates). Default off.</summary>
     public static bool DebugLogCcBondBreakSpreadTrace = false;
-
-    /// <summary>Console + project <c>.log</c>: <c>[bond-break-cc]</c> via <see cref="LogCarbocationPlanarityDiagLine"/> — carbocation σ lobe tips (pairwise ~120°, |triple|, ∠to ref) plus **internuclear σ-axis** pairwise angles vs **∠(lobe tip, C→neighbor)**; <c>TETRA_AXES_VS_TRIGONAL_LOBES_WARN</c> when skeleton ~tetrahedral but lobes don’t align to bond axes. Also at <c>OrientEmpty/end</c>. Independent of <see cref="DebugLogCcBondBreakGeometry"/>. **Default on**.</summary>
-    public static bool DebugLogCarbocationTrigonalPlanarityDiag = true;
-
-    /// <summary>Console + project <c>.log</c>: <c>[bond-break-cc:sigma-redist]</c> — trigonal slot ideal dirs, bond-hosted <see cref="ApplyCarbonBreakIdealLocalDirection"/>, and <see cref="CovalentBond.ApplySigmaOrbitalTipFromRedistribution"/> (world hybrid, tip0→want, δ rotation). Default off (verbose).</summary>
+    public static bool DebugLogCarbocationTrigonalPlanarityDiag = false;
     public static bool DebugLogCarbocationSigmaRedistributionTrace = false;
-
-    /// <summary>Writes <c>[bond-break-cc:sigma-redist]</c> when <see cref="DebugLogCarbocationSigmaRedistributionTrace"/> is enabled.</summary>
-    public static void LogCarbocationSigmaRedistributionTrace(string message)
-    {
-        if (!DebugLogCarbocationSigmaRedistributionTrace) return;
-        string line = "[bond-break-cc:sigma-redist] " + message;
-        Debug.Log(line);
-        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
-    }
-
-    /// <summary>Console + project <c>.log</c>: <c>[bond-break-cc:ideal-frame]</c> — branch order in <see cref="TryAssignCarbonBreakIdealFrame"/> (carbocation trigonal → 2σ trigonal → rigid tet+R → unified sparse). Default off.</summary>
     public static bool DebugLogCarbonBreakIdealFrameTrace = false;
-
-    /// <summary>Writes <c>[bond-break-cc:ideal-frame]</c> lines when <see cref="DebugLogCarbonBreakIdealFrameTrace"/> is enabled.</summary>
-    static void LogCarbonBreakIdealFrameTrace(string message)
-    {
-        if (!DebugLogCarbonBreakIdealFrameTrace) return;
-        string line = "[bond-break-cc:ideal-frame] " + message;
-        Debug.Log(line);
-        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
-    }
-
-    /// <summary>Console + project <c>.log</c>: <c>[bond-break-cc:unified-diag]</c> — <see cref="TryAssignCarbonBreakUnifiedSparseTetrahedral"/> pin vs permutation, ideal dirs, perm indices, tips before/after, min inter-tip angle (overlap hint). Default off; enable for unified-tet triage.</summary>
     public static bool DebugLogCcBondBreakUnifiedSparseDiag = false;
-
-    /// <summary>Unity + project <c>.log</c>: <c>[break-empty-teleport]</c> — 0e non-bond world tip through bond-break (finds which step flips ~180°). Default off.</summary>
     public static bool DebugLogBondBreakEmptyTeleport = false;
 
-    public static void LogBondBreakEmptyTeleportLine(string line)
+    /// <summary>
+    /// Same σ + lone tip directions in world space as <see cref="LogTetrahedralElectronDomainAngleDiagnostic"/> (visual row).
+    /// </summary>
+    bool TryGetFourElectronDomainDirectionsWorldNormalized(List<Vector3> dirsWorldOut, List<Vector3> loneTipsWorldOnly)
     {
-        if (!DebugLogBondBreakEmptyTeleport) return;
-        Debug.Log(line);
-        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
-    }
-
-    /// <summary>Each 0e non-bond on this atom: local tip, dot/∠ vs ex-bond <paramref name="refWorldTowardPartner"/> and vs guide lobe tip.</summary>
-    public void LogEmptyNonbondSnapshotForBondBreak(string phase, Vector3? refWorldTowardPartner, ElectronOrbitalFunction bondBreakGuideOrbital)
-    {
-        if (!DebugLogBondBreakEmptyTeleport) return;
-        Vector3? guideTipW = null;
-        if (bondBreakGuideOrbital != null && bondBreakGuideOrbital.transform.parent == transform)
+        dirsWorldOut.Clear();
+        loneTipsWorldOnly?.Clear();
+        var loneTemp = new List<Vector3>(6);
+        foreach (var orb in bondedOrbitals)
         {
-            Vector3 gl = (bondBreakGuideOrbital.transform.localRotation * Vector3.right).normalized;
-            Vector3 gw = transform.TransformDirection(gl);
-            if (gw.sqrMagnitude > 1e-8f) guideTipW = gw.normalized;
+            if (orb == null || orb.Bond != null || orb.ElectronCount <= 0) continue;
+            Vector3 w = transform.TransformDirection(OrbitalTipLocalDirection(orb)).normalized;
+            loneTemp.Add(w);
+            loneTipsWorldOnly?.Add(w);
         }
-
-        foreach (var o in bondedOrbitals)
+        var seenN = new HashSet<AtomFunction>();
+        foreach (var b in covalentBonds)
         {
-            if (o == null || o.Bond != null || o.ElectronCount != 0) continue;
-            Vector3 tipL = (o.transform.localRotation * Vector3.right).normalized;
-            Vector3 tipW = transform.TransformDirection(tipL);
-            if (tipW.sqrMagnitude > 1e-8f) tipW.Normalize();
-            string refPart = "";
-            if (refWorldTowardPartner.HasValue && refWorldTowardPartner.Value.sqrMagnitude > 1e-6f)
+            if (b?.AtomA == null || b?.AtomB == null || !b.IsSigmaBondLine()) continue;
+            AtomFunction other = b.AtomA == this ? b.AtomB : b.AtomA;
+            if (other == null || !seenN.Add(other)) continue;
+            if (b.Orbital != null)
             {
-                Vector3 rw = refWorldTowardPartner.Value.normalized;
-                refPart = $" ∠ref={Vector3.Angle(tipW, rw):F2}° dotRef={Vector3.Dot(tipW, rw):F4}";
+                Vector3 local = OrbitalTipDirectionInNucleusLocal(b.Orbital);
+                dirsWorldOut.Add(transform.TransformDirection(local).normalized);
             }
-
-            string guidePart = "";
-            if (guideTipW.HasValue)
-                guidePart = $" ∠guide={Vector3.Angle(tipW, guideTipW.Value):F2}° dotGuide={Vector3.Dot(tipW, guideTipW.Value):F4}";
-
-            string line =
-                $"[break-empty-teleport] {phase} parent={name} Z={atomicNumber} parentId={GetInstanceID()} emptyOrbId={o.GetInstanceID()} " +
-                $"localP=({o.transform.localPosition.x:F4},{o.transform.localPosition.y:F4},{o.transform.localPosition.z:F4}) " +
-                $"tipW=({tipW.x:F4},{tipW.y:F4},{tipW.z:F4}){refPart}{guidePart} " +
-                $"carbStyleEmpty={IsCarbocationStyleBondBreakThreeDomainsWithEmptyCase(bondBreakGuideOrbital)} σN={GetDistinctSigmaNeighborCount()}";
-            LogBondBreakEmptyTeleportLine(line);
+            else
+            {
+                Vector3 w = other.transform.position - transform.position;
+                if (w.sqrMagnitude > 1e-12f)
+                    dirsWorldOut.Add(w.normalized);
+            }
         }
+        dirsWorldOut.AddRange(loneTemp);
+        return dirsWorldOut.Count == 4;
     }
 
-    static void LogCcBondBreak(string message)
+    /// <summary>True when pairwise spread/mean match tet diagnostic “visual≈tetra” (same vectors as <c>[tetra-domain]</c>).</summary>
+    bool FourDomainsVisualElectronGeometryApproximatelyTetrahedral(float spreadTol, float meanTol)
     {
-        if (!DebugLogCcBondBreakGeometry) return;
-        string line = "[bond-break-cc] " + message;
-        Debug.Log(line);
-        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
+        var dirs = new List<Vector3>(8);
+        if (!TryGetFourElectronDomainDirectionsWorldNormalized(dirs, loneTipsWorldOnly: null)) return false;
+        TetraDomainPairwiseAngleStats(dirs, out float vmin, out _, out float vmean, out float vspread, out _);
+        float vdev = Mathf.Abs(vmean - TetrahedralInterdomainAngleDeg);
+        if (vmin < 55f) return false;
+        return vspread <= spreadTol && vdev <= meanTol;
     }
 
-    /// <summary><c>[bond-break-cc]</c> lines for <see cref="DebugLogCarbocationTrigonalPlanarityDiag"/> only — not gated by <see cref="DebugLogCcBondBreakGeometry"/>.</summary>
-    static void LogCarbocationPlanarityDiagLine(string message)
+    /// <summary>Hybrid σ tips already track internuclear axes (skip path safe for identity Σ sync).</summary>
+    bool SigmaTipsAlignedToBondAxes(float maxDeg)
     {
-        if (!DebugLogCarbocationTrigonalPlanarityDiag) return;
-        string line = "[bond-break-cc] " + message;
-        Debug.Log(line);
-        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
+        var seenN = new HashSet<AtomFunction>();
+        foreach (var b in covalentBonds)
+        {
+            if (b?.AtomA == null || b?.AtomB == null || !b.IsSigmaBondLine()) continue;
+            AtomFunction other = b.AtomA == this ? b.AtomB : b.AtomA;
+            if (other == null || !seenN.Add(other)) continue;
+            Vector3 axisW = (other.transform.position - transform.position);
+            if (axisW.sqrMagnitude < 1e-12f) continue;
+            axisW.Normalize();
+            if (b.Orbital != null)
+            {
+                Vector3 tipW = transform.TransformDirection(OrbitalTipDirectionInNucleusLocal(b.Orbital).normalized);
+                if (Vector3.Angle(tipW, axisW) > maxDeg) return false;
+            }
+        }
+        return true;
     }
 
-    static void LogCcBondBreakTrace(string message)
+    static void TetraDomainPairwiseAngleStats(IReadOnlyList<Vector3> dirs, out float minAng, out float maxAng, out float mean, out float spread, out float meanDevFrom109)
     {
-        if (!DebugLogCcBondBreakSpreadTrace) return;
-        string line = "[bond-break-cc:trace] " + message;
-        Debug.Log(line);
-        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
+        const float ideal = TetrahedralInterdomainAngleDeg;
+        minAng = 360f;
+        maxAng = 0f;
+        mean = 0f;
+        spread = 0f;
+        meanDevFrom109 = 0f;
+        int n = dirs?.Count ?? 0;
+        if (n < 2) return;
+        float sum = 0f;
+        int pcount = 0;
+        for (int i = 0; i < n; i++)
+        {
+            for (int j = i + 1; j < n; j++)
+            {
+                float ang = Vector3.Angle(dirs[i], dirs[j]);
+                minAng = Mathf.Min(minAng, ang);
+                maxAng = Mathf.Max(maxAng, ang);
+                sum += ang;
+                pcount++;
+            }
+        }
+        mean = pcount > 0 ? sum / pcount : 0f;
+        spread = maxAng - minAng;
+        meanDevFrom109 = Mathf.Abs(mean - ideal);
     }
 
-    static void LogCcBondBreakUnified(string message)
-    {
-        if (!DebugLogCcBondBreakGeometry) return;
-        string line = "[bond-break-cc-unified] " + message;
-        Debug.Log(line);
-        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
-    }
+    public static void LogCarbocationSigmaRedistributionTrace(string _) { }
 
-    static void LogCcBondBreakUnifiedDiag(string message)
-    {
-        if (!DebugLogCcBondBreakUnifiedSparseDiag) return;
-        string line = "[bond-break-cc:unified-diag] " + message;
-        Debug.Log(line);
-        ProjectAgentDebugLog.MirrorToProjectDotLog(line);
-    }
+    static void LogCarbonBreakIdealFrameTrace(string _) { }
+
+    public static void LogBondBreakEmptyTeleportLine(string _) { }
+
+    public void LogEmptyNonbondSnapshotForBondBreak(string _, Vector3? __, ElectronOrbitalFunction ___) { }
+
+    static void LogCcBondBreak(string _) { }
+
+    static void LogCarbocationPlanarityDiagLine(string _) { }
+
+    static void LogCcBondBreakTrace(string _) { }
+
+    static void LogCcBondBreakUnified(string _) { }
+
+    static void LogCcBondBreakUnifiedDiag(string _) { }
 
     static string FormatLocalDir3(Vector3 v) => $"({v.x:F4},{v.y:F4},{v.z:F4})";
 
-    void LogUnifiedSparseTipSnapshot(string phase, List<ElectronOrbitalFunction> orbs)
-    {
-        if (!DebugLogCcBondBreakUnifiedSparseDiag || orbs == null) return;
-        for (int i = 0; i < orbs.Count; i++)
-        {
-            var o = orbs[i];
-            if (o == null) continue;
-            Vector3 t = OrbitalTipDirectionInNucleusLocal(o);
-            string parentKind = o.transform.parent == transform ? "nucleus" : o.Bond != null ? "bond" : "other";
-            LogCcBondBreakUnifiedDiag(
-                $"{phase} atom={name} parentId={GetInstanceID()} i={i} orbId={o.GetInstanceID()} e={o.ElectronCount} parent={parentKind} tipLocal={FormatLocalDir3(t)}");
-        }
-    }
+    void LogUnifiedSparseTipSnapshot(string _, List<ElectronOrbitalFunction> __) { }
 
-    void LogUnifiedSparseMinTipSeparation(string phase, List<ElectronOrbitalFunction> orbs)
-    {
-        if (!DebugLogCcBondBreakUnifiedSparseDiag || orbs == null || orbs.Count < 2) return;
-        float minAng = 180f;
-        int ia = -1, ib = -1;
-        for (int i = 0; i < orbs.Count; i++)
-        {
-            if (orbs[i] == null) continue;
-            Vector3 ti = OrbitalTipDirectionInNucleusLocal(orbs[i]);
-            for (int j = i + 1; j < orbs.Count; j++)
-            {
-                if (orbs[j] == null) continue;
-                Vector3 tj = OrbitalTipDirectionInNucleusLocal(orbs[j]);
-                float ang = Vector3.Angle(ti, tj);
-                if (ang < minAng)
-                {
-                    minAng = ang;
-                    ia = i;
-                    ib = j;
-                }
-            }
-        }
-        string warn = minAng < 25f ? " LOW_SEP_WARN" : "";
-        LogCcBondBreakUnifiedDiag(
-            $"{phase} atom={name} parentId={GetInstanceID()} min∠tips={minAng:F2}° between subsetIdx {ia},{ib}{warn}");
-    }
+    void LogUnifiedSparseMinTipSeparation(string _, List<ElectronOrbitalFunction> __) { }
 
-    /// <summary>
-    /// After bond-break steps: σ neighbor directions vs empty p. Carbocation target: three σ coplanar (trigonal), empty ⟂ that plane → ~90° between empty and each σ, <c>|σ2·n|</c>→0, <c>|empty·n|</c>→1 (<c>n = σ0×σ1</c>).
-    /// Radical tetrahedral case: ~109.5° empty–σ and <c>|empty·n|</c> not necessarily 1.
-    /// </summary>
-    public void LogCcBondBreakGeometryDiagnostics(string phase)
-    {
-        if (!DebugLogCcBondBreakGeometry) return;
-        if (!IsSp2BondBreakEmptyAlongRefCase()) return;
-        if (GetDistinctSigmaNeighborCount() != 3) return;
-        var emptyOrb = bondedOrbitals.FirstOrDefault(o => o != null && o.Bond == null && o.ElectronCount == 0);
-        if (emptyOrb == null) return;
-
-        Vector3 eTipW = transform.TransformDirection(OrbitalTipLocalDirection(emptyOrb)).normalized;
-        var neighbors = GetDistinctSigmaNeighborAtoms();
-        float a0 = Vector3.Angle(eTipW, (neighbors[0].transform.position - transform.position).normalized);
-        float a1 = Vector3.Angle(eTipW, (neighbors[1].transform.position - transform.position).normalized);
-        float a2 = Vector3.Angle(eTipW, (neighbors[2].transform.position - transform.position).normalized);
-
-        Vector3 d0 = (neighbors[0].transform.position - transform.position).normalized;
-        Vector3 d1 = (neighbors[1].transform.position - transform.position).normalized;
-        Vector3 d2 = (neighbors[2].transform.position - transform.position).normalized;
-        Vector3 nCross = Vector3.Cross(d0, d1);
-        float nMag = nCross.magnitude;
-        Vector3 nrm = nMag > 1e-8f ? nCross / nMag : Vector3.up;
-        float sigma2Coplanar01 = Mathf.Abs(Vector3.Dot(d2, nrm));
-        float emptyCoplanarSigma01Plane = Mathf.Abs(Vector3.Dot(eTipW, nrm));
-
-        LogCcBondBreak(
-            $"{phase} atom={name} Z={atomicNumber} ∠(empty,σ0..2)={a0:F1}° {a1:F1}° {a2:F1}° | σ-plane test n=σ0×σ1: |σ2·n|={sigma2Coplanar01:F3} (→0 if 3σ coplanar) |empty·n|={emptyCoplanarSigma01Plane:F3} (carbocation: |σ2·n|→0, |empty·n|→1)");
-    }
+    public void LogCcBondBreakGeometryDiagnostics(string _) { }
 
     public bool CanAcceptOrbital() => bondedOrbitals.Count < GetOrbitalSlotCount();
 
@@ -343,8 +288,14 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (group == 1) return 1;
         if (group == 2) return 2;
         if (group == 3 || group == 13) return 3;
-        // Period 3+ N-group / O-group: expanded octet so σ + π (e.g. SO₃, PO₄) can form after four σ bonds.
-        if (atomicNumber > 10 && (group == 15 || group == 16)) return 6;
+
+        // // Period 3+ N-group / O-group: expanded octet so σ + π (e.g. SO₃, PO₄) can form after four σ bonds.
+        // if (atomicNumber > 10 && (group == 15 || group == 16)) return 6;
+
+        // // Period 3+ group 15 (P, As, …): expanded octet (e.g. PO₄).
+        // if (atomicNumber > 10 && group == 15) return 6;
+        // // Heavier group 16 (Se, Te, …): expanded octet. Sulfur (Z=16) uses four slots like oxygen for now.
+        // if (atomicNumber > 18 && group == 16) return 6;
         return 4;
     }
 
@@ -395,8 +346,39 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         RefreshCharge();
     }
 
-    /// <summary>Computes oxidation state using electronegativity: bonding electrons assigned to the more electronegative atom; equal EN splits 50-50.</summary>
+    /// <summary>Displayed charge: <see cref="ChargeDisplayMode"/> selects Lewis formal (octet) vs oxidation state.</summary>
     public int ComputeCharge()
+    {
+        return ChargeDisplayMode == AtomChargeDisplayMode.OxidationState
+            ? ComputeOxidationStateCharge()
+            : ComputeOctetFormalCharge();
+    }
+
+    /// <summary>Lewis formal charge: FC = V − lone pairs − ½ bonding e⁻ (half of each bond’s electrons).</summary>
+    public int ComputeOctetFormalCharge()
+    {
+        int valence = GetValenceFromGroup(GetGroupFromAtomicNumber(atomicNumber));
+        if (atomicNumber == 2) valence = 2;
+
+        int electronsOwned = 0;
+
+        foreach (var orb in bondedOrbitals)
+        {
+            if (orb == null || orb.Bond != null) continue;
+            electronsOwned += orb.ElectronCount;
+        }
+
+        foreach (var b in covalentBonds)
+        {
+            if (b == null || b.Orbital == null) continue;
+            electronsOwned += b.GetFormalChargeElectronsOwnedBy(this);
+        }
+
+        return valence - electronsOwned;
+    }
+
+    /// <summary>Oxidation state: bonding electrons assigned to the more electronegative atom; equal EN splits 50-50 (odd count uses orbital contributor).</summary>
+    public int ComputeOxidationStateCharge()
     {
         int valence = GetValenceFromGroup(GetGroupFromAtomicNumber(atomicNumber));
         if (atomicNumber == 2) valence = 2;
@@ -416,6 +398,12 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         return valence - electronsOwned;
+    }
+
+    public static void RefreshAllDisplayedCharges()
+    {
+        foreach (var atom in Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None))
+            atom.RefreshCharge();
     }
 
     public static float GetElectronegativity(int z)
@@ -549,6 +537,15 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             donor.ElectronCount = 1;
             empty.ElectronCount = 1;
         }
+    }
+
+    /// <summary>Non-bond orbitals on this nucleus with at least one electron (each counts as a VSEPR lone region in the slot model).</summary>
+    public int CountOccupiedNonbondOrbitals()
+    {
+        int n = 0;
+        foreach (var o in bondedOrbitals)
+            if (o != null && o.Bond == null && o.ElectronCount > 0) n++;
+        return n;
     }
 
     /// <summary>Re-syncs electron sphere/pair placement on every bonded orbital (after VSEPR or bond-break animation).</summary>
@@ -957,15 +954,18 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public int GetDistinctSigmaNeighborCount() => GetDistinctSigmaNeighborAtoms().Count;
 
     /// <summary>
-    /// Repositions σ-bonded hydrogens along each C–H bond orbital lobe axis at <paramref name="distance"/>.
-    /// Use after VSEPR / tet σ-relax rotates lobes on this center so H nuclei stay on the bond line (edit H-auto, instant σ).
+    /// Repositions σ-bonded hydrogens along each O–H / C–H σ **hybrid** direction at <paramref name="distance"/>.
+    /// After <see cref="RedistributeOrbitals3D"/> the shared σ lobe +X tracks the VSEPR vertex; using the old internuclear vector
+    /// here kept whichever H was slightly off-axis wrong (often visibly asymmetric for H₂O: one H good, one not).
+    /// Moving H changes the bond line rotation; <c>orbitalRedistributionWorldDelta</c> on
+    /// <see cref="CovalentBond"/> was built for the previous frame, so a <b>second</b> pass using
+    /// <see cref="CovalentBond.GetOrbitalTargetWorldState"/> corrupts hybrid direction (CH₄ H-auto looked non-tetrahedral). One snap
+    /// pass, then <see cref="RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute"/> recomposes δ from current axes.
     /// </summary>
     public void SnapHydrogenSigmaNeighborsToBondOrbitalAxes(float distance)
     {
         if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || distance < 1e-4f) return;
 
-        // σ orbital is parented to the bond object: bond.up aligns with the axis, but lobe +X is generally ⊥ the C–H line.
-        // Use the geometric vector from this center to each H so CH₄ / H-auto does not shove H along the wrong direction.
         var bondsSnapshot = new List<CovalentBond>(covalentBonds);
         foreach (var b in bondsSnapshot)
         {
@@ -973,20 +973,28 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             var other = b.AtomA == this ? b.AtomB : b.AtomA;
             if (other == null || other.AtomicNumber != 1) continue;
 
-            Vector3 axis = other.transform.position - transform.position;
-            if (axis.sqrMagnitude < 1e-10f)
+            b.UpdateBondTransformToCurrentAtoms();
+            var (_, worldRot) = b.GetOrbitalTargetWorldState();
+            Vector3 tipW = worldRot * Vector3.right;
+            if (tipW.sqrMagnitude < 1e-10f)
+                tipW = b.Orbital.transform.TransformDirection(Vector3.right);
+            Vector3 toH = other.transform.position - transform.position;
+            Vector3 axis;
+            if (tipW.sqrMagnitude >= 1e-10f)
             {
-                if (b.AtomA != null && b.AtomB != null)
-                    axis = (b.AtomA == this ? b.AtomB.transform.position : b.AtomA.transform.position) - transform.position;
+                tipW.Normalize();
+                if (toH.sqrMagnitude >= 1e-10f)
+                {
+                    toH.Normalize();
+                    axis = Vector3.Dot(tipW, toH) < 0f ? -tipW : tipW;
+                }
+                else
+                    axis = tipW;
             }
-            if (axis.sqrMagnitude < 1e-10f)
-            {
-                Vector3 tipW = b.Orbital.transform.TransformDirection(Vector3.right);
-                if (tipW.sqrMagnitude < 1e-10f) continue;
-                axis = tipW.normalized;
-            }
+            else if (toH.sqrMagnitude >= 1e-10f)
+                axis = toH.normalized;
             else
-                axis.Normalize();
+                continue;
 
             Vector3 before = other.transform.position;
             other.transform.position = transform.position + axis * distance;
@@ -996,6 +1004,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             b.UpdateBondTransformToCurrentAtoms();
             b.SnapOrbitalToBondPosition();
         }
+
+        if (AtomicNumber > 1)
+            RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(null);
 
         RefreshCharge();
         foreach (var b in bondsSnapshot)
@@ -2224,12 +2235,36 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             moves = m3;
             relaxBranch = "threeσAx3E";
         }
-        if (moves == null) return;
+        if (moves == null)
+        {
+            if (DebugLogReplaceHRedistribute)
+            {
+                int occLone = bondedOrbitals.Count(o => o != null && o.Bond == null && o.ElectronCount > 0);
+                int sigma = GetDistinctSigmaNeighborCount();
+                LogReplaceHRedistribute(
+                    "MaybeApplyTetΣRelax NO branch | center=" + FormatAtomBrief(this)
+                    + $" partner={(partnerAlongRef == null ? "null" : FormatAtomBrief(partnerAlongRef))}"
+                    + $" σBefore={sigmaNeighborCountBefore} σNow={sigma} π={GetPiBondCount()} occLoneNonbond={occLone}"
+                    + " | fourσ sketch: need σ↑ to 4 with **no** occupied lone lobes (CH₄-style)"
+                    + " | threeσAx3E sketch: need σ 2→3, π=0, σBefore==2 (trigonal radical→sp³)"
+                    + $" | your σ increment ok? {sigma > sigmaNeighborCountBefore}");
+            }
+            return;
+        }
         const float moveEps = 1e-4f;
         bool any = false;
         foreach (var (_, s, e) in moves)
             if (Vector3.Distance(s, e) > moveEps) any = true;
-        if (!any) return;
+        if (!any)
+        {
+            if (DebugLogReplaceHRedistribute)
+                LogReplaceHRedistribute(
+                    "MaybeApplyTetΣRelax branch=" + relaxBranch + " but all move deltas ~0 | center=" + FormatAtomBrief(this));
+            return;
+        }
+        if (DebugLogReplaceHRedistribute)
+            LogReplaceHRedistribute(
+                "MaybeApplyTetΣRelax APPLY branch=" + relaxBranch + " moves=" + moves.Count + " center=" + FormatAtomBrief(this));
         if (DebugLogFrameworkPinSigmaRelaxTrace)
             LogFrameworkPinSigmaRelax(
                 $"MaybeApplyTetrahedralSigmaRelax {relaxBranch} center={FormatAtomBrief(this)} "
@@ -4166,14 +4201,18 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         SetupGlobalIgnoreCollisions();
     }
 
-    void RedistributeOrbitals3D(float? piBondAngleOverride, Vector3? refBondWorldDirection, bool relaxCoplanarSigmaToTetrahedral = false, bool skipLoneLobeLayout = false, HashSet<AtomFunction> pinAtomsForSigmaRelax = null, bool skipSigmaNeighborRelax = false, ElectronOrbitalFunction bondBreakGuideLoneOrbital = null, AtomFunction newSigmaBondPartnerHint = null, int sigmaNeighborCountBeforeHint = -1, bool skipBondBreakSparseNonbondSpread = false, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
+    void RedistributeOrbitals3DOld(float? piBondAngleOverride, Vector3? refBondWorldDirection, bool relaxCoplanarSigmaToTetrahedral = false, bool skipLoneLobeLayout = false, HashSet<AtomFunction> pinAtomsForSigmaRelax = null, bool skipSigmaNeighborRelax = false, ElectronOrbitalFunction bondBreakGuideLoneOrbital = null, AtomFunction newSigmaBondPartnerHint = null, int sigmaNeighborCountBeforeHint = -1, bool skipBondBreakSparseNonbondSpread = false, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         int maxSlots = GetOrbitalSlotCount();
         if (maxSlots <= 1)
         {
             LogVsepr3D($"skip atom={name} Z={atomicNumber}: maxSlots<=1");
+            if (DebugLogReplaceHRedistribute)
+                LogReplaceHRedistribute("Redistribute3D early exit maxSlots<=1 | " + FormatAtomBrief(this) + $" Z={atomicNumber}");
             return;
         }
+
+        LogReplaceHRedistributeOrbitalSnapshot("Redistribute3D enter");
 
         if (DebugLogFrameworkPinSigmaRelaxTrace)
         {
@@ -4188,6 +4227,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         if (!skipSigmaNeighborRelax)
             MaybeApplyTetrahedralSigmaRelaxForBondFormation(newSigmaBondPartnerHint, sigmaNeighborCountBeforeHint, pinAtomsForSigmaRelax, freezeSigmaNeighborSubtreeRoot);
+
+        LogReplaceHRedistributeOrbitalSnapshot("Redistribute3D after MaybeApplyTetΣRelax");
 
         float mergeToleranceDeg = 360f / (2f * maxSlots);
         Vector3 refLocal = ResolveReferenceBondDirectionLocal(piBondAngleOverride, refBondWorldDirection, bondBreakGuideLoneOrbital);
@@ -4257,6 +4298,13 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var loneOrbitals = bondedOrbitals.Where(orb => orb != null && orb.Bond == null && orb.ElectronCount > 0).ToList();
         if (loneOrbitals.Count == 0)
         {
+            if (DebugLogReplaceHRedistribute)
+            {
+                int nLone0e = bondedOrbitals.Count(o => o != null && o.Bond == null && o.ElectronCount == 0);
+                LogReplaceHRedistribute(
+                    "VSEPR lone layout SKIPPED (no occupied lone lobes) | " + FormatAtomBrief(this)
+                    + $" Z={atomicNumber} nonbondLone0eCount={nLone0e} — occupied-lone-only path below may still place σ tips / OrientEmpty");
+            }
             LogVsepr3D($"skip atom={name} Z={atomicNumber}: no occupied lone orbitals");
             if (DebugLogCcBondBreakGeometry && relaxCoplanarSigmaToTetrahedral && IsCarbocationStyleBondBreakThreeDomainsWithEmptyCase(bondBreakGuideLoneOrbital))
                 LogCcBondBreak($"Redistribute3D no occupied lone lobes atom={name} — VSEPR lone layout skipped; carbocation σ-break uses TryApplySp2 + TrySpread + OrientEmpty (not this block)");
@@ -4290,19 +4338,121 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         // Use exactly the electron-domain count (linear / trigonal planar / tetrahedral / …). Do not escalate toward
         // maxSlots when matching is picky — that incorrectly forced tetrahedral for 2–3 domain centers.
         var idealRaw = VseprLayout.GetIdealLocalDirections(domainCount);
-        var newDirs = new List<Vector3>(VseprLayout.AlignFirstDirectionTo(idealRaw, refLocal));
-
-        LogVsepr3D(
-            $"atom={name} Z={atomicNumber} σAxes={bondAxes.Count} lone={loneOrbitals.Count} domainCount={domainCount} maxValenceSlots={maxSlots} relaxσ→tet={relaxCoplanarSigmaToTetrahedral}");
 
         ElectronOrbitalFunction pin = bondBreakGuideLoneOrbital != null && loneOrbitals.Contains(bondBreakGuideLoneOrbital) ? bondBreakGuideLoneOrbital : null;
         var loneMatch = pin != null ? loneOrbitals.Where(o => o != pin).ToList() : loneOrbitals;
+
+        // Already tetrahedral: same test as [tetra-domain] “visual” row (σ hybrid tips + lone tips in world space).
+        // Merged internuclear + local lone tips often failed while hybrids + loners were already ~109.5° — TryMatch then
+        // relabeled vertices and spun lone pairs. Require hybrids ≈ bond axes so identity Σ sync does not pop shells.
+        const float visualTetSpreadTol = 8f;
+        const float visualTetMeanTol = 6f;
+        if (domainCount == 4
+            && loneOrbitals.TrueForAll(o => o != null && o.ElectronCount == 2)
+            && bondAxes.Count + loneOrbitals.Count == 4
+            && SigmaTipsAlignedToBondAxes(24f)
+            && FourDomainsVisualElectronGeometryApproximatelyTetrahedral(visualTetSpreadTol, visualTetMeanTol))
+        {
+                var bondIdealLocksSkip = new List<(Vector3 bondAxisLocal, Vector3 idealLocal)>();
+                var bondOrderSkip = new List<Vector3>(bondAxes);
+                Vector3 refNskip = refLocal.normalized;
+                bondOrderSkip.Sort((a, b) =>
+                {
+                    float da = Vector3.Dot(a.normalized, refNskip);
+                    float db = Vector3.Dot(b.normalized, refNskip);
+                    int cmp = db.CompareTo(da);
+                    if (cmp != 0) return cmp;
+                    return CompareVectorsStable(a, b);
+                });
+                foreach (Vector3 bd in bondOrderSkip)
+                    bondIdealLocksSkip.Add((bd.normalized, bd.normalized));
+
+                if (DebugLogReplaceHRedistribute)
+                    LogReplaceHRedistribute(
+                        "VSEPR lone layout SKIPPED ([tetra-domain] visual spread/mean OK, Σ tips≈axes) | " + FormatAtomBrief(this));
+                SyncSigmaBondOrbitalTipsFromLocks(bondIdealLocksSkip);
+                LogTetrahedralElectronDomainAngleDiagnostic("Redistribute3D DONE", bondIdealLocksSkip);
+                if (DebugLogReplaceHRedistribute)
+                    LogReplaceHRedistribute(
+                        "Redistribute3D DONE Σ sync only (no lone snap) | " + FormatAtomBrief(this) + $" domainCount={domainCount}");
+                return;
+        }
+
+        // Tetrahedral electron geometry (4 domains): any of the four ideal vertices can be rotated onto refLocal
+        // (broken-σ reference). AlignFirstDirectionTo (vertex 0 only) relabels the frame and forces large lone motion
+        // for one of two symmetric H₂O breaks while the shell was already ~tetrahedral (see [lone-vsepr-apply] logs).
+        List<Vector3> newDirs;
+        if (domainCount == 4 && loneOrbitals.Count > 0)
+        {
+            var tetRaw = VseprLayout.GetIdealLocalDirections(4);
+            float bestMaxTipDeg = float.MaxValue;
+            float bestSumDeg = float.MaxValue;
+            int bestK = -1;
+            List<Vector3> bestDirs = null;
+            for (int k = 0; k < 4; k++)
+            {
+                var alignedArr = VseprLayout.AlignTetrahedronKthVertexTo(tetRaw, k, refLocal);
+                var candidate = new List<Vector3>(4);
+                for (int i = 0; i < 4; i++)
+                    candidate.Add(alignedArr[i]);
+                if (!TryMatchLoneOrbitalsToFreeIdealDirections(
+                        refLocal, domainCount, bondAxes, loneOrbitals, candidate,
+                        out var probeMap, out var probePinRes, out _, pin))
+                    continue;
+                if (probeMap == null || probeMap.Count != loneMatch.Count)
+                    continue;
+                float sumDeg = 0f;
+                float maxTipDeg = 0f;
+                for (int i = 0; i < probeMap.Count; i++)
+                {
+                    float a = Vector3.Angle(probeMap[i].oldDir.normalized, probeMap[i].newDir.normalized);
+                    sumDeg += a;
+                    maxTipDeg = Mathf.Max(maxTipDeg, a);
+                }
+                if (pin != null && probePinRes.HasValue)
+                {
+                    float a = Vector3.Angle(OrbitalTipLocalDirection(pin).normalized, probePinRes.Value.normalized);
+                    sumDeg += a;
+                    maxTipDeg = Mathf.Max(maxTipDeg, a);
+                }
+                // Minimizing sum alone picks orientations where one lobe pays ~68° and others ~0 (asymmetric H₂O breaks);
+                // prefer min **max** tip motion, then sum, then k (ties).
+                if (maxTipDeg < bestMaxTipDeg - 1e-4f
+                    || (Mathf.Abs(maxTipDeg - bestMaxTipDeg) <= 1e-4f && sumDeg < bestSumDeg - 1e-4f)
+                    || (Mathf.Abs(maxTipDeg - bestMaxTipDeg) <= 1e-4f && Mathf.Abs(sumDeg - bestSumDeg) <= 1e-4f && (bestK < 0 || k < bestK)))
+                {
+                    bestMaxTipDeg = maxTipDeg;
+                    bestSumDeg = sumDeg;
+                    bestK = k;
+                    bestDirs = candidate;
+                }
+            }
+            newDirs = bestDirs ?? new List<Vector3>(VseprLayout.AlignFirstDirectionTo(idealRaw, refLocal));
+            if (DebugLogReplaceHRedistribute && bestK >= 0)
+                LogReplaceHRedistribute(
+                    "VSEPR tet orient | " + FormatAtomBrief(this)
+                    + $" pickedVertexK={bestK} minMax∠≈{bestMaxTipDeg:F2}° total∠≈{bestSumDeg:F2}° (4 σ||refLocal frames)");
+        }
+        else
+            newDirs = new List<Vector3>(VseprLayout.AlignFirstDirectionTo(idealRaw, refLocal));
+
+        LogVsepr3D(
+            $"atom={name} Z={atomicNumber} σAxes={bondAxes.Count} lone={loneOrbitals.Count} domainCount={domainCount} maxValenceSlots={maxSlots} relaxσ→tet={relaxCoplanarSigmaToTetrahedral}");
+        if (DebugLogReplaceHRedistribute)
+            LogReplaceHRedistribute(
+                "VSEPR lone layout | " + FormatAtomBrief(this)
+                + $" σAxes={bondAxes.Count} occLone={loneOrbitals.Count} domainCount={domainCount} maxSlots={maxSlots}"
+                + $" refLocal={refLocal} skipLoneLobe={skipLoneLobeLayout}");
 
         bool tryOk = TryMatchLoneOrbitalsToFreeIdealDirections(refLocal, domainCount, bondAxes, loneOrbitals, newDirs, out var bestMapping, out var pinReservedDir, out var bondIdealLocks, pin);
         if (!tryOk || bestMapping == null || bestMapping.Count != loneMatch.Count)
         {
             LogVsepr3D(
                 $"NO APPLY atom={name} Z={atomicNumber}: TryMatch={tryOk} mappingNull={bestMapping == null} mapCount={(bestMapping != null ? bestMapping.Count : -1)} loneMatchCount={loneMatch.Count}");
+            if (DebugLogReplaceHRedistribute)
+                LogReplaceHRedistribute(
+                    "TryMatchLoneOrbitals FAILED → lone lobes not snapped to tetrahedral vertices | " + FormatAtomBrief(this)
+                    + $" TryMatch={tryOk} mapCount={(bestMapping == null ? -1 : bestMapping.Count)} loneMatch={loneMatch.Count} domainCount={domainCount}");
             return;
         }
 
@@ -4312,12 +4462,87 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if ((bondBreakGuideLoneOrbital != null || refBondWorldDirection.HasValue) && loneMatch.Count > 1)
             RematchLoneOrbitalTargetDirectionsMinAngularMotion(loneMatch, applyDirs);
 
+        float maxTipDegPreApply = 0f;
+        for (int j = 0; j < loneMatch.Count; j++)
+        {
+            if (loneMatch[j] == null) continue;
+            maxTipDegPreApply = Mathf.Max(
+                maxTipDegPreApply,
+                Vector3.Angle(OrbitalTipLocalDirection(loneMatch[j]).normalized, applyDirs[j].normalized));
+        }
+        float pinTipDegPreApply = 0f;
+        if (pin != null && pinReservedDir.HasValue)
+            pinTipDegPreApply = Vector3.Angle(OrbitalTipLocalDirection(pin).normalized, pinReservedDir.Value.normalized);
+
+        // Only bypass when TryMatch per-lobe motion is **modest** (same tet, different vertex labels). ~109° is a full
+        // step to another tet vertex — skipping APPLY leaves lobes inconsistent with σ; identity Σ sync then yields
+        // bond/lone overlap (log: min∠=0°, visual≠tetra). H-auto O + 2 H: second redistribute had max∠≈109°.
+        const float bypassRelabelMaxTipDeg = 72f;
+        // Do **not** pass TryMatch's bondIdealLocks when bypassing lone APPLY (locks assume lobes on matched ideals).
+        // Use identity locks (axis, axis) — align σ to internuclear only.
+        if (domainCount == 4
+            && loneOrbitals.TrueForAll(o => o != null && o.ElectronCount == 2)
+            && FourDomainsVisualElectronGeometryApproximatelyTetrahedral(8f, 6f)
+            && maxTipDegPreApply <= bypassRelabelMaxTipDeg
+            && pinTipDegPreApply <= bypassRelabelMaxTipDeg
+            && (maxTipDegPreApply > 4f || pinTipDegPreApply > 4f))
+        {
+            var bondIdealLocksBypass = new List<(Vector3 bondAxisLocal, Vector3 idealLocal)>();
+            var bondOrderBypass = new List<Vector3>(bondAxes);
+            Vector3 refNb = refLocal.normalized;
+            bondOrderBypass.Sort((a, b) =>
+            {
+                float da = Vector3.Dot(a.normalized, refNb);
+                float db = Vector3.Dot(b.normalized, refNb);
+                int cmp = db.CompareTo(da);
+                if (cmp != 0) return cmp;
+                return CompareVectorsStable(a, b);
+            });
+            foreach (Vector3 bd in bondOrderBypass)
+                bondIdealLocksBypass.Add((bd.normalized, bd.normalized));
+
+            if (DebugLogReplaceHRedistribute)
+                LogReplaceHRedistribute(
+                    "VSEPR lone APPLY bypassed (visual tet; TryMatch relabel only) | " + FormatAtomBrief(this)
+                    + $" max∠(tip,target)={maxTipDegPreApply:F1}° pin∠={pinTipDegPreApply:F1}° → Σ sync identity locks");
+            SyncSigmaBondOrbitalTipsFromLocks(bondIdealLocksBypass);
+            LogTetrahedralElectronDomainAngleDiagnostic("Redistribute3D DONE", bondIdealLocksBypass);
+            if (DebugLogReplaceHRedistribute)
+                LogReplaceHRedistribute(
+                    "Redistribute3D DONE Σ sync only (no lone snap) | " + FormatAtomBrief(this) + $" domainCount={domainCount}");
+            return;
+        }
+
+        if (DebugLogVseprLoneLobeMotion)
+        {
+            float maxTipDeg = maxTipDegPreApply;
+            LogVseprLoneLobeMotionLine(
+                "SUMMARY pre-apply | " + FormatAtomBrief(this)
+                + $" max∠(currTip,targetDir)={maxTipDeg:F3}° nLone={bestMapping.Count} domainCount={domainCount}"
+                + $" refLocal={refLocal} relaxσ→tet={relaxCoplanarSigmaToTetrahedral} skipLoneLayout={skipLoneLobeLayout}"
+                + $" skipΣRelax={skipSigmaNeighborRelax} refBondW={(refBondWorldDirection.HasValue ? $"{refBondWorldDirection.Value.x:F3},{refBondWorldDirection.Value.y:F3},{refBondWorldDirection.Value.z:F3}" : "null")}"
+                + $" guideOrbId={(bondBreakGuideLoneOrbital == null ? "null" : bondBreakGuideLoneOrbital.GetInstanceID().ToString())}");
+        }
+
         for (int i = 0; i < bestMapping.Count; i++)
         {
             var orb = loneMatch[i];
             if (orb == null) continue;
             var newDir = applyDirs[i];
+            Vector3 oldTip = OrbitalTipLocalDirection(orb).normalized;
+            Vector3 oldLp = orb.transform.localPosition;
+            Quaternion oldLr = orb.transform.localRotation;
             var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(newDir, bondRadius, orb.transform.localRotation);
+            if (DebugLogVseprLoneLobeMotion)
+            {
+                float angTip = Vector3.Angle(oldTip, newDir.normalized);
+                float dPos = Vector3.Distance(oldLp, pos);
+                float dRot = Quaternion.Angle(oldLr, rot);
+                LogVseprLoneLobeMotionLine(
+                    "APPLY lone | " + FormatAtomBrief(this)
+                    + $" idx={i} orbId={orb.GetInstanceID()} ∠(tip,target)={angTip:F3}° |ΔlocalPos|={dPos:F5} ∠localRot={dRot:F3}°"
+                    + (angTip < 0.05f && dPos < 1e-4f && dRot < 0.05f ? " (near-no-op Quaternion/pos still rewritten)" : ""));
+            }
             orb.transform.localPosition = pos;
             orb.transform.localRotation = rot;
             LogVsepr3D(
@@ -4326,7 +4551,19 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         if (pin != null && pinReservedDir.HasValue)
         {
+            Vector3 oldPinTip = OrbitalTipLocalDirection(pin).normalized;
+            Vector3 oldPp = pin.transform.localPosition;
+            Quaternion oldPr = pin.transform.localRotation;
             var (pPos, pRot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(pinReservedDir.Value, bondRadius, pin.transform.localRotation);
+            if (DebugLogVseprLoneLobeMotion)
+            {
+                float angTip = Vector3.Angle(oldPinTip, pinReservedDir.Value.normalized);
+                float dPos = Vector3.Distance(oldPp, pPos);
+                float dRot = Quaternion.Angle(oldPr, pRot);
+                LogVseprLoneLobeMotionLine(
+                    "APPLY pin lone | " + FormatAtomBrief(this)
+                    + $" orbId={pin.GetInstanceID()} ∠(tip,target)={angTip:F3}° |ΔlocalPos|={dPos:F5} ∠localRot={dRot:F3}°");
+            }
             pin.transform.localPosition = pPos;
             pin.transform.localRotation = pRot;
             LogVsepr3D(
@@ -4334,6 +4571,15 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         SyncSigmaBondOrbitalTipsFromLocks(bondIdealLocks);
+        LogTetrahedralElectronDomainAngleDiagnostic("Redistribute3D DONE", bondIdealLocks);
+        if (DebugLogReplaceHRedistribute)
+            LogReplaceHRedistribute("Redistribute3D DONE lone+VSEPR applied | " + FormatAtomBrief(this) + $" domainCount={domainCount}");
+    }
+
+    /// <summary>Forwards to <see cref="RedistributeOrbitals3DOld"/> until the in-progress 3D body replaces it.</summary>
+    void RedistributeOrbitals3D(float? piBondAngleOverride, Vector3? refBondWorldDirection, bool relaxCoplanarSigmaToTetrahedral = false, bool skipLoneLobeLayout = false, HashSet<AtomFunction> pinAtomsForSigmaRelax = null, bool skipSigmaNeighborRelax = false, ElectronOrbitalFunction bondBreakGuideLoneOrbital = null, AtomFunction newSigmaBondPartnerHint = null, int sigmaNeighborCountBeforeHint = -1, bool skipBondBreakSparseNonbondSpread = false, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
+    {
+        RedistributeOrbitals3DOld(piBondAngleOverride, refBondWorldDirection, relaxCoplanarSigmaToTetrahedral, skipLoneLobeLayout, pinAtomsForSigmaRelax, skipSigmaNeighborRelax, bondBreakGuideLoneOrbital, newSigmaBondPartnerHint, sigmaNeighborCountBeforeHint, skipBondBreakSparseNonbondSpread, freezeSigmaNeighborSubtreeRoot);
     }
 
     void ClearSigmaBondOrbitalRedistributionDeltaWhereAuthoritative()
@@ -5082,11 +5328,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                         : OrbitalTipLocalDirection(orbs[i]).normalized;
                     coneSum += Vector3.Angle(ot, td);
                 }
-                float planarSum = PlanarAnglePermutationCostMinOfThreeSums(oldDeg, tgtDeg, perm);
-                total = Mathf.Min(coneSum, planarSum) + quatSum;
+                total = coneSum + quatSum;
             }
             else
                 total = PlanarAnglePermutationCostMinOfThreeSums(oldDeg, tgtDeg, perm) + quatSum;
+
             bool better = bestPerm == null
                 || total < bestTotal - eps
                 || (Mathf.Abs(total - bestTotal) <= eps && ComparePermutationLex(perm, bestPerm) < 0);
@@ -5151,8 +5397,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     Vector3 ot = OrbitalTipLocalDirection(o).normalized;
                     coneSum += Vector3.Angle(ot, nt);
                 }
-                float planarSum = PlanarAnglePermutationCostMinOfThreeSums(oldDeg, slotDeg, perm);
-                total = Mathf.Min(coneSum, planarSum) + quatSum;
+                total = coneSum + quatSum;
             }
             else
                 total = PlanarAnglePermutationCostMinOfThreeSums(oldDeg, slotDeg, perm) + quatSum;
@@ -5211,8 +5456,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     Vector3 ot = OrbitalTipLocalDirection(orbs[a]).normalized;
                     coneSum += Vector3.Angle(ot, td);
                 }
-                float planarSum = PlanarAnglePermutationCostMinOfThreeSums(oldDeg, tgtDeg, perm);
-                total = Mathf.Min(coneSum, planarSum) + quatSum;
+                total = coneSum + quatSum;
             }
             else
                 total = PlanarAnglePermutationCostMinOfThreeSums(oldDeg, tgtDeg, perm) + quatSum;

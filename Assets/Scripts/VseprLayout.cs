@@ -88,6 +88,27 @@ public static class VseprLayout
     }
 
     /// <summary>
+    /// Regular tetrahedron (four domains): same shape as <see cref="GetIdealLocalDirections"/>(4) but rotate so vertex
+    /// <paramref name="vertexIndex"/> (0…3) matches <paramref name="target"/> instead of always aligning vertex 0.
+    /// Breaking O–H from different sides yields the same σ axis magnitude pattern but different “first vertex” choice;
+    /// always using <see cref="AlignFirstDirectionTo"/> can relabel the frame and force ~90° lone motion when the shell was already tetrahedral.
+    /// </summary>
+    public static Vector3[] AlignTetrahedronKthVertexTo(Vector3[] idealTet4, int vertexIndex, Vector3 target)
+    {
+        if (idealTet4 == null || idealTet4.Length != 4 || vertexIndex < 0 || vertexIndex >= 4)
+            return AlignFirstDirectionTo(idealTet4, target);
+        var t = target.normalized;
+        if (t.sqrMagnitude < 1e-8f) t = Vector3.right;
+        var vk = idealTet4[vertexIndex].normalized;
+        if (vk.sqrMagnitude < 1e-8f) return AlignFirstDirectionTo(idealTet4, target);
+        Quaternion q = Quaternion.FromToRotation(vk, t);
+        var outDirs = new Vector3[4];
+        for (int i = 0; i < 4; i++)
+            outDirs[i] = (q * idealTet4[i]).normalized;
+        return outDirs;
+    }
+
+    /// <summary>
     /// Ring methylene (—CH₂—): two C bond directions from carbon toward neighbors (world). Returns H directions
     /// with H—C—H ≈ 109.5°, **puckered above/below** the plane of the two ring bonds (not coplanar with it).
     /// </summary>
