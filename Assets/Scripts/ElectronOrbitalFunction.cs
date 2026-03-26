@@ -1588,7 +1588,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         // RedistributeOrbitals3DOld (see AtomFunction.RedistributeOrbitals3D).
         bool skipPostFormationRedistAndHybrid3D = OrbitalAngleUtility.UseFull3DOrbitalGeometry
             && !needsRedistribute
-            && !needsRearrange;
+            && !needsRearrange
+            && !hasSigmaRelaxMovement;
         Quaternion? step2PoseDiagLockedRot = skipPostFormationRedistAndHybrid3D ? bondOrbitalStartWorldRot : (Quaternion?)null;
 
         List<CovalentBond> step2PeripheralSigmaFrozen = null;

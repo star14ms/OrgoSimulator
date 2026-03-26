@@ -99,6 +99,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     /// <summary>Summary when <see cref="SnapHydrogenSigmaNeighborsToBondOrbitalAxes"/> moves σ-H (common on CH₄ 4th H: all C–H hybrids refresh). Default on for triage; set false for quiet runs.</summary>
     public static bool DebugLogHydrogenSigmaSnap = false;
+    /// <summary>Trigonal-planar σ-relax diagnostics for π centers (e.g. C(=O)-H, NO3-like N). Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogTrigonalPlanarSigmaRelax = true;
 
     /// <summary>
     /// Same σ + lone tip directions in world space as <see cref="LogTetrahedralElectronDomainAngleDiagnostic"/> (visual row).
@@ -369,13 +371,15 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (group == 2) return 2;
         if (group == 3 || group == 13) return 3;
 
-        // // Period 3+ N-group / O-group: expanded octet so σ + π (e.g. SO₃, PO₄) can form after four σ bonds.
-        // if (atomicNumber > 10 && (group == 15 || group == 16)) return 6;
+        // Period 3+ group 15: max five valence / hypervalent slots (e.g. PCl₅, phosphate framework); not six.
+        if (atomicNumber > 10 && group == 15)
+            return 5;
 
-        // // Period 3+ group 15 (P, As, …): expanded octet (e.g. PO₄).
-        // if (atomicNumber > 10 && group == 15) return 6;
-        // // Heavier group 16 (Se, Te, …): expanded octet. Sulfur (Z=16) uses four slots like oxygen for now.
-        // if (atomicNumber > 18 && group == 16) return 6;
+        // Period 3+ group 16: six slots for SF₆, SO₄²⁻, etc.
+        if (atomicNumber > 10 && group == 16)
+            return 6;
+
+        // Period 2 N/O stay four slots; lanthanides/actinides use default four unless explicitly extended later.
         return 4;
     }
 
@@ -1205,7 +1209,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         psiDeg = 0f;
         if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || partner == null) return false;
-        if (GetPiBondCount() > 0) return false;
+        // Allow ψ for π-bearing centers (carbonyl, nitrile, etc.): ApplyNewmanStaggerTwistProgress only reseats σ-H and
+        // occupied non-bond lobes; bond formation / break coroutines still gate Newman with their own GetPiBondCount()==0.
         if (requireSigmaBondToPartner && !GetDistinctSigmaNeighborAtoms().Contains(partner)) return false;
 
         Vector3 axis = partner.transform.position - transform.position;
@@ -1988,9 +1993,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
         targets = null;
-        if (GetPiBondCount() < 1) return false;
+        int pi = GetPiBondCount();
+        if (pi < 1) return false;
         var sigmaNeighbors = GetDistinctSigmaNeighborAtoms();
-        if (sigmaNeighbors.Count != 3) return false;
+        int sigmaN = sigmaNeighbors.Count;
+        if (sigmaN != 3) return false;
 
         var worldDirs = new List<Vector3>(3);
         foreach (var n in sigmaNeighbors)
@@ -1999,7 +2006,18 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             if (d.sqrMagnitude < 1e-10f) return false;
             worldDirs.Add(d.normalized);
         }
-        if (AreThreeDirectionsCoplanar(worldDirs)) return false;
+        bool coplanar = AreThreeDirectionsCoplanar(worldDirs);
+        if ((atomicNumber == 6 || atomicNumber == 7) && DebugLogTrigonalPlanarSigmaRelax)
+        {
+            int pinCount = pinWorld == null ? 0 : pinWorld.Count;
+            Debug.Log(
+                "[sp2-relax] compute center=" + name + "(Z=" + atomicNumber + ") pi=" + pi +
+                " sigmaN=" + sigmaN + " coplanar=" + coplanar + " pinCount=" + pinCount +
+                " freeze=" + (freezeSigmaNeighborSubtreeRoot == null
+                    ? "null"
+                    : (freezeSigmaNeighborSubtreeRoot.name + "(Z=" + freezeSigmaNeighborSubtreeRoot.AtomicNumber + ")")));
+        }
+        if (coplanar) return false;
 
         var idealLocal = VseprLayout.GetIdealLocalDirections(3);
         var aligned = VseprLayout.AlignFirstDirectionTo(idealLocal, refLocalNormalized);
@@ -2014,6 +2032,18 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         for (int i = 0; i < 3; i++)
             newDirs.Add(mapping[i].newDir.normalized);
         BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld, freezeSigmaNeighborSubtreeRoot);
+        if ((atomicNumber == 6 || atomicNumber == 7) && DebugLogTrigonalPlanarSigmaRelax)
+        {
+            float maxD = 0f;
+            if (targets != null)
+            {
+                foreach (var (n, tw) in targets)
+                    if (n != null) maxD = Mathf.Max(maxD, Vector3.Distance(n.transform.position, tw));
+            }
+            Debug.Log(
+                "[sp2-relax] targets center=" + name + "(Z=" + atomicNumber + ") nTargets=" +
+                (targets == null ? 0 : targets.Count) + " maxDelta=" + maxD.ToString("F5"));
+        }
         return targets != null && targets.Count > 0;
     }
 
@@ -4818,11 +4848,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// </summary>
     void RedistributeOrbitals3D(float? piBondAngleOverride, Vector3? refBondWorldDirection, bool relaxCoplanarSigmaToTetrahedral = false, bool skipLoneLobeLayout = false, HashSet<AtomFunction> pinAtomsForSigmaRelax = null, bool skipSigmaNeighborRelax = false, ElectronOrbitalFunction bondBreakGuideLoneOrbital = null, AtomFunction newSigmaBondPartnerHint = null, int sigmaNeighborCountBeforeHint = -1, bool skipBondBreakSparseNonbondSpread = false, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
-        // RedistributeOrbitals3DOld(piBondAngleOverride, refBondWorldDirection, relaxCoplanarSigmaToTetrahedral, skipLoneLobeLayout, pinAtomsForSigmaRelax, skipSigmaNeighborRelax, bondBreakGuideLoneOrbital, newSigmaBondPartnerHint, sigmaNeighborCountBeforeHint, skipBondBreakSparseNonbondSpread, freezeSigmaNeighborSubtreeRoot);
-        if (CovalentBond.DebugLogBondBreakTetraFramework && (refBondWorldDirection.HasValue || bondBreakGuideLoneOrbital != null))
-            Debug.Log(
-                "[break-tetra] RedistributeOrbitals3D NO-OP atom=" + name + "(Z=" + atomicNumber + ") skipΣNeigh=" + skipSigmaNeighborRelax +
-                " skipLoneLayout=" + skipLoneLobeLayout + " σTipVsAxisMax=" + SigmaTipsVsBondAxesMaxAngleDeg().ToString("F2") + "°");
+        RedistributeOrbitals3DOld(piBondAngleOverride, refBondWorldDirection, relaxCoplanarSigmaToTetrahedral, skipLoneLobeLayout, pinAtomsForSigmaRelax, skipSigmaNeighborRelax, bondBreakGuideLoneOrbital, newSigmaBondPartnerHint, sigmaNeighborCountBeforeHint, skipBondBreakSparseNonbondSpread, freezeSigmaNeighborSubtreeRoot);
+        // if (CovalentBond.DebugLogBondBreakTetraFramework && (refBondWorldDirection.HasValue || bondBreakGuideLoneOrbital != null))
+        //     Debug.Log(
+        //         "[break-tetra] RedistributeOrbitals3D NO-OP atom=" + name + "(Z=" + atomicNumber + ") skipΣNeigh=" + skipSigmaNeighborRelax +
+        //         " skipLoneLayout=" + skipLoneLobeLayout + " σTipVsAxisMax=" + SigmaTipsVsBondAxesMaxAngleDeg().ToString("F2") + "°");
     }
 
     void ClearSigmaBondOrbitalRedistributionDeltaWhereAuthoritative()

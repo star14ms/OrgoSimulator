@@ -22,6 +22,14 @@ public class MoleculeBuilder : MonoBehaviour
 {
     [SerializeField] GameObject atomPrefab;
     [SerializeField] float viewportMargin = 0.1f;
+    /// <summary>Functional-group trigonal-planar diagnostics (C/N sp2 + fallback π). Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogFunctionalGroupTrigonalPlanarity = true;
+
+    static void LogFunctionalGroupTrigonalPlanarity(string message)
+    {
+        if (!DebugLogFunctionalGroupTrigonalPlanarity) return;
+        Debug.Log("[fg-sp2] " + message);
+    }
 
     /// <summary>Bond length matches manual bonding: 2 * (bondRadius * 0.6) = 1.2 * bondRadius, from GetCanonicalSlotPosition in ElectronOrbitalFunction.</summary>
     float GetBondLength() => atomPrefab != null && atomPrefab.TryGetComponent<AtomFunction>(out var a) ? 1.2f * a.BondRadius : 0.96f;
@@ -513,10 +521,11 @@ public class MoleculeBuilder : MonoBehaviour
     }
 
     /// <summary>
-    /// For each heavy in the FG (BFS from <paramref name="parent"/> along <paramref name="touched"/> only), Newman-stagger vs the σ partner one step toward parent.
-    /// Call after H saturation / final redistribute so methyl placement does not wipe the twist.
+    /// After FG H saturation: Newman-stagger each heavy along the σ bond toward <paramref name="parent"/> (breadth order),
+    /// including π-bearing centers (carbonyl C, nitrile C, …). Then sync σ hybrid directions on <paramref name="parent"/>
+    /// and FG atoms from current nuclei + lobes so bond/orbital visuals match stagger and attachment.
     /// </summary>
-    static void TryStaggerFunctionalGroupBackboneHeaviesTowardParent(AtomFunction parent, List<AtomFunction> touched)
+    static void FinalizeFunctionalGroupNewmanAndSigmaHybridSync(AtomFunction parent, AtomFunction anchor, List<AtomFunction> touched)
     {
         if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || parent == null || touched == null) return;
         var touchedSet = new HashSet<AtomFunction>();
@@ -555,28 +564,164 @@ public class MoleculeBuilder : MonoBehaviour
                 if (atom == null || atom == parent) continue;
                 if (!depth.TryGetValue(atom, out int ad) || ad != lv) continue;
                 if (atom.AtomicNumber <= 1) continue;
-                if (atom.GetPiBondCount() > 0) continue;
                 if (!towardParent.TryGetValue(atom, out var partner) || partner == null) continue;
+                // Trigonal sp² (e.g. aldehyde/carboxyl C, nitro N): Newman twist about R–X pulls σ substituents / lobes out of the π plane.
+                int z = atom.AtomicNumber;
+                if ((z == 6 || z == 7) && atom.GetPiBondCount() > 0 && atom.GetDistinctSigmaNeighborCount() == 3)
+                {
+                    LogFunctionalGroupTrigonalPlanarity(
+                        "skip_newman_sp2 atom=" + atom.name + "(Z=" + atom.AtomicNumber + ") pi=" + atom.GetPiBondCount() +
+                        " sigmaN=" + atom.GetDistinctSigmaNeighborCount());
+                    continue;
+                }
                 atom.TryStaggerNewmanRelativeToPartner(partner);
             }
+        }
+
+        // Force sp2 electron geometry at π centers in the FG path (nitro-like N, carbonyl C, etc.)
+        // after H saturation/Newman so local σ neighbors settle onto trigonal-planar when applicable.
+        foreach (var atom in touched)
+        {
+            if (atom == null || atom == parent) continue;
+            if (atom.GetPiBondCount() <= 0) continue;
+            if (atom.GetDistinctSigmaNeighborCount() != 3) continue;
+            if (!towardParent.TryGetValue(atom, out var partner) || partner == null) continue;
+            LogFunctionalGroupTrigonalPlanarity(
+                "post_finalize_sp2_redistribute atom=" + atom.name + "(Z=" + atom.AtomicNumber + ") pi=" + atom.GetPiBondCount() +
+                " sigmaN=" + atom.GetDistinctSigmaNeighborCount() + " partner=" + partner.name + "(Z=" + partner.AtomicNumber + ")");
+            atom.RedistributeOrbitals(refBondWorldDirection: (partner.transform.position - atom.transform.position).normalized, freezeSigmaNeighborSubtreeRoot: partner);
+            ForceTrigonalPlanarNeighborPositionsForPiCenter(atom, partner);
+        }
+
+        if (anchor != null)
+            parent.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(anchor);
+
+        foreach (var atom in touched)
+        {
+            if (atom == null || atom == parent) continue;
+            if (!towardParent.TryGetValue(atom, out var p) || p == null) continue;
+            atom.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(p);
+        }
+    }
+
+    /// <summary>
+    /// Hard-enforce trigonal-planar neighbor positions (120°) for π C/N FG centers after final redistribute.
+    /// This is a deterministic fallback for cases where TryComputeTrigonalPlanarSigmaNeighborRelaxTargets returns targets
+    /// but maps to near-zero world movement due to rigid-fragment mapping/gauge.
+    /// </summary>
+    static void ForceTrigonalPlanarNeighborPositionsForPiCenter(AtomFunction center, AtomFunction towardParentPartner)
+    {
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || center == null || towardParentPartner == null) return;
+        int z = center.AtomicNumber;
+        if (z != 6 && z != 7) return;
+        if (center.GetPiBondCount() <= 0) return;
+
+        var neighbors = center.GetDistinctSigmaNeighborAtoms();
+        if (neighbors == null || neighbors.Count != 3) return;
+
+        Vector3 refW = towardParentPartner.transform.position - center.transform.position;
+        if (refW.sqrMagnitude < 1e-10f) return;
+        refW.Normalize();
+
+        Vector3 refL = center.transform.InverseTransformDirection(refW);
+        if (refL.sqrMagnitude < 1e-10f) refL = Vector3.right;
+        else refL.Normalize();
+
+        var tri = VseprLayout.AlignFirstDirectionTo(VseprLayout.GetIdealLocalDirections(3), refL);
+        var idealW = new List<Vector3>(3);
+        for (int i = 0; i < 3; i++)
+            idealW.Add(center.transform.TransformDirection(tri[i]).normalized);
+
+        // Reserve slot nearest to the parent-side bond so that axis stays anchored.
+        int parentSlot = 0;
+        float parentBest = -2f;
+        for (int i = 0; i < idealW.Count; i++)
+        {
+            float d = Vector3.Dot(idealW[i], refW);
+            if (d > parentBest)
+            {
+                parentBest = d;
+                parentSlot = i;
+            }
+        }
+
+        var movableNeighbors = new List<AtomFunction>();
+        foreach (var n in neighbors)
+            if (n != null && n != towardParentPartner)
+                movableNeighbors.Add(n);
+        if (movableNeighbors.Count == 0) return;
+
+        var freeSlots = new List<int>();
+        for (int i = 0; i < 3; i++)
+            if (i != parentSlot)
+                freeSlots.Add(i);
+
+        foreach (var n in movableNeighbors)
+        {
+            Vector3 d = n.transform.position - center.transform.position;
+            if (d.sqrMagnitude < 1e-10f) continue;
+            d.Normalize();
+
+            int bestSlot = -1;
+            float bestDot = -2f;
+            for (int i = 0; i < freeSlots.Count; i++)
+            {
+                int slot = freeSlots[i];
+                float dot = Vector3.Dot(d, idealW[slot]);
+                if (dot > bestDot)
+                {
+                    bestDot = dot;
+                    bestSlot = slot;
+                }
+            }
+            if (bestSlot < 0) continue;
+
+            float bondLen = Vector3.Distance(center.transform.position, n.transform.position);
+            Vector3 before = n.transform.position;
+            Vector3 targetPos = center.transform.position + idealW[bestSlot] * bondLen;
+            Vector3 oldDir = before - center.transform.position;
+            Vector3 newDir = targetPos - center.transform.position;
+            if (oldDir.sqrMagnitude > 1e-10f && newDir.sqrMagnitude > 1e-10f)
+            {
+                Quaternion r = Quaternion.FromToRotation(oldDir.normalized, newDir.normalized);
+                var frag = center.GetAtomsOnSideOfSigmaBond(n);
+                foreach (var a in frag)
+                {
+                    if (a == null) continue;
+                    a.transform.position = center.transform.position + r * (a.transform.position - center.transform.position);
+                }
+            }
+            else
+                n.transform.position = targetPos;
+            LogFunctionalGroupTrigonalPlanarity(
+                "force_sp2_neighbor center=" + center.name + "(Z=" + center.AtomicNumber + ") neighbor=" +
+                n.name + "(Z=" + n.AtomicNumber + ") moved=" + Vector3.Distance(before, n.transform.position).ToString("F5"));
+            freeSlots.Remove(bestSlot);
+            if (freeSlots.Count == 0) break;
         }
     }
 
     /// <summary>
     /// After σ framework: add π bonds toward FG-internal neighbors (not <paramref name="attachmentRoot"/>).
-    /// Caps π by (1) octet / valence headroom: max total bond-order sum around the center minus current σ/π sum minus σ
-    /// still needed (e.g. period-2 C with an O neighbor at single-bond order reserves one unit for the eventual C—H),
-    /// (2) half-filled lone orbitals available before this pass, and (3) FormSecondPiBondInstant blocks period-2 C≡O
-    /// (carbonyl stays C=O). Ethers stay π-free when headroom is 0.
+    /// Caps π by bond-order headroom from <see cref="AtomFunction.GetMaxBondOrderSumAroundAtom"/> (five for period-3+ group 15, six for group 16),
+    /// minus σ reserved via <see cref="GetMinReservedBondOrderForPiPass"/> (e.g. aldehyde C—H). Expanded-valence centers skip
+    /// the lone-1e pre-count cap so π can consume headroom; others use Min(initialOneE, headroom). FormSecondPiBondInstant
+    /// still blocks period-2 C≡O.
     /// </summary>
     void TryFormPiBondsForFunctionalGroupCenter(AtomFunction center, AtomFunction attachmentRoot)
     {
         if (center == null) return;
+        int slots = center.GetOrbitalSlotCount();
+        // Period-3+ group 15/16 only exceed four slots today; need lone→empty transfer for π headroom like phosphate / sulfo.
+        if (slots > 4)
+            center.TryTransferElectronFromLonePairToEmptyOrbitals();
         int v = center.GetMaxBondOrderSumAroundAtom();
         int s0 = center.GetSumBondOrderToNeighbors();
         int reserved = GetMinReservedBondOrderForPiPass(center);
         int initialOneE = center.GetLoneOrbitalsWithOneElectronSortedByAngle().Count;
-        int maxPiBonds = Mathf.Min(initialOneE, Mathf.Max(0, v - s0 - reserved));
+        int headroom = Mathf.Max(0, v - s0 - reserved);
+        bool expandedOctetCenter = slots > 4;
+        int maxPiBonds = expandedOctetCenter ? headroom : Mathf.Min(initialOneE, headroom);
         if (maxPiBonds <= 0) return;
 
         for (int round = 0; round < 8; round++)
@@ -615,6 +760,54 @@ public class MoleculeBuilder : MonoBehaviour
             }
 
             if (!progress) break;
+        }
+    }
+
+    /// <summary>
+    /// FG safety pass: if a trigonal center (C/N) still has no π after build/saturation, try one π to an O neighbor.
+    /// This keeps carbonyl-like C and nitrate/nitro-like N in sp2 electron geometry.
+    /// </summary>
+    void EnsureSinglePiOnTrigonalCnCenters(List<AtomFunction> touched, AtomFunction attachmentRoot)
+    {
+        if (touched == null || touched.Count == 0) return;
+        foreach (var center in touched)
+        {
+            if (center == null) continue;
+            int z = center.AtomicNumber;
+            if (z != 6 && z != 7) continue;
+            if (center.GetPiBondCount() > 0) continue;
+            if (center.GetDistinctSigmaNeighborCount() != 3) continue;
+
+            AtomFunction bestO = null;
+            foreach (var b in center.CovalentBonds)
+            {
+                if (b?.AtomA == null || b?.AtomB == null) continue;
+                var other = b.AtomA == center ? b.AtomB : b.AtomA;
+                if (other == null || other == attachmentRoot) continue;
+                if (other.AtomicNumber != 8) continue;
+                if (center.GetBondsTo(other) != 1) continue;
+                bestO = other;
+                break;
+            }
+            if (bestO == null) continue;
+
+            int piBefore = center.GetPiBondCount();
+            LogFunctionalGroupTrigonalPlanarity(
+                "ensure_pi_try atom=" + center.name + "(Z=" + z + ") piBefore=" + piBefore +
+                " sigmaN=" + center.GetDistinctSigmaNeighborCount() + " targetO=" + bestO.name + "(Z=" + bestO.AtomicNumber + ")");
+            FormPiBondInstant(center, bestO, redistributeEndpoints: true, freezeSigmaNeighborSubtreeRoot: attachmentRoot);
+            if (center.GetPiBondCount() == piBefore)
+            {
+                // Retry once after lone→empty rebalance if no 1e donor was available on first attempt.
+                LogFunctionalGroupTrigonalPlanarity(
+                    "ensure_pi_retry atom=" + center.name + "(Z=" + z + ") reason=no_pi_progress");
+                center.TryTransferElectronFromLonePairToEmptyOrbitals();
+                bestO.TryTransferElectronFromLonePairToEmptyOrbitals();
+                FormPiBondInstant(center, bestO, redistributeEndpoints: true, freezeSigmaNeighborSubtreeRoot: attachmentRoot);
+            }
+            LogFunctionalGroupTrigonalPlanarity(
+                "ensure_pi_result atom=" + center.name + "(Z=" + z + ") piAfter=" + center.GetPiBondCount() +
+                " bondsToO=" + center.GetBondsTo(bestO));
         }
     }
 
@@ -769,7 +962,7 @@ public class MoleculeBuilder : MonoBehaviour
                 ok = BondSigma(anchor, o1, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent)
                     && BondSigma(anchor, o2, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent)
                     && BondSigma(anchor, o3, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent);
-                // S=O π bonds from TryFormPiBondsForFunctionalGroupCenter; O—H from saturation pass.
+                // Two S=O π (headroom cap for Z=16, still 4 orbitals) + single S—O⁻/OH; O—H from saturation.
                 break;
             }
             case FunctionalGroupKind.Nitrile:
@@ -810,7 +1003,7 @@ public class MoleculeBuilder : MonoBehaviour
                 ok = BondSigma(anchor, o1, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent)
                     && BondSigma(anchor, o2, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent)
                     && BondSigma(anchor, o3, pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent);
-                // P=O π from TryFormPiBondsForFunctionalGroupCenter; two P—OH: O—H from saturation pass.
+                // P=O π + two P—OH (π cap for Z=15); O—H from saturation.
                 break;
             }
         }
@@ -830,7 +1023,37 @@ public class MoleculeBuilder : MonoBehaviour
             var fgOnly = new List<AtomFunction>();
             foreach (var a in touched)
                 if (a != null && a != parent)
+                {
+                    // Nitro is modeled as R—N(+)(=O)—O: do not H-auto the anchor N.
+                    // If N gets saturated here, an unintended N—H can be formed and later sp2 cleanup can move that H oddly.
+                    if (kind == FunctionalGroupKind.Nitro && a == anchor)
+                    {
+                        LogFunctionalGroupTrigonalPlanarity(
+                            "nitro_skip_anchor_hauto atom=" + a.name + "(Z=" + a.AtomicNumber + ")");
+                        continue;
+                    }
                     fgOnly.Add(a);
+                }
+            if (kind == FunctionalGroupKind.Nitro && anchor != null)
+            {
+                // Consistency with protonated FG style: nitro as R—N(=O)—OH (one H on the singly bonded oxygen only).
+                // Restrict saturation to that O so we avoid ambiguous/multiple nitro H placements.
+                AtomFunction singleBondO = null;
+                foreach (var b in anchor.CovalentBonds)
+                {
+                    if (b?.AtomA == null || b?.AtomB == null) continue;
+                    var o = b.AtomA == anchor ? b.AtomB : b.AtomA;
+                    if (o == null || o.AtomicNumber != 8) continue;
+                    if (anchor.GetBondsTo(o) == 1) { singleBondO = o; break; }
+                }
+                fgOnly.Clear();
+                if (singleBondO != null)
+                {
+                    fgOnly.Add(singleBondO);
+                    LogFunctionalGroupTrigonalPlanarity(
+                        "nitro_protonated_target_O atom=" + singleBondO.name + "(Z=" + singleBondO.AtomicNumber + ")");
+                }
+            }
             if (fgOnly.Count > 0)
                 edit.SaturateAtomsWithHydrogenPass(
                     fgOnly,
@@ -840,10 +1063,11 @@ public class MoleculeBuilder : MonoBehaviour
                     freezeSigmaNeighborSubtreeRoot: parent);
         }
 
+        EnsureSinglePiOnTrigonalCnCenters(touched, parent);
         RedistributeOrbitalsFunctionalGroupSide(parent, anchor);
 
-        // H saturation and post-saturation redistribute rebuild local tetrahedra; Newman stagger must run last.
-        TryStaggerFunctionalGroupBackboneHeaviesTowardParent(parent, touched);
+        // H saturation and post-saturation redistribute rebuild local tetrahedra; Newman + σ hybrid sync last.
+        FinalizeFunctionalGroupNewmanAndSigmaHybridSync(parent, anchor, touched);
 
         return true;
         }

@@ -958,10 +958,10 @@ public class EditModeManager : MonoBehaviour
                 if (!TryPickTwoLoneOrbitalsForDirections(atom, h1, h2, out var carbonOrb1, out var carbonOrb2))
                     continue;
 
-                Vector3 place1 = OrbitalAngleUtility.GetOrbitalDirectionWorld(carbonOrb1.transform);
-                Vector3 place2 = OrbitalAngleUtility.GetOrbitalDirectionWorld(carbonOrb2.transform);
-                Vector3 pos1 = c + place1 * bondLength;
-                Vector3 pos2 = c + place2 * bondLength;
+                // Spawn along VSEPR h1/h2 from ring tangents (pucker-preserving). Using GetOrbitalDirectionWorld here
+                // snaps to current lobe axes, which can diverge after redistribute and visibly warps chair/boat templates.
+                Vector3 pos1 = c + h1 * bondLength;
+                Vector3 pos2 = c + h2 * bondLength;
 
                 var hGo1 = Instantiate(atomPrefab, pos1, Quaternion.identity);
                 var hGo2 = Instantiate(atomPrefab, pos2, Quaternion.identity);
@@ -976,8 +976,8 @@ public class EditModeManager : MonoBehaviour
                 hAtom1.ForceInitialize();
                 hAtom2.ForceInitialize();
 
-                var hOrb1 = hAtom1.GetLoneOrbitalWithOneElectron(-place1);
-                var hOrb2 = hAtom2.GetLoneOrbitalWithOneElectron(-place2);
+                var hOrb1 = hAtom1.GetLoneOrbitalWithOneElectron(-h1);
+                var hOrb2 = hAtom2.GetLoneOrbitalWithOneElectron(-h2);
                 if (hOrb1 == null || hOrb2 == null)
                 {
                     Destroy(hGo1);
@@ -988,6 +988,8 @@ public class EditModeManager : MonoBehaviour
                 FormSigmaBondInstant(atom, hAtom1, carbonOrb1, hOrb1, redistributeAtomA: false, redistributeAtomB: false);
                 FormSigmaBondInstant(atom, hAtom2, carbonOrb2, hOrb2, redistributeAtomA: false, redistributeAtomB: false);
                 atom.RedistributeOrbitals();
+                if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && atom.AtomicNumber > 1)
+                    atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
             }
             else if (hNeeded == 1)
             {
@@ -1010,8 +1012,8 @@ public class EditModeManager : MonoBehaviour
                 var carbonOrb = atom.GetLoneOrbitalWithOneElectron(hDir);
                 if (carbonOrb == null) continue;
 
-                Vector3 placeDir = OrbitalAngleUtility.GetOrbitalDirectionWorld(carbonOrb.transform);
-                Vector3 pos = c + placeDir * bondLength;
+                // Same as CH₂: place from umbrella hDir so the substituent matches ring/sp³ geometry, not raw lobe tilt.
+                Vector3 pos = c + hDir * bondLength;
                 var hGo = Instantiate(atomPrefab, pos, Quaternion.identity);
                 if (!hGo.TryGetComponent<AtomFunction>(out var hAtom))
                 {
@@ -1020,7 +1022,7 @@ public class EditModeManager : MonoBehaviour
                 }
                 hAtom.AtomicNumber = 1;
                 hAtom.ForceInitialize();
-                var hOrb = hAtom.GetLoneOrbitalWithOneElectron(-placeDir);
+                var hOrb = hAtom.GetLoneOrbitalWithOneElectron(-hDir);
                 if (hOrb == null)
                 {
                     Destroy(hGo);

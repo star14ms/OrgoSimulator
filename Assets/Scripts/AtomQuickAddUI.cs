@@ -651,7 +651,7 @@ public class AtomQuickAddUI : MonoBehaviour
             (FunctionalGroupKind.Carboxyl, "C(=O)-OH"),
             (FunctionalGroupKind.Sulfo, "SO3H"),
             (FunctionalGroupKind.Nitrile, "C\u2261N"),
-            (FunctionalGroupKind.Nitro, "NO2"),
+            (FunctionalGroupKind.Nitro, "NO2H"),
             (FunctionalGroupKind.PhosphateDihydrogen, "PO3H2")
         };
 
