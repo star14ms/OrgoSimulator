@@ -1,0 +1,20 @@
+---
+description: Debug / triage logs — bracket prefix, one line per message, no embedded newlines
+globs: "**/*.cs"
+alwaysApply: true
+---
+
+# Debug and diagnostic logging
+
+When adding or editing `Debug.Log`, `Debug.LogWarning`, `ProjectAgentDebugLog.MirrorToProjectDotLog`, or similar user-visible diagnostic output:
+
+1. **Bracket prefix** — Each log line MUST begin with a bracketed tag so Console and `.log` filtering stay consistent, e.g. `[σ-form-rot-pose]`, `[break-tetra]`, `[my-feature]`.
+2. **No `\n` in messages** — Do not concatenate multiple logical lines into one string. Emit **separate** calls per line (each with its own prefix). If you would have used `\n`, use multiple `Debug.Log` / mirror calls instead.
+3. **One idea per line** — Keep each line a single record (ids, numbers, booleans); avoid prose paragraphs in one log call.
+
+**Exceptions**
+
+- Unity or third-party APIs that require a single blob (e.g. some stack-trace dumps): keep as one call; add a comment at the call site.
+- **High-frequency** logs (per-frame): gate behind a flag and prefer default **off** with a comment (see `debug-flags-default-on.mdc` exception for flood risk).
+
+This applies to new logs and to refactors of existing multi-line `StringBuilder` + single `Debug.Log` patterns.
