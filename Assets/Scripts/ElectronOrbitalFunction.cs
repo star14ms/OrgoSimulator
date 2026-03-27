@@ -873,9 +873,13 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             dragOffset = transform.position - PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
         mainSpriteRenderer = GetComponent<SpriteRenderer>();
         mainMeshRenderer = GetComponent<MeshRenderer>();
-        if (mainSpriteRenderer != null) mainSpriteRenderer.enabled = false;
-        if (mainMeshRenderer != null) mainMeshRenderer.enabled = false;
-        CreateStretchVisual();
+        // Perspective σ bond: do not replace the lobe with the translucent stretch cone/hemisphere — that mesh uses
+        // the transparent queue and draws over the electron spheres (geometry queue), so the pair vanishes during drag.
+        bool keepBondBodyFor3DDrag = bond != null && Use3DOrbitalPresentation();
+        if (mainSpriteRenderer != null && !keepBondBodyFor3DDrag) mainSpriteRenderer.enabled = false;
+        if (mainMeshRenderer != null && !keepBondBodyFor3DDrag) mainMeshRenderer.enabled = false;
+        if (!keepBondBodyFor3DDrag)
+            CreateStretchVisual();
         SetPhysicsEnabled(false);
     }
 

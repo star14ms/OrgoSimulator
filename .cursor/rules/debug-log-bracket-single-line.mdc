@@ -1,5 +1,5 @@
 ---
-description: Debug / triage logs — bracket prefix, one line per message, no embedded newlines
+description: Debug / triage logs — leading [category] tag for grep, one line per message, no brackets inside the body
 globs: "**/*.cs"
 alwaysApply: true
 ---
@@ -8,9 +8,16 @@ alwaysApply: true
 
 When adding or editing `Debug.Log`, `Debug.LogWarning`, `ProjectAgentDebugLog.MirrorToProjectDotLog`, or similar user-visible diagnostic output:
 
-1. **Bracket prefix** — Each log line MUST begin with a bracketed tag so Console and `.log` filtering stay consistent, e.g. `[σ-form-rot-pose]`, `[break-tetra]`, `[my-feature]`.
-2. **No `\n` in messages** — Do not concatenate multiple logical lines into one string. Emit **separate** calls per line (each with its own prefix). If you would have used `\n`, use multiple `Debug.Log` / mirror calls instead.
-3. **One idea per line** — Keep each line a single record (ids, numbers, booleans); avoid prose paragraphs in one log call.
+1. **Leading tag for filtering** — Start each message with a single bracketed category at the **beginning only**, e.g. `[break-motion]`, `[σ-form-pose]`. This matches `.log` / Console filtering (search for `[break-motion]` to see only that stream).
+2. **No extra brackets in the message** — After that opening tag, use plain text and key=value / ids; do **not** add more `[...]` fragments inside the same line (harder to scan and breaks “one tag per line”).
+3. **No `\n` in messages** — Do not concatenate multiple logical lines into one string. Emit **separate** calls per line.
+4. **One idea per line** — Keep each log call to a single record (ids, numbers, booleans); avoid paragraphs.
+
+**Format**
+
+- Good: `Debug.Log("[break-motion] CoAnimate redistRaw ids A=" + ...);`
+- Avoid: `Debug.Log("break-motion: ...");` (old plain-colon prefix)
+- Avoid: `Debug.Log("[break-motion] step [2] i=3 ...");` (extra brackets after the tag)
 
 **Exceptions**
 
