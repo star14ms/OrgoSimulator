@@ -1,5 +1,5 @@
 # Last compact
-- **When**: 2026-03-26T12:51:24Z
+- **When**: 2026-03-27
 - **Ref**: pending
 
-(Summarized in `instruction/history/2026-03-26-add-antigravity-rules.md`. Set **Ref** to your commit hash after you commit.)
+(Summarized in `instruction/history/2026-03-27-refactor-break-bond-redistribution.md`. Set **Ref** to your commit hash after you commit.)

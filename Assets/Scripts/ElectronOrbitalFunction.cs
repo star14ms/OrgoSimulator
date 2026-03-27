@@ -2196,9 +2196,12 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             }
         }
 
-        // Partial lists only animate a subset of lone orbitals; the other atom can get an empty list while π count
-        // still changed. Always run full RedistributeOrbitals on both endpoints when π count changed.
-        TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
+        // Animation + ApplyRedistributeTargets already placed orbitals at VSEPR positions above.
+        // Post-animation RedistributeOrbitals3D recomputes with post-H-snap state and displaces lone pairs
+        // (e.g., CH4 H-auto: internuclear axes shift after SnapHydrogenSigmaNeighborsToBondOrbitalAxes,
+        // causing the recomputation to produce non-tetrahedral geometry).
+        // Bond-break has its own RedistributeOrbitals call in CoAnimateBreakBondRedistribution.
+        // TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
     }
 
     static (float sourceDiff, float targetDiff) ComputePiBondAngleDiffs(AtomFunction sourceAtom, AtomFunction targetAtom, Vector3 bondPos, Quaternion bondRot, CovalentBond bond)
