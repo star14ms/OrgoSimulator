@@ -917,6 +917,9 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>Gates <see cref="AtomFunction.LogBondBreakTetraFrameworkSnapshot"/>; default off for quiet runs is not required for legacy triage here.</summary>
     public static bool DebugLogBondBreakTetraFramework = true;
 
+    /// <summary>Gates bond-break motion source logs on <see cref="AtomFunction.RedistributeOrbitals"/> entry. Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogBreakBondMotionSources = true;
+
     /// <summary>σ-formation step 2: set redistribute target pose to current locals for occupied nucleus-parented lobes (still used by <see cref="ElectronOrbitalFunction"/> formation).</summary>
     public static void NeutralizeOccupiedRedistTargetsToCurrentLocals(
         AtomFunction nucleus,
