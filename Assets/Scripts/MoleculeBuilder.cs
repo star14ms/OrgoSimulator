@@ -383,9 +383,9 @@ public class MoleculeBuilder : MonoBehaviour
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
             if (redistributeAtomA)
-                atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA, pinAtomsForSigmaRelax: pinAtomsForSigmaRelaxAtomA, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
+                atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA, pinAtomsForSigmaRelax: pinAtomsForSigmaRelaxAtomA, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
             if (redistributeAtomB)
-                atomB.RedistributeOrbitals(newSigmaBondPartnerHint: atomA, sigmaNeighborCountBeforeHint: sigmaBeforeB, pinAtomsForSigmaRelax: pinAtomsForSigmaRelaxAtomB, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
+                atomB.RedistributeOrbitals(newSigmaBondPartnerHint: atomA, sigmaNeighborCountBeforeHint: sigmaBeforeB, pinAtomsForSigmaRelax: pinAtomsForSigmaRelaxAtomB, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }
@@ -415,8 +415,8 @@ public class MoleculeBuilder : MonoBehaviour
             Destroy(orbB.gameObject);
             if (redistributeEndpoints)
             {
-                atomA.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
-                atomB.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
+                atomA.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
+                atomB.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
             }
             atomA.RefreshCharge();
             atomB.RefreshCharge();
@@ -454,8 +454,8 @@ public class MoleculeBuilder : MonoBehaviour
             Destroy(orbB.gameObject);
             if (redistributeEndpoints)
             {
-                atomA.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
-                atomB.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
+                atomA.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
+                atomB.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
             }
             atomA.RefreshCharge();
             atomB.RefreshCharge();
@@ -589,7 +589,14 @@ public class MoleculeBuilder : MonoBehaviour
             LogFunctionalGroupTrigonalPlanarity(
                 "post_finalize_sp2_redistribute atom=" + atom.name + "(Z=" + atom.AtomicNumber + ") pi=" + atom.GetPiBondCount() +
                 " sigmaN=" + atom.GetDistinctSigmaNeighborCount() + " partner=" + partner.name + "(Z=" + partner.AtomicNumber + ")");
-            atom.RedistributeOrbitals(refBondWorldDirection: (partner.transform.position - atom.transform.position).normalized, freezeSigmaNeighborSubtreeRoot: partner);
+            CovalentBond piOp = null;
+            foreach (var b in atom.CovalentBonds)
+            {
+                if (b == null || b.AtomA == null || b.AtomB == null || b.IsSigmaBondLine()) continue;
+                var oth = b.AtomA == atom ? b.AtomB : b.AtomA;
+                if (oth == partner) { piOp = b; break; }
+            }
+            atom.RedistributeOrbitals(refBondWorldDirection: (partner.transform.position - atom.transform.position).normalized, freezeSigmaNeighborSubtreeRoot: partner, redistributionOperationBond: piOp);
             ForceTrigonalPlanarNeighborPositionsForPiCenter(atom, partner);
         }
 

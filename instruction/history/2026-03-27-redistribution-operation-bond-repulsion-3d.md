@@ -1,0 +1,7 @@
+# Summary (since last /compact)
+
+`RedistributeOrbitals` / `RedistributeOrbitals3D` / `GetRedistributeTargets` gain an optional **`redistributionOperationBond`** so 3D layout can resolve a **guide group** (π/σ/lone/0e break guide) with strict priority while **excluding the bond currently being formed or broken**. `AtomFunction` adds **`UseRepulsionLayoutOnlyInGetRedistributeTargets3D`** (default true) to prefer **repulsion + guide-plane** paths; legacy VSEPR `TryMatch` remains in `GetRedistributeTargets3DVseprTryMatch`. New repulsion helpers include **`TryComputeRepulsionSumNonBondLayoutSlots`**, generalized **σN==0** ex-bond-guide handling (no longer carbon-only), **`TryComputeRepulsionSigmaCleavageBondBreakSlots`** ahead of legacy carbocation slots on full σ cleavage, and **`TryResolveRedistributionGuideGroupForLayout`** with expanded `[break-tetra]` logging.
+
+Call sites pass the operating bond: **`CovalentBond`** (break / instant / co-animate / 2D break), **`EditModeManager`** and **`MoleculeBuilder`** (programmatic σ bonds), **`ElectronOrbitalFunction`** σ-formation **`GetRedistributeTargets`** (instant + animated). **`MoleculeBuilder`** functional-group sp² finalize resolves the **π bond to the partner** when passing `redistributionOperationBond`. **`DebugLogBondBreakTetraFramework`** defaults **on** for triage.
+
+Untracked doc: `instruction/electron-redistribution-repulsion-guide-group.md` (not in git diff until added).

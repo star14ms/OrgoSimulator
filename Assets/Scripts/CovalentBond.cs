@@ -994,7 +994,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     sigmaRelaxPins,
                     sigmaCleavageBetweenPartners,
                     sigmaCleavagePinnedEmptyOrbitals,
-                    preserveHeavyFrameworkAfterInstantHydrogenPartnerBreak: false);
+                    preserveHeavyFrameworkAfterInstantHydrogenPartnerBreak: false,
+                    this);
             }
             else
             {
@@ -1011,7 +1012,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     sigmaRelaxPins,
                     userDragBondCylinderBreak,
                     sigmaCleavageBetweenPartners,
-                    sigmaCleavagePinnedEmptyOrbitals));
+                    sigmaCleavagePinnedEmptyOrbitals,
+                    this));
             }
         }
         else
@@ -1021,9 +1023,9 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             LogBreakBondRedistributeCall("BreakBond2D", atomA, piBondAngleFromA, refWorldA, true, false, sigmaRelaxPins, false, gA);
             var sigmaPartnerHintA = SurvivingSigmaPartnerAfterBreakStep(atomA, atomA, atomB, sigmaCleavageBetweenPartners);
             var sigmaPartnerHintB = SurvivingSigmaPartnerAfterBreakStep(atomB, atomA, atomB, sigmaCleavageBetweenPartners);
-            atomA?.RedistributeOrbitals(piBondAngleFromA, refWorldA, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins, bondBreakGuideLoneOrbital: gA, newSigmaBondPartnerHint: sigmaPartnerHintA, bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners);
+            atomA?.RedistributeOrbitals(piBondAngleFromA, refWorldA, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins, bondBreakGuideLoneOrbital: gA, newSigmaBondPartnerHint: sigmaPartnerHintA, bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners, redistributionOperationBond: this);
             LogBreakBondRedistributeCall("BreakBond2D", atomB, piBondAngleFromB, refWorldB, true, false, sigmaRelaxPins, false, gB);
-            atomB?.RedistributeOrbitals(piBondAngleFromB, refWorldB, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins, bondBreakGuideLoneOrbital: gB, newSigmaBondPartnerHint: sigmaPartnerHintB, bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners);
+            atomB?.RedistributeOrbitals(piBondAngleFromB, refWorldB, relaxCoplanarSigmaToTetrahedral: true, pinAtomsForSigmaRelax: sigmaRelaxPins, bondBreakGuideLoneOrbital: gB, newSigmaBondPartnerHint: sigmaPartnerHintB, bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners, redistributionOperationBond: this);
             var guideA2D = BondBreakGuideLoneOrbitalOnAtom(atomA, orbital, newOrbital, returnOrbitalTo, otherAtom);
             var guideB2D = BondBreakGuideLoneOrbitalOnAtom(atomB, orbital, newOrbital, returnOrbitalTo, otherAtom);
             atomA?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(refWorldA, guideA2D, sigmaCleavageBetweenPartners);
@@ -1047,7 +1049,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public static bool DebugLogBreakBondStampSigmaFilterDetail = true;
 
     /// <summary>Log <c>[break-tetra]</c>: nuclear σ-axes vs electron-domain pairwise angles (and σ-tip vs bond-axis alignment) across VSEPR preview and <see cref="CoAnimateBreakBondRedistribution"/>. Default on for triage; set false for quiet runs.</summary>
-    public static bool DebugLogBondBreakTetraFramework = false;
+    public static bool DebugLogBondBreakTetraFramework = true;
 
     static void LogBreakBondTetraFrameworkPair(string phase, AtomFunction atomA, AtomFunction atomB)
     {
@@ -1466,7 +1468,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         HashSet<AtomFunction> pinSigmaRelaxAtoms,
         bool sigmaCleavageBetweenPartners,
         HashSet<ElectronOrbitalFunction> sigmaCleavagePinnedEmptyOrbitals,
-        bool preserveHeavyFrameworkAfterInstantHydrogenPartnerBreak)
+        bool preserveHeavyFrameworkAfterInstantHydrogenPartnerBreak,
+        CovalentBond redistributionOperationBond)
     {
         bool sigmaOnlyUnchangedPiBoth = piBeforeA == piAfterA && piBeforeB == piAfterB;
         var moves = BuildSigmaRelaxMovesForBreakBond(atomA, atomB, piAngleA, refA, piAfterA, piAngleB, refB, piAfterB, pinSigmaRelaxAtoms);
@@ -1567,7 +1570,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             skipSigmaNeighborRelax: skipFinalSigmaRelax || minimalA,
             bondBreakGuideLoneOrbital: gInstA,
             newSigmaBondPartnerHint: instPartnerHintA,
-            bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners);
+            bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners,
+            redistributionOperationBond: redistributionOperationBond);
         LogBreakBondRedistributeCall("InstantBreak3D", atomB, piAngleB, refB, !minimalB, sigmaOnlyUnchangedPiBoth, pinSigmaRelaxAtoms, skipFinalSigmaRelax || minimalB, gInstB);
         atomB?.RedistributeOrbitals(
             piAngleB,
@@ -1578,7 +1582,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             skipSigmaNeighborRelax: skipFinalSigmaRelax || minimalB,
             bondBreakGuideLoneOrbital: gInstB,
             newSigmaBondPartnerHint: instPartnerHintB,
-            bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners);
+            bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners,
+            redistributionOperationBond: redistributionOperationBond);
 
         LogBreakEmptyTeleportBoth("instant_preRedistributeOrbitals", atomA, atomB, piAfterA == 0 ? refA : null, piAfterB == 0 ? refB : null, orbA, orbB, parentA, parentB);
         LogBreakGuideOrbitalsPose("instant_afterRedistributeOrbitals", atomA, atomB, orbA, orbB, parentA, parentB);
@@ -1620,7 +1625,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         HashSet<AtomFunction> pinSigmaRelaxAtoms,
         bool userDragBondCylinderBreak,
         bool sigmaCleavageBetweenPartners,
-        HashSet<ElectronOrbitalFunction> sigmaCleavagePinnedEmptyOrbitals)
+        HashSet<ElectronOrbitalFunction> sigmaCleavagePinnedEmptyOrbitals,
+        CovalentBond redistributionOperationBond)
     {
         // σ-only break (π unchanged on both ends): ensure bond→slot orbital lerp runs; otherwise epsilon + empty GetRedistributeTargets can skip the whole animation loop.
         bool sigmaOnlyUnchangedPiBoth = piBeforeA == piAfterA && piBeforeB == piAfterB;
@@ -1671,8 +1677,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var gFinalB = BondBreakGuideLoneOrbitalOnAtom(atomB, orbA, orbB, parentA, parentB);
         var coPartnerHintA = SurvivingSigmaPartnerAfterBreakStep(atomA, atomA, atomB, sigmaCleavageBetweenPartners);
         var coPartnerHintB = SurvivingSigmaPartnerAfterBreakStep(atomB, atomA, atomB, sigmaCleavageBetweenPartners);
-        atomA?.RedistributeOrbitals(piAngleA, refA, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: skipFinalSigmaRelaxPreview, bondBreakGuideLoneOrbital: gFinalA, newSigmaBondPartnerHint: coPartnerHintA, skipBondBreakSparseNonbondSpread: skipSparseSpreadPreview, bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners);
-        atomB?.RedistributeOrbitals(piAngleB, refB, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: skipFinalSigmaRelaxPreview, bondBreakGuideLoneOrbital: gFinalB, newSigmaBondPartnerHint: coPartnerHintB, skipBondBreakSparseNonbondSpread: skipSparseSpreadPreview, bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners);
+        atomA?.RedistributeOrbitals(piAngleA, refA, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: skipFinalSigmaRelaxPreview, bondBreakGuideLoneOrbital: gFinalA, newSigmaBondPartnerHint: coPartnerHintA, skipBondBreakSparseNonbondSpread: skipSparseSpreadPreview, bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners, redistributionOperationBond: redistributionOperationBond);
+        atomB?.RedistributeOrbitals(piAngleB, refB, relaxCoplanarSigmaToTetrahedral: true, skipLoneLobeLayout: sigmaOnlyUnchangedPiBoth, pinAtomsForSigmaRelax: pinSigmaRelaxAtoms, skipSigmaNeighborRelax: skipFinalSigmaRelaxPreview, bondBreakGuideLoneOrbital: gFinalB, newSigmaBondPartnerHint: coPartnerHintB, skipBondBreakSparseNonbondSpread: skipSparseSpreadPreview, bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners, redistributionOperationBond: redistributionOperationBond);
         atomA?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(refA, gFinalA, sigmaCleavageBetweenPartners);
         atomB?.OrientEmptyNonbondedOrbitalsPerpendicularToFramework(refB, gFinalB, sigmaCleavageBetweenPartners);
         var frozenEmptyA = new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
