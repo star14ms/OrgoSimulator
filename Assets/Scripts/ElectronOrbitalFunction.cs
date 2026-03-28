@@ -36,6 +36,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     /// <summary>Budget for <c>[σ-form-rot-hybrid]</c> / <c>[σ-form-rot-bond]</c> lines during one gesture (consumed by hybrid refresh and bond tip apply).</summary>
     public static int SigmaFormationHeavyRotDiagBudget;
 
+    /// <summary>3D σ formation: skip rearrange, redistribute targets, σ-relax, Newman stagger, and the step-2 lerp (aligned with bond-break without redistribution). Default on for triage; set false to restore animated VSEPR/relax.</summary>
+    public static bool SkipSigmaFormationStep2GeometryMoves3D = true;
+
     /// <summary>During σ formation, treat +X tips within this angle of the internuclear line (either direction) as “along the bond” for skip / reconcile.</summary>
     const float SigmaBondFormationTipAxisMaxSepDeg = 22f;
 
@@ -1344,6 +1347,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             atom.transform.position = targetPos;
 
         var rearrangeTargetInfo = GetRearrangeTarget(rearrangeSource, rearrangeTarget, targetPointOverride);
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && SkipSigmaFormationStep2GeometryMoves3D)
+            rearrangeTargetInfo = null;
 
         int sigmaBeforeSource = sourceAtom.GetDistinctSigmaNeighborCount();
         int sigmaBeforeTarget = targetAtom.GetDistinctSigmaNeighborCount();
@@ -1391,7 +1396,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
         // Tetrahedral σ-relax: 3→4 σ with no occupied lone (CH₄-style), or 2→3 σ with AX₃E (one occupied non-bond, e.g. trigonal radical → sp³).
         var sigmaRelaxById = new Dictionary<int, (AtomFunction atom, Vector3 startWorld, Vector3 endWorld)>();
-        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && !SkipSigmaFormationStep2GeometryMoves3D)
         {
             void CollectSigmaRelax(AtomFunction center, AtomFunction partner, int sigmaBefore)
             {
@@ -1413,13 +1418,24 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         var sigmaRelaxList = new List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)>(sigmaRelaxById.Values);
         foreach (var m in sigmaRelaxList)
             m.atom.transform.position = m.endWorld;
-        var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom, sigmaNeighborCountBefore: sigmaBeforeSource, redistributionOperationBond: bond);
-        var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom, sigmaNeighborCountBefore: sigmaBeforeTarget, redistributionOperationBond: bond);
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistA;
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistB;
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && SkipSigmaFormationStep2GeometryMoves3D)
+        {
+            redistA = new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
+            redistB = new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
+        }
+        else
+        {
+            redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom, sigmaNeighborCountBefore: sigmaBeforeSource, redistributionOperationBond: bond);
+            redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom, sigmaNeighborCountBefore: sigmaBeforeTarget, redistributionOperationBond: bond);
+        }
 
         AtomFunction rootForStagger = referenceAtom;
         AtomFunction childForStagger = rootForStagger == sourceAtom ? targetAtom : sourceAtom;
         float newmanPsi = 0f;
         bool hasNewmanStagger = OrbitalAngleUtility.UseFull3DOrbitalGeometry
+            && !SkipSigmaFormationStep2GeometryMoves3D
             && childForStagger != null && rootForStagger != null
             && childForStagger.AtomicNumber > 1
             && childForStagger.GetPiBondCount() == 0
@@ -1517,6 +1533,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 || tipsAlongBondIgnoreDirectedFlip
             );
         bool skipStep2 = !needsRearrange && !needsRedistribute && !hasSigmaRelaxMovement && orbitalAlreadyAtBond && !hasNewmanStagger;
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && SkipSigmaFormationStep2GeometryMoves3D)
+            skipStep2 = true;
 
         var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
         var redistBStarts = new List<(Vector3 pos, Quaternion rot)>();
@@ -1708,6 +1726,22 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             }
             yield return null;
         }
+        }
+
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && SkipSigmaFormationStep2GeometryMoves3D && skipStep2)
+        {
+            var bondEndLive = bond.GetOrbitalTargetWorldState();
+            sourceOrbital.transform.position = bondEndLive.worldPos;
+            if (skipPostFormationRedistAndHybrid3D)
+                sourceOrbital.transform.rotation = bondOrbitalStartWorldRot;
+            else if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
+                Quaternion rotTarg = SigmaFormationBondingOrbitalTargetWorldRotPreservingRollAroundTip(
+                    bondOrbitalStartWorldRot, bondEndLive.worldRot, rotThreshold);
+                sourceOrbital.transform.rotation = rotTarg;
+            }
+            else
+                sourceOrbital.transform.rotation = bondEndLive.worldRot;
         }
 
         if (rearrangeTargetInfo.HasValue)
@@ -2204,7 +2238,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         // Post-animation RedistributeOrbitals3D recomputes with post-H-snap state and displaces lone pairs
         // (e.g., CH4 H-auto: internuclear axes shift after SnapHydrogenSigmaNeighborsToBondOrbitalAxes,
         // causing the recomputation to produce non-tetrahedral geometry).
-        // Bond-break has its own RedistributeOrbitals call in CoAnimateBreakBondRedistribution.
+        // Bond-break no longer runs post-break RedistributeOrbitals (see CovalentBond.BreakBond).
         // TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
     }
 

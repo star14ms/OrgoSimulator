@@ -1,0 +1,73 @@
+    public bool TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(Vector3 refLocalNormalized,
+        out List<(AtomFunction neighbor, Vector3 targetWorld)> targets,
+        HashSet<AtomFunction> pinWorld = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
+    {
+        targets = null;
+        int pi = GetPiBondCount();
+        if (pi < 1) return false;
+        var sigmaNeighbors = GetDistinctSigmaNeighborAtoms();
+        int sigmaN = sigmaNeighbors.Count;
+        if (sigmaN != 3) return false;
+
+        var worldDirs = new List<Vector3>(3);
+        foreach (var n in sigmaNeighbors)
+        {
+            var d = n.transform.position - transform.position;
+            if (d.sqrMagnitude < 1e-10f) return false;
+            worldDirs.Add(d.normalized);
+        }
+        bool coplanar = AreThreeDirectionsCoplanar(worldDirs);
+        if ((atomicNumber == 6 || atomicNumber == 7) && DebugLogTrigonalPlanarSigmaRelax)
+        {
+            int pinCount = pinWorld == null ? 0 : pinWorld.Count;
+            Debug.Log(
+                "[sp2-relax] compute center=" + name + "(Z=" + atomicNumber + ") pi=" + pi +
+                " sigmaN=" + sigmaN + " coplanar=" + coplanar + " pinCount=" + pinCount +
+                " freeze=" + (freezeSigmaNeighborSubtreeRoot == null
+                    ? "null"
+                    : (freezeSigmaNeighborSubtreeRoot.name + "(Z=" + freezeSigmaNeighborSubtreeRoot.AtomicNumber + ")")));
+        }
+        if (coplanar) return false;
+
+        var idealLocal = VseprLayout.GetIdealLocalDirections(3);
+        var aligned = VseprLayout.AlignFirstDirectionTo(idealLocal, refLocalNormalized);
+        var idealWorld = new List<Vector3>(3);
+        for (int i = 0; i < 3; i++)
+            idealWorld.Add(transform.TransformDirection(aligned[i]).normalized);
+
+        var mapping = FindBestDirectionMapping(worldDirs, idealWorld);
+        if (mapping == null || mapping.Count != 3) return false;
+
+        var newDirs = new List<Vector3>(3);
+        for (int i = 0; i < 3; i++)
+            newDirs.Add(mapping[i].newDir.normalized);
+        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld, freezeSigmaNeighborSubtreeRoot);
+        if ((atomicNumber == 6 || atomicNumber == 7) && DebugLogTrigonalPlanarSigmaRelax)
+        {
+            float maxD = 0f;
+            if (targets != null)
+            {
+                foreach (var (n, tw) in targets)
+                    if (n != null) maxD = Mathf.Max(maxD, Vector3.Distance(n.transform.position, tw));
+            }
+            Debug.Log(
+                "[sp2-relax] targets center=" + name + "(Z=" + atomicNumber + ") nTargets=" +
+                (targets == null ? 0 : targets.Count) + " maxDelta=" + maxD.ToString("F5"));
+        }
+        return targets != null && targets.Count > 0;
+    }
+
+    /// <summary>
+    /// After a π bond re-forms, σ neighbors may still sit at ~tetrahedral positions (from bond-break relax). sp² centers with
+    /// three σ neighbors + π should be trigonal planar; if σ directions are not coplanar, snap neighbors onto 120° in-plane.
+    /// Skips when already coplanar (FG builds, undistorted sp²).
+    /// </summary>
+    void TryRelaxSigmaNeighborsToTrigonalPlanar3D(Vector3 refLocalNormalized, HashSet<AtomFunction> pinWorld = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
+    {
+        if (!TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(refLocalNormalized, out var targets, pinWorld, freezeSigmaNeighborSubtreeRoot) || targets == null) return;
+
+        var moved = new HashSet<AtomFunction>();
+        foreach (var (atom, targetWorld) in targets)
+        {
+            if (pinWorld != null && pinWorld.Contains(atom)) continue;

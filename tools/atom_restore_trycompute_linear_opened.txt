@@ -1,0 +1,87 @@
+    public bool TryComputeLinearSigmaNeighborRelaxTargets(Vector3 refLocalNormalized,
+        out List<(AtomFunction neighbor, Vector3 targetWorld)> targets,
+        HashSet<AtomFunction> pinWorld = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
+    {
+        targets = null;
+        if (GetPiBondCount() < 2) return false;
+        var sigmaNeighbors = GetDistinctSigmaNeighborAtoms();
+        if (sigmaNeighbors.Count != 2) return false;
+
+        var worldDirs = new List<Vector3>(2);
+        foreach (var n in sigmaNeighbors)
+        {
+            var d = n.transform.position - transform.position;
+            if (d.sqrMagnitude < 1e-10f) return false;
+            worldDirs.Add(d.normalized);
+        }
+        if (Vector3.Dot(worldDirs[0], worldDirs[1]) <= -0.985f) return false;
+
+        var idealLocal = VseprLayout.GetIdealLocalDirections(2);
+        var aligned = VseprLayout.AlignFirstDirectionTo(idealLocal, refLocalNormalized);
+        var idealWorld = new List<Vector3>(2);
+        for (int i = 0; i < 2; i++)
+            idealWorld.Add(transform.TransformDirection(aligned[i]).normalized);
+
+        var mapping = FindBestDirectionMapping(worldDirs, idealWorld);
+        if (mapping == null || mapping.Count != 2) return false;
+
+        var newDirs = new List<Vector3>(2);
+        for (int i = 0; i < 2; i++)
+            newDirs.Add(mapping[i].newDir.normalized);
+        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld, freezeSigmaNeighborSubtreeRoot);
+        return targets != null && targets.Count > 0;
+    }
+
+    /// <summary>
+    /// After breaking a π (triple→double etc.): AX₂ centers that were linear (sp) for π≥2 should open σ angles toward trigonal (~120°).
+    /// Skips symmetric X–A–X (same heavy element both sides, e.g. CO₂ σ framework) so linear σ is preserved there.
+    /// </summary>
+    public bool TryComputeOpenedTrigonalSigmaNeighborRelaxTargetsFromLinear(Vector3 refLocalNormalized,
+        out List<(AtomFunction neighbor, Vector3 targetWorld)> targets,
+        HashSet<AtomFunction> pinWorld = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
+    {
+        targets = null;
+        if (GetPiBondCount() != 1) return false;
+        var sigmaNeighbors = GetDistinctSigmaNeighborAtoms();
+        if (sigmaNeighbors.Count != 2) return false;
+        int z0 = sigmaNeighbors[0].AtomicNumber;
+        int z1 = sigmaNeighbors[1].AtomicNumber;
+        if (z0 == z1 && z0 > 1) return false;
+
+        var worldDirs = new List<Vector3>(2);
+        foreach (var n in sigmaNeighbors)
+        {
+            var d = n.transform.position - transform.position;
+            if (d.sqrMagnitude < 1e-10f) return false;
+            worldDirs.Add(d.normalized);
+        }
+        if (Vector3.Dot(worldDirs[0], worldDirs[1]) > -0.985f) return false;
+
+        var idealLocal = VseprLayout.GetIdealLocalDirections(3);
+        var aligned = VseprLayout.AlignFirstDirectionTo(idealLocal, refLocalNormalized);
+        var idealWorld = new List<Vector3>(2)
+        {
+            transform.TransformDirection(aligned[1]).normalized,
+            transform.TransformDirection(aligned[2]).normalized
+        };
+
+        var mapping = FindBestDirectionMapping(worldDirs, idealWorld);
+        if (mapping == null || mapping.Count != 2) return false;
+
+        var newDirs = new List<Vector3>(2);
+        for (int i = 0; i < 2; i++)
+            newDirs.Add(mapping[i].newDir.normalized);
+        BuildSigmaNeighborTargetsWithFragmentRigidRotation(transform.position, sigmaNeighbors, worldDirs, newDirs, this, out targets, pinWorld, freezeSigmaNeighborSubtreeRoot);
+        return targets != null && targets.Count > 0;
+    }
+
+    void TryRelaxSigmaNeighborsToLinear3D(Vector3 refLocalNormalized, HashSet<AtomFunction> pinWorld = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
+    {
+        if (!TryComputeLinearSigmaNeighborRelaxTargets(refLocalNormalized, out var targets, pinWorld, freezeSigmaNeighborSubtreeRoot) || targets == null) return;
+
+        var moved = new HashSet<AtomFunction>();
+        foreach (var (atom, targetWorld) in targets)
+        {
+            if (DebugLogFrameworkPinSigmaRelaxTrace)

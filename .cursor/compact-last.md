@@ -2,4 +2,4 @@
 - **When**: 2026-03-27
 - **Ref**: pending
 
-(Summarized in `instruction/history/2026-03-27-redistribution-operation-bond-repulsion-3d.md`. Set **Ref** to your commit hash after you commit.)
+(Summarized in `instruction/history/2026-03-27-remove-redistribution-break-formation.md`. Set **Ref** to your commit hash after you commit.)
