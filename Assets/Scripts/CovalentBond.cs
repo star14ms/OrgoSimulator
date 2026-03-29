@@ -52,6 +52,9 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public AtomFunction AtomB => atomB;
     public ElectronOrbitalFunction Orbital => orbital;
 
+    /// <summary>Nucleus orbital being faded out and destroyed after σ/π formation; omit from post-formation VSEPR mover lists.</summary>
+    internal ElectronOrbitalFunction OrbitalBeingFadedForCharge => orbitalBeingFadedForCharge;
+
     public int ElectronCount => orbital != null ? orbital.ElectronCount : 0;
 
     /// <summary>Diagnostics only — read <see cref="orbitalRedistributionWorldDelta"/> for σ-formation pose logs.</summary>

@@ -5681,6 +5681,14 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return worst;
     }
 
+    /// <summary>Undirected separation between two directions in 0…90°: min(∠(a,b), 180°−∠(a,b)). Parallel or anti-parallel → 0° (same bond axis).</summary>
+    static float AcuteAngleBetweenDirections(Vector3 a, Vector3 b)
+    {
+        if (a.sqrMagnitude < 1e-12f || b.sqrMagnitude < 1e-12f) return 0f;
+        float ang = Vector3.Angle(a.normalized, b.normalized);
+        return Mathf.Min(ang, 180f - ang);
+    }
+
     static bool IsPerpendicularToDirections(Vector3 dir, IReadOnlyList<Vector3> unitDirs, float toleranceDeg = 12f)
     {
         if (unitDirs == null || unitDirs.Count == 0) return false;
@@ -5696,14 +5704,13 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <summary>
-    /// Whether the empty lobe tip is already in an acceptable pose: one framework direction = opposite (−dir); two or more = ⊥ each (VSEPR plane normal family).
-    /// <paramref name="occupiedLobeAxesMustSeparateFrom"/> (optional): σ/π or lone axes that still occupy space but may be omitted from <paramref name="electronFrameworkUnitDirs"/> (e.g. co-bond merge, or repulsion targets vs current tips). Rejects tips within <paramref name="minUndirectedSeparationDegFromOccupied"/> of any such axis using undirected line separation min(θ, 180°−θ).
+    /// Whether the empty lobe tip is already in an acceptable pose: one framework direction = ⊥ that axis (undirected: <see cref="AcuteAngleBetweenDirections"/> ≈ 90°), not collinear with the remaining σ/π axis; two or more = ⊥ each (VSEPR plane normal family).
+    /// <paramref name="occupiedLobeAxesMustSeparateFrom"/> (optional): σ/π or lone axes that still occupy space but may be omitted from <paramref name="electronFrameworkUnitDirs"/> (e.g. co-bond merge, or repulsion targets vs current tips). Rejects tips within <paramref name="minUndirectedSeparationDegFromOccupied"/> of any such axis using <see cref="AcuteAngleBetweenDirections"/>.
     /// If <paramref name="electronFrameworkUnitDirs"/> is null or empty, only the separation test applies (returns true when there is nothing to separate from, or when all axes are clear).
     /// </summary>
     static bool EmptyTipAlreadyIdealVsElectronFramework(
         Vector3 unitTip,
         IReadOnlyList<Vector3> electronFrameworkUnitDirs,
-        float oppositeMinDot = -0.92f,
         float perpToleranceDeg = 14f,
         IReadOnlyList<Vector3> occupiedLobeAxesMustSeparateFrom = null,
         float minUndirectedSeparationDegFromOccupied = 36f)
@@ -5720,8 +5727,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             foreach (var occ in occupiedLobeAxesMustSeparateFrom)
             {
                 if (occ.sqrMagnitude < 1e-10f) continue;
-                float ang = Vector3.Angle(unitTip, occ.normalized);
-                if (Mathf.Min(ang, 180f - ang) < minUndirectedSeparationDegFromOccupied)
+                if (AcuteAngleBetweenDirections(unitTip, occ.normalized) < minUndirectedSeparationDegFromOccupied)
                     return false;
             }
         }
@@ -5732,7 +5738,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         {
             var f = electronFrameworkUnitDirs[0];
             if (f.sqrMagnitude < 1e-10f) return false;
-            return Vector3.Dot(unitTip, f.normalized) <= oppositeMinDot;
+            float acuteToBondAxis = AcuteAngleBetweenDirections(unitTip, f.normalized);
+            return Mathf.Abs(acuteToBondAxis - 90f) <= perpToleranceDeg;
         }
         return IsPerpendicularToDirections(unitTip, electronFrameworkUnitDirs, perpToleranceDeg);
     }
@@ -7131,21 +7138,29 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return before - occ.Count;
     }
 
-    void CollectRedistributionGuideGroupMoversExcludingGuide(ElectronOrbitalFunction guide, List<ElectronOrbitalFunction> dst)
+    /// <param name="redistributionOperationBond">When set (e.g. σ/π formation), orbitals in <see cref="CovalentBond.OrbitalBeingFadedForCharge"/> are skipped — that lobe is removed after bonding and must not be a VSEPR mover.</param>
+    void CollectRedistributionGuideGroupMoversExcludingGuide(ElectronOrbitalFunction guide, List<ElectronOrbitalFunction> dst, CovalentBond redistributionOperationBond = null)
     {
         dst.Clear();
         if (guide == null) return;
+        ElectronOrbitalFunction fadeOut = redistributionOperationBond != null ? redistributionOperationBond.OrbitalBeingFadedForCharge : null;
         var seen = new HashSet<ElectronOrbitalFunction>();
         foreach (var b in covalentBonds)
         {
             if (b == null || b.Orbital == null) continue;
             if (b.AtomA != this && b.AtomB != this) continue;
             if (b.Orbital == guide) continue;
+            if (fadeOut != null && b.Orbital == fadeOut) continue;
+            // Forming-bond host with 0e: not a persistent VSEPR domain (electrons merged into the bond object; lobe is not a separate empty to place).
+            if (redistributionOperationBond != null && b == redistributionOperationBond && b.Orbital.ElectronCount == 0)
+                continue;
             if (seen.Add(b.Orbital)) dst.Add(b.Orbital);
         }
         foreach (var o in bondedOrbitals)
         {
-            if (o == null || o == guide || !seen.Add(o)) continue;
+            if (o == null || o == guide) continue;
+            if (fadeOut != null && o == fadeOut) continue;
+            if (!seen.Add(o)) continue;
             dst.Add(o);
         }
     }
@@ -7272,7 +7287,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         var movers = new List<ElectronOrbitalFunction>();
-        CollectRedistributionGuideGroupMoversExcludingGuide(guide, movers);
+        CollectRedistributionGuideGroupMoversExcludingGuide(guide, movers, redistributionOperationBond);
         if (movers.Count == 0)
         {
             LogGuideGroupTrace("TryBuild FAIL reason=movers_empty source=" + source + " guideId=" + guide.GetInstanceID());

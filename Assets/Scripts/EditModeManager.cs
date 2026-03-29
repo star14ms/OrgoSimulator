@@ -987,7 +987,8 @@ public class EditModeManager : MonoBehaviour
 
                 FormSigmaBondInstant(atom, hAtom1, carbonOrb1, hOrb1, redistributeAtomA: false, redistributeAtomB: false);
                 FormSigmaBondInstant(atom, hAtom2, carbonOrb2, hOrb2, redistributeAtomA: false, redistributeAtomB: false);
-                atom.RedistributeOrbitals();
+                if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+                    atom.RedistributeOrbitals();
                 if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && atom.AtomicNumber > 1)
                     atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
             }
@@ -1030,7 +1031,8 @@ public class EditModeManager : MonoBehaviour
                 }
 
                 FormSigmaBondInstant(atom, hAtom, carbonOrb, hOrb, redistributeAtomA: false, redistributeAtomB: false);
-                atom.RedistributeOrbitals();
+                if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+                    atom.RedistributeOrbitals();
                 if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && atom.AtomicNumber > 1)
                     atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
             }
@@ -1064,11 +1066,12 @@ public class EditModeManager : MonoBehaviour
 
         float bondLen = GetBondLength();
         HashSet<AtomFunction> pinAddH = TryBuildSigmaRelaxPinForHeavyCenter(atom);
-        FormSigmaBondInstant(atom, hAtom, orb, hOrb, pinSigmaRelaxForAtomA: pinAddH, pinSigmaRelaxForAtomB: pinAddH);
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            FormSigmaBondInstant(atom, hAtom, orb, hOrb, redistributeAtomA: false, redistributeAtomB: false, pinSigmaRelaxForAtomA: pinAddH, pinSigmaRelaxForAtomB: pinAddH);
+        else
+            FormSigmaBondInstant(atom, hAtom, orb, hOrb, pinSigmaRelaxForAtomA: pinAddH, pinSigmaRelaxForAtomB: pinAddH);
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
         {
-            // FormSigmaBondInstant already called RedistributeOrbitals with correct VSEPR.
-            // A second call here recomputes with shifted axis state and displaces lone pairs.
             if (atom.AtomicNumber > 1)
                 atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLen);
         }
@@ -1132,13 +1135,11 @@ public class EditModeManager : MonoBehaviour
                 break;
             }
 
-            FormSigmaBondInstant(atom, hAtom, orb, hOrb, pinSigmaRelaxForAtomA: pinSigmaRelaxNeighbors, pinSigmaRelaxForAtomB: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-            {
-                // FormSigmaBondInstant already called RedistributeOrbitals with correct VSEPR.
-                // A second call here recomputes with shifted axis state and displaces lone pairs.
-            }
+                FormSigmaBondInstant(atom, hAtom, orb, hOrb, redistributeAtomA: false, redistributeAtomB: false, pinSigmaRelaxForAtomA: pinSigmaRelaxNeighbors, pinSigmaRelaxForAtomB: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
             else
+                FormSigmaBondInstant(atom, hAtom, orb, hOrb, pinSigmaRelaxForAtomA: pinSigmaRelaxNeighbors, pinSigmaRelaxForAtomB: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
+            if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
                 var bondAngle = atom.GetPrimaryBondDirectionAngle();
                 atom.RedistributeOrbitals(piBondAngleOverride: bondAngle, pinAtomsForSigmaRelax: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
