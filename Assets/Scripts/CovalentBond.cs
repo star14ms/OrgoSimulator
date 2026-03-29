@@ -803,13 +803,19 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <param name="userDragBondCylinderBreak">When true (bond broken by dragging the bond orbital), both bonding electrons stay on the dragged atom's orbital.</param>
-    /// <param name="instantRedistributionForDestroyPartner">Unused; kept for call-site compatibility. Bond-break redistribution and σ-relax were removed.</param>
+    /// <param name="instantRedistributionForDestroyPartner">When true, skip post-break <see cref="AtomFunction.RedistributeOrbitals"/> so callers can keep nuclear/orbital framing (e.g. edit-mode replace-H / destroy-bridge before attach). Default false runs VSEPR redistribution after ex-bond lobes are placed.</param>
     public void BreakBond(AtomFunction returnOrbitalTo, bool userDragBondCylinderBreak = false, bool instantRedistributionForDestroyPartner = false)
     {
         if (orbital == null) return;
 
         // Bond-line pose for orbitals (must capture before UnregisterBond — GetOrbitalTargetWorldState uses bond topology).
         var (bondOrbitalWorldPos, bondOrbitalWorldRot) = GetOrbitalTargetWorldState();
+
+        int edgesBetweenPartners = atomA != null && atomB != null ? atomA.GetBondsTo(atomB) : 0;
+        int sigmaBeforeA = atomA != null ? atomA.GetDistinctSigmaNeighborCount() : -1;
+        int sigmaBeforeB = atomB != null ? atomB.GetDistinctSigmaNeighborCount() : -1;
+        bool sigmaCleavageBetweenPartners = edgesBetweenPartners <= 1;
+        bool relaxCoplanarSigmaToTetrahedralForBreak = !IsSigmaBondLine();
 
         atomA?.UnregisterBond(this);
         atomB?.UnregisterBond(this);
@@ -899,16 +905,65 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomA?.SetInteractionBlocked(false);
         atomB?.SetInteractionBlocked(false);
 
-        atomA?.RefreshElectronSyncOnBondedOrbitals();
-        atomB?.RefreshElectronSyncOnBondedOrbitals();
-        var atomsForSigmaLine = new List<AtomFunction>();
-        if (atomA != null) atomsForSigmaLine.Add(atomA);
-        if (atomB != null) atomsForSigmaLine.Add(atomB);
-        AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(atomsForSigmaLine);
-        AtomFunction.SetupGlobalIgnoreCollisions();
+        void FinishBreakBondTail()
+        {
+            atomA?.RefreshElectronSyncOnBondedOrbitals();
+            atomB?.RefreshElectronSyncOnBondedOrbitals();
+            var atomsForSigmaLine = new List<AtomFunction>();
+            if (atomA != null) atomsForSigmaLine.Add(atomA);
+            if (atomB != null) atomsForSigmaLine.Add(atomB);
+            AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(atomsForSigmaLine);
+            AtomFunction.SetupGlobalIgnoreCollisions();
 
-        orbital = null;
-        Destroy(gameObject);
+            orbital = null;
+            Destroy(gameObject);
+        }
+
+        if (!instantRedistributionForDestroyPartner && atomA != null && atomB != null)
+        {
+            Vector3 refWorldA = (atomB.transform.position - atomA.transform.position).normalized;
+            if (refWorldA.sqrMagnitude < 1e-8f) refWorldA = Vector3.right;
+            Vector3 refWorldB = (atomA.transform.position - atomB.transform.position).normalized;
+
+            HashSet<AtomFunction> pinSigmaRelax = null;
+            if (!sigmaCleavageBetweenPartners)
+                pinSigmaRelax = new HashSet<AtomFunction> { atomA, atomB };
+
+            ElectronOrbitalFunction guideA = returnOrbitalTo == atomA ? orbital : newOrbital;
+            ElectronOrbitalFunction guideB = returnOrbitalTo == atomB ? orbital : newOrbital;
+
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
+                atomA.StartCoroutine(atomA.CoLerpBondBreakRedistribution(
+                    atomB,
+                    refWorldA,
+                    refWorldB,
+                    guideA,
+                    guideB,
+                    sigmaBeforeA,
+                    sigmaBeforeB,
+                    sigmaCleavageBetweenPartners,
+                    FinishBreakBondTail));
+                return;
+            }
+
+            atomA.RedistributeOrbitals(
+                refBondWorldDirection: refWorldA,
+                relaxCoplanarSigmaToTetrahedral: relaxCoplanarSigmaToTetrahedralForBreak,
+                pinAtomsForSigmaRelax: pinSigmaRelax,
+                bondBreakGuideLoneOrbital: guideA,
+                sigmaNeighborCountBeforeHint: sigmaBeforeA,
+                bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners);
+            atomB.RedistributeOrbitals(
+                refBondWorldDirection: refWorldB,
+                relaxCoplanarSigmaToTetrahedral: relaxCoplanarSigmaToTetrahedralForBreak,
+                pinAtomsForSigmaRelax: pinSigmaRelax,
+                bondBreakGuideLoneOrbital: guideB,
+                sigmaNeighborCountBeforeHint: sigmaBeforeB,
+                bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners);
+        }
+
+        FinishBreakBondTail();
     }
 
     /// <summary>Legacy flag (bond-break σ-relax path removed). Some <see cref="AtomFunction"/> helpers still gate logs on this.</summary>

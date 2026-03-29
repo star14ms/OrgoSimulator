@@ -151,6 +151,25 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             " parent=" + parentName);
     }
 
+    /// <summary>σ formation step 2: redistribute targets may name orbitals parented on the nucleus or on an incident <see cref="CovalentBond"/> (e.g. target lobe reparented to the forming bond before step 2 ends).</summary>
+    static bool OrbitalBelongsToAtomForSigmaFormationRedist(ElectronOrbitalFunction orb, AtomFunction nucleus)
+    {
+        if (orb == null || nucleus == null) return false;
+        if (orb.transform.parent == nucleus.transform) return true;
+        return orb.Bond is CovalentBond cb && cb != null && (cb.AtomA == nucleus || cb.AtomB == nucleus);
+    }
+
+    static bool SigmaFormationRedistTargetHasSignificantDelta(
+        (ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot) entry,
+        AtomFunction nucleus,
+        float posThreshold,
+        float rotThreshold)
+    {
+        if (!OrbitalBelongsToAtomForSigmaFormationRedist(entry.orb, nucleus)) return false;
+        return Vector3.Distance(entry.orb.transform.localPosition, entry.pos) > posThreshold
+            || Quaternion.Angle(entry.orb.transform.localRotation, entry.rot) > rotThreshold;
+    }
+
     static void LogSigmaFormationStep2Precalc(
         AtomFunction sourceAtom,
         AtomFunction targetAtom,
@@ -1391,13 +1410,12 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
 
-        // σ formation: no tet σ-relax (moving σ-neighbor nuclei), no Newman stagger on substituents — only bonding-orbital motion and redist targets for the two forming lobes.
+        // σ formation: no tet σ-relax (moving σ-neighbor nuclei), no Newman stagger on substituents. Use full GetRedistributeTargets lists (guide σ excluded by layout); do not filter to source/target bonding orbitals — those are often omitted as fixed guide or not nucleus-parented (e.g. target lobe already under CovalentBond).
         var sigmaRelaxList = new List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)>();
         const bool hasNewmanStagger = false;
 
         List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistA;
         List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistB;
-        bool IsBondFormationOrbital(ElectronOrbitalFunction o) => o != null && (o == sourceOrbital || o == targetOrbital);
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && SkipSigmaFormationStep2GeometryMoves3D)
         {
             redistA = new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
@@ -1407,8 +1425,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         {
             redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom, sigmaNeighborCountBefore: sigmaBeforeSource, redistributionOperationBond: bond);
             redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom, sigmaNeighborCountBefore: sigmaBeforeTarget, redistributionOperationBond: bond);
-            redistA = redistA.Where(e => IsBondFormationOrbital(e.orb)).ToList();
-            redistB = redistB.Where(e => IsBondFormationOrbital(e.orb)).ToList();
         }
 
         // σ-relax preview uses endWorld for GetRedistributeTargets, but step 2 starts with nuclei at startWorld.
@@ -1440,17 +1456,23 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         bool hasRedistributeMovement = false;
         foreach (var entry in redistA)
         {
-            if (entry.orb != null && entry.orb.transform.parent == sourceAtom.transform
-                && (Vector3.Distance(entry.orb.transform.localPosition, entry.pos) > posThreshold || Quaternion.Angle(entry.orb.transform.localRotation, entry.rot) > rotThreshold))
-            { hasRedistributeMovement = true; break; }
+            if (SigmaFormationRedistTargetHasSignificantDelta(entry, sourceAtom, posThreshold, rotThreshold))
+            {
+                hasRedistributeMovement = true;
+                break;
+            }
         }
         if (!hasRedistributeMovement)
+        {
             foreach (var entry in redistB)
             {
-                if (entry.orb != null && entry.orb.transform.parent == targetAtom.transform
-                    && (Vector3.Distance(entry.orb.transform.localPosition, entry.pos) > posThreshold || Quaternion.Angle(entry.orb.transform.localRotation, entry.rot) > rotThreshold))
-                { hasRedistributeMovement = true; break; }
+                if (SigmaFormationRedistTargetHasSignificantDelta(entry, targetAtom, posThreshold, rotThreshold))
+                {
+                    hasRedistributeMovement = true;
+                    break;
+                }
             }
+        }
         bool needsRedistribute = hasRedistributeMovement;
 
         // Any tet σ-relax move from TryCompute (≥1e-4) should run step 2 — do not compare to posThreshold or tiny moves skip animation while targets assumed preview geometry.
@@ -1599,7 +1621,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             for (int i = 0; i < redistA.Count; i++)
             {
                 var entry = redistA[i];
-                if (entry.orb != null && entry.orb.transform.parent == sourceAtom.transform)
+                if (entry.orb != null && OrbitalBelongsToAtomForSigmaFormationRedist(entry.orb, sourceAtom))
                 {
                     var (sp, sr) = redistAStarts[i];
                     entry.orb.transform.localPosition = Vector3.Lerp(sp, entry.pos, s);
@@ -1609,7 +1631,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             for (int i = 0; i < redistB.Count; i++)
             {
                 var entry = redistB[i];
-                if (entry.orb != null && entry.orb.transform.parent == targetAtom.transform)
+                if (entry.orb != null && OrbitalBelongsToAtomForSigmaFormationRedist(entry.orb, targetAtom))
                 {
                     var (sp, sr) = redistBStarts[i];
                     entry.orb.transform.localPosition = Vector3.Lerp(sp, entry.pos, s);
@@ -2043,15 +2065,13 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         bool hasRedistMovement = false;
         foreach (var entry in redistA)
         {
-            if (entry.orb != null && entry.orb.transform.parent == sourceAtom.transform
-                && (Vector3.Distance(entry.orb.transform.localPosition, entry.pos) > piPosThreshold || Quaternion.Angle(entry.orb.transform.localRotation, entry.rot) > piRotThreshold))
+            if (SigmaFormationRedistTargetHasSignificantDelta(entry, sourceAtom, piPosThreshold, piRotThreshold))
             { hasRedistMovement = true; break; }
         }
         if (!hasRedistMovement)
             foreach (var entry in redistB)
             {
-                if (entry.orb != null && entry.orb.transform.parent == targetAtom.transform
-                    && (Vector3.Distance(entry.orb.transform.localPosition, entry.pos) > piPosThreshold || Quaternion.Angle(entry.orb.transform.localRotation, entry.rot) > piRotThreshold))
+                if (SigmaFormationRedistTargetHasSignificantDelta(entry, targetAtom, piPosThreshold, piRotThreshold))
                 { hasRedistMovement = true; break; }
             }
         if (!hasRedistMovement && neighborTrigonalMoves.Count > 0)
@@ -2079,7 +2099,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             for (int i = 0; i < redistA.Count; i++)
             {
                 var entry = redistA[i];
-                if (entry.orb != null && entry.orb.transform.parent == sourceAtom.transform)
+                if (entry.orb != null && OrbitalBelongsToAtomForSigmaFormationRedist(entry.orb, sourceAtom))
                 {
                     var (sp, sr) = redistAStarts[i];
                     entry.orb.transform.localPosition = Vector3.Lerp(sp, entry.pos, s);
@@ -2089,7 +2109,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             for (int i = 0; i < redistB.Count; i++)
             {
                 var entry = redistB[i];
-                if (entry.orb != null && entry.orb.transform.parent == targetAtom.transform)
+                if (entry.orb != null && OrbitalBelongsToAtomForSigmaFormationRedist(entry.orb, targetAtom))
                 {
                     var (sp, sr) = redistBStarts[i];
                     entry.orb.transform.localPosition = Vector3.Lerp(sp, entry.pos, s);
@@ -2130,7 +2150,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         // Post-animation RedistributeOrbitals3D recomputes with post-H-snap state and displaces lone pairs
         // (e.g., CH4 H-auto: internuclear axes shift after SnapHydrogenSigmaNeighborsToBondOrbitalAxes,
         // causing the recomputation to produce non-tetrahedral geometry).
-        // Bond-break no longer runs post-break RedistributeOrbitals (see CovalentBond.BreakBond).
+        // Instant bond break runs RedistributeOrbitals from CovalentBond.BreakBond; this coroutine does not call TryRedistributeOrbitalsAfterBondChange.
         // TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
     }
 
