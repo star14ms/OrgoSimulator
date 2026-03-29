@@ -23,6 +23,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     readonly List<ElectronOrbitalFunction> bondedOrbitals = new List<ElectronOrbitalFunction>();
     readonly List<CovalentBond> covalentBonds = new List<CovalentBond>();
 
+    /// <summary>
+    /// Guide-group layout lists the guide orbital in targets at VSEPR vertex 0; it is excluded here from joint rigid rotation so the guide bond’s partner fragment is not pivoted. Set in <see cref="TryBuildRedistributeTargets3DGuideGroupPrefix"/>; cleared at <see cref="GetRedistributeTargets3D"/> entry and in <see cref="ApplyRedistributeTargets"/> finally.
+    /// </summary>
+    HashSet<ElectronOrbitalFunction> orbitalsExcludedFromJointRigidInApplyRedistributeTargets;
+
     bool isBeingHeld;
     Vector3 dragOffset;
     Vector3 atomDragPlanePoint;
@@ -115,6 +120,21 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// Bond-parented σ targets after <see cref="ApplyRedistributeTargets"/>: pivot-at-caller rigid motion + <see cref="CovalentBond.ApplySigmaOrbitalTipFromRedistribution"/>. Default on for triage; set false for quiet runs.
     /// </summary>
     public static bool DebugLogRedistribute3DApplyBondParented = true;
+
+    /// <summary>
+    /// Per-tip alignment vs redistribute tuple (joint input, σ pass before/after bond refresh, optional post-ApplySigma). Default on for triage; set false for quiet runs.
+    /// </summary>
+    public static bool DebugLogRedistribute3DTipGapTrace = true;
+
+    /// <summary>
+    /// σ-substituent rigid-follow during redistribution lerp: start, quarter progress, commit s=1, after Apply. Default on for triage; set false for quiet runs.
+    /// </summary>
+    public static bool DebugLogJointFragRedistMilestones = true;
+
+    /// <summary>
+    /// Log every animation frame for joint fragment motion; default off due to console flood risk.
+    /// </summary>
+    public static bool DebugLogJointFragRedistEveryFrame = false;
 
     /// <summary>
     /// Same σ + lone tip directions in world space as <see cref="LogTetrahedralElectronDomainAngleDiagnostic"/> (visual row).
@@ -1125,17 +1145,21 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public int GetDistinctSigmaNeighborCount() => GetDistinctSigmaNeighborAtoms().Count;
 
     /// <summary>
-    /// Repositions σ-bonded hydrogens along each O–H / C–H σ **hybrid** direction at <paramref name="distance"/>.
-    /// After <see cref="RedistributeOrbitals3D"/> the shared σ lobe +X tracks the VSEPR vertex; using the old internuclear vector
-    /// here kept whichever H was slightly off-axis wrong (often visibly asymmetric for H₂O: one H good, one not).
-    /// Moving H changes the bond line rotation; <c>orbitalRedistributionWorldDelta</c> on
-    /// <see cref="CovalentBond"/> was built for the previous frame, so a <b>second</b> pass using
-    /// <see cref="CovalentBond.GetOrbitalTargetWorldState"/> corrupts hybrid direction (CH₄ H-auto looked non-tetrahedral). One snap
-    /// pass, then <see cref="RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute"/> recomposes δ from current axes.
+    /// Repositions σ-bonded hydrogens along each O–H / C–H σ **hybrid** direction.
+    /// Each H uses its **current** internuclear leg length to this center so mixed substituents (e.g. C–O vs C–H) are not all forced to the same distance.
+    /// <paramref name="fallbackBondLength"/> applies only when the leg is degenerate (&lt;1e-4).
+    /// Calls <see cref="RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute"/> first so σ locks match post-<see cref="RedistributeOrbitals"/> lone layout before <see cref="CovalentBond.GetOrbitalTargetWorldState"/> reads hybrid tips (avoids σHMoved=0 when H and stale tip stay co-linear).
+    /// After moving each H, <see cref="CovalentBond.ApplySigmaOrbitalTipFromRedistribution"/> locks shared σ +X to the actual C→H axis so <see cref="CovalentBond.GetOrbitalTargetWorldState"/> matches nuclei after <see cref="CovalentBond.SnapOrbitalToBondPosition"/>.
+    /// Then <see cref="RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute"/> runs again; σ→H bonds are re-aligned to internuclear again so TryMatch cannot leave the C–H lobe off the bond line.
     /// </summary>
-    public void SnapHydrogenSigmaNeighborsToBondOrbitalAxes(float distance)
+    public void SnapHydrogenSigmaNeighborsToBondOrbitalAxes(float fallbackBondLength)
     {
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || distance < 1e-4f) return;
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry) return;
+
+        // Recompute σ hybrid locks from current lone/bond layout before reading tips; otherwise GetOrbitalTargetWorldState can stay
+        // aligned with stale H positions (sigmaHMoved=0) while VSEPR directions from RedistributeOrbitals already moved lobes.
+        // Z=1: Refresh early-outs (maxSlots<=1); no spurious work when this center is hydrogen.
+        RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(null);
 
         int sigmaHVisited = 0;
         int sigmaHMoved = 0;
@@ -1171,8 +1195,15 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             else
                 continue;
 
+            float legLen = Vector3.Distance(transform.position, other.transform.position);
+            if (legLen < 1e-4f)
+            {
+                if (fallbackBondLength < 1e-4f) continue;
+                legLen = fallbackBondLength;
+            }
+
             Vector3 before = other.transform.position;
-            other.transform.position = transform.position + axis * distance;
+            other.transform.position = transform.position + axis * legLen;
             float legDelta = Vector3.Distance(before, other.transform.position);
             if (legDelta > 1e-6f)
             {
@@ -1184,15 +1215,28 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     $"SnapHydrogenΣAxes center={FormatAtomBrief(this)} H={FormatAtomBrief(other)} Δ={legDelta:F5}");
             b.UpdateBondTransformToCurrentAtoms();
             b.SnapOrbitalToBondPosition();
+            Vector3 alongCh = other.transform.position - transform.position;
+            if (alongCh.sqrMagnitude > 1e-10f)
+                b.ApplySigmaOrbitalTipFromRedistribution(this, alongCh.normalized);
         }
 
         if (DebugLogHydrogenSigmaSnap && sigmaHVisited > 0)
             Debug.Log(
                 "[H-σ-snap] center=" + name + "(Z=" + atomicNumber + ") σH_visited=" + sigmaHVisited + " reseated=" + sigmaHMoved +
-                " maxWorldΔ=" + sigmaHMaxDelta.ToString("F5") + " (all σ-H placed on hybrid tip at bond length; not GetRedistributeTargets)");
+                " maxWorldΔ=" + sigmaHMaxDelta.ToString("F5") + " per-bond leg hybrid tip");
 
-        if (AtomicNumber > 1)
-            RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(null);
+        RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(null);
+
+        foreach (var b in bondsSnapshot)
+        {
+            if (b?.Orbital == null || !b.IsSigmaBondLine()) continue;
+            var oth = b.AtomA == this ? b.AtomB : b.AtomA;
+            if (oth == null || oth.AtomicNumber != 1) continue;
+            Vector3 g = oth.transform.position - transform.position;
+            if (g.sqrMagnitude < 1e-10f) continue;
+            b.UpdateBondTransformToCurrentAtoms();
+            b.ApplySigmaOrbitalTipFromRedistribution(this, g.normalized);
+        }
 
         RefreshCharge();
         foreach (var b in bondsSnapshot)
@@ -5414,7 +5458,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             bondBreakIsSigmaCleavageBetweenFormerPartners,
             redistributionOperationBond);
         List<(string label, string source, Vector3 dir)> preAngleDiag = null;
-        if (DebugLogRedistributeOrbitals3DBondAngles && AtomicNumber > 1)
+        if (DebugLogRedistributeOrbitals3DBondAngles)
             preAngleDiag = CollectRedistribute3DLocalDomainDirsForBondAngleDiag(bondBreakGuideLoneOrbital);
 
         ApplyRedistributeTargets(targets);
@@ -5439,7 +5483,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             }
         }
 
-        if (DebugLogRedistributeOrbitals3DBondAngles && AtomicNumber > 1)
+        if (DebugLogRedistributeOrbitals3DBondAngles)
         {
             var postAngleDiag = CollectRedistribute3DLocalDomainDirsForBondAngleDiag(bondBreakGuideLoneOrbital);
             LogRedistribute3DBondAngleDiagnosticsFull(preAngleDiag, postAngleDiag, targets);
@@ -5507,6 +5551,29 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         foreach (var e in targetsPartner)
             startsPartner.Add(e.orb != null ? (e.orb.transform.localPosition, e.orb.transform.localRotation) : (Vector3.zero, Quaternion.identity));
 
+        var fragWorldThis = new Dictionary<AtomFunction, Vector3>();
+        var fragWorldPartner = new Dictionary<AtomFunction, Vector3>();
+        Quaternion deltaJointThis = Quaternion.identity;
+        Quaternion deltaJointPartner = Quaternion.identity;
+        Vector3 pivotStartThis = transform.position;
+        Vector3 pivotStartPartner = partnerAtom.transform.position;
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            SnapshotJointFragmentWorldPositionsForTargets(targetsThis, fragWorldThis);
+            partnerAtom.SnapshotJointFragmentWorldPositionsForTargets(targetsPartner, fragWorldPartner);
+            deltaJointThis = ComputeJointRedistributeRotationWorldFromTargetsAndStarts(targetsThis, startsThis);
+            deltaJointPartner = partnerAtom.ComputeJointRedistributeRotationWorldFromTargetsAndStarts(targetsPartner, startsPartner);
+        }
+
+        string partnerSummaryThis = BuildJointFragSigmaPartnerIdSummary(this, targetsThis);
+        string partnerSummaryPartner = BuildJointFragSigmaPartnerIdSummary(partnerAtom, targetsPartner);
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            LogJointFragRedistLine("start", "breakLerpThis", fragWorldThis, pivotStartThis, transform.position, -1f, deltaJointThis, partnerSummaryThis);
+            partnerAtom.LogJointFragRedistLine("start", "breakLerpPartner", fragWorldPartner, pivotStartPartner, partnerAtom.transform.position, -1f, deltaJointPartner, partnerSummaryPartner);
+        }
+
+        int lastJointFragProgressBucket = -1;
         float elapsed = 0f;
         while (elapsed < duration)
         {
@@ -5532,16 +5599,84 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 e.orb.transform.localRotation = Quaternion.Slerp(sr, e.rot, rotT);
             }
 
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
+                ApplyJointRedistributeFragmentMotionFraction(
+                    targetsThis, deltaJointThis, s, pivotStartThis, transform.position, fragWorldThis);
+                partnerAtom.ApplyJointRedistributeFragmentMotionFraction(
+                    targetsPartner, deltaJointPartner, s, pivotStartPartner, partnerAtom.transform.position, fragWorldPartner);
+            }
+
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
+                if (DebugLogJointFragRedistEveryFrame)
+                {
+                    LogJointFragRedistLine("frame", "breakLerpThis", fragWorldThis, pivotStartThis, transform.position, s, deltaJointThis, partnerSummaryThis);
+                    partnerAtom.LogJointFragRedistLine("frame", "breakLerpPartner", fragWorldPartner, pivotStartPartner, partnerAtom.transform.position, s, deltaJointPartner, partnerSummaryPartner);
+                }
+                else if (DebugLogJointFragRedistMilestones)
+                {
+                    int bucket = Mathf.Clamp(Mathf.FloorToInt(s * 4f), 0, 3);
+                    if (bucket != lastJointFragProgressBucket)
+                    {
+                        lastJointFragProgressBucket = bucket;
+                        LogJointFragRedistLine("progress", "breakLerpThis", fragWorldThis, pivotStartThis, transform.position, s, deltaJointThis, partnerSummaryThis);
+                        partnerAtom.LogJointFragRedistLine("progress", "breakLerpPartner", fragWorldPartner, pivotStartPartner, partnerAtom.transform.position, s, deltaJointPartner, partnerSummaryPartner);
+                    }
+                }
+            }
+
             AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(new HashSet<AtomFunction> { this, partnerAtom });
             yield return null;
         }
 
-        ApplyRedistributeTargets(targetsThis);
-        partnerAtom.ApplyRedistributeTargets(targetsPartner);
+        // for/while exits as soon as elapsed >= duration, so the last iteration used s < 1. Commit s=1 so the last rendered frame matches Apply.
+        {
+            const float sEnd = 1f;
+            const float rotTEnd = 1f;
+            for (int i = 0; i < targetsThis.Count; i++)
+            {
+                var e = targetsThis[i];
+                if (e.orb == null || e.orb.transform.parent != transform) continue;
+                var (sp, sr) = startsThis[i];
+                e.orb.transform.localPosition = Vector3.Lerp(sp, e.pos, sEnd);
+                e.orb.transform.localRotation = Quaternion.Slerp(sr, e.rot, rotTEnd);
+            }
+            for (int i = 0; i < targetsPartner.Count; i++)
+            {
+                var e = targetsPartner[i];
+                if (e.orb == null || e.orb.transform.parent != partnerAtom.transform) continue;
+                var (sp, sr) = startsPartner[i];
+                e.orb.transform.localPosition = Vector3.Lerp(sp, e.pos, sEnd);
+                e.orb.transform.localRotation = Quaternion.Slerp(sr, e.rot, rotTEnd);
+            }
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
+                ApplyJointRedistributeFragmentMotionFraction(
+                    targetsThis, deltaJointThis, 1f, pivotStartThis, transform.position, fragWorldThis);
+                partnerAtom.ApplyJointRedistributeFragmentMotionFraction(
+                    targetsPartner, deltaJointPartner, 1f, pivotStartPartner, partnerAtom.transform.position, fragWorldPartner);
+            }
+            AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(new HashSet<AtomFunction> { this, partnerAtom });
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
+                LogJointFragRedistLine("commit", "breakLerpThis", fragWorldThis, pivotStartThis, transform.position, 1f, deltaJointThis, partnerSummaryThis);
+                partnerAtom.LogJointFragRedistLine("commit", "breakLerpPartner", fragWorldPartner, pivotStartPartner, partnerAtom.transform.position, 1f, deltaJointPartner, partnerSummaryPartner);
+            }
+        }
+
+        ApplyRedistributeTargets(targetsThis, skipJointRigidFragmentMotion: OrbitalAngleUtility.UseFull3DOrbitalGeometry);
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            LogJointFragRedistLine("afterApply", "breakLerpThis", fragWorldThis, pivotStartThis, transform.position, 1f, deltaJointThis, partnerSummaryThis);
+        partnerAtom.ApplyRedistributeTargets(targetsPartner, skipJointRigidFragmentMotion: OrbitalAngleUtility.UseFull3DOrbitalGeometry);
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            partnerAtom.LogJointFragRedistLine("afterApply", "breakLerpPartner", fragWorldPartner, pivotStartPartner, partnerAtom.transform.position, 1f, deltaJointPartner, partnerSummaryPartner);
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
         {
             RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(partnerAtom);
             partnerAtom.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(this);
+            LogJointFragRedistLine("afterHybrid", "breakLerpThis", fragWorldThis, pivotStartThis, transform.position, 1f, deltaJointThis, partnerSummaryThis);
+            partnerAtom.LogJointFragRedistLine("afterHybrid", "breakLerpPartner", fragWorldPartner, pivotStartPartner, partnerAtom.transform.position, 1f, deltaJointPartner, partnerSummaryPartner);
         }
         onComplete?.Invoke();
     }
@@ -7099,7 +7234,151 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         list.Add(unitDir);
     }
 
-    /// <summary>σ/π hosting orbitals on the same neighbor pair as the guide bond still occupy angular space after co-bond merge removed them from occ.</summary>
+    /// <summary>Assigns three movers to three tripod bases: <c>perm[i]</c> = base index for mover <c>i</c>.</summary>
+    static readonly int[][] TetraAzimuthPermutations3 =
+    {
+        new[] { 0, 1, 2 }, new[] { 0, 2, 1 }, new[] { 1, 0, 2 },
+        new[] { 1, 2, 0 }, new[] { 2, 0, 1 }, new[] { 2, 1, 0 }
+    };
+
+    /// <summary>
+    /// Minimum summed <see cref="Vector3.Angle"/> with optimal assignment of three mover tips to three tripod bases rotated by <paramref name="thetaDeg"/> about <paramref name="axisNorm"/>.
+    /// </summary>
+    static float TetraAzimuthMinCostForThetaDeg(
+        float thetaDeg,
+        Vector3 axisNorm,
+        Vector3 b0,
+        Vector3 b1,
+        Vector3 b2,
+        Vector3 r0,
+        Vector3 r1,
+        Vector3 r2,
+        out int bestPermIndex)
+    {
+        Quaternion R = Quaternion.AngleAxis(thetaDeg, axisNorm);
+        var rb0 = (R * b0).normalized;
+        var rb1 = (R * b1).normalized;
+        var rb2 = (R * b2).normalized;
+        bestPermIndex = 0;
+        float best = float.MaxValue;
+        Vector3[] rb = { rb0, rb1, rb2 };
+        for (int p = 0; p < TetraAzimuthPermutations3.Length; p++)
+        {
+            var perm = TetraAzimuthPermutations3[p];
+            float c = Vector3.Angle(rb[perm[0]], r0) + Vector3.Angle(rb[perm[1]], r1) + Vector3.Angle(rb[perm[2]], r2);
+            if (c < best)
+            {
+                best = c;
+                bestPermIndex = p;
+            }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// Tetrahedron vertex 0 fixed along <paramref name="guideAxis"/>; search one azimuth θ (rotation about that axis) minimizing summed angles between tripod vertices 1–3 and the three occupied mover tips in nucleus local — 36 samples × 3! assignments.
+    /// Does not rotate when improvement over θ=0 is within noise (3-fold symmetry ties); among near-equal costs picks smallest θ.
+    /// Mutates <paramref name="alignedIdealTet4"/> indices 1…3 only; length must be 4.
+    /// </summary>
+    void ApplyTetrahedralGuideAzimuthLockAboutVertex0InPlace(Vector3[] alignedIdealTet4, Vector3 guideAxis, List<ElectronOrbitalFunction> occupiedMoversExcludingGuide)
+    {
+        if (alignedIdealTet4 == null || alignedIdealTet4.Length < 4 || occupiedMoversExcludingGuide == null) return;
+        if (occupiedMoversExcludingGuide.Count != 3)
+        {
+            LogGuideGroupTrace("azimuthOpt skip reason=occCountNot3 count=" + occupiedMoversExcludingGuide.Count + " pivotId=" + GetInstanceID());
+            return;
+        }
+
+        Vector3 a = guideAxis.normalized;
+        if (a.sqrMagnitude < 1e-10f) return;
+
+        Vector3 r0 = OrbitalTipDirectionInNucleusLocal(occupiedMoversExcludingGuide[0]);
+        Vector3 r1 = OrbitalTipDirectionInNucleusLocal(occupiedMoversExcludingGuide[1]);
+        Vector3 r2 = OrbitalTipDirectionInNucleusLocal(occupiedMoversExcludingGuide[2]);
+        if (r0.sqrMagnitude < 1e-12f || r1.sqrMagnitude < 1e-12f || r2.sqrMagnitude < 1e-12f)
+        {
+            LogGuideGroupTrace("azimuthOpt skip reason=degenerateTip pivotId=" + GetInstanceID());
+            return;
+        }
+        r0.Normalize();
+        r1.Normalize();
+        r2.Normalize();
+
+        Vector3 b0 = alignedIdealTet4[1];
+        Vector3 b1 = alignedIdealTet4[2];
+        Vector3 b2 = alignedIdealTet4[3];
+        if (b0.sqrMagnitude < 1e-12f || b1.sqrMagnitude < 1e-12f || b2.sqrMagnitude < 1e-12f) return;
+        b0.Normalize();
+        b1.Normalize();
+        b2.Normalize();
+
+        const int gridSteps = 36;
+        const float stepDeg = 360f / gridSteps;
+        // Sum-of-three-angle cost must beat θ=0 baseline by more than this to rotate the tripod; avoids 120°/240° float ties (3-fold symmetry).
+        const float minMeaningfulAzimuthImproveDeg = 0.05f;
+        const float azimuthCostTieBandDeg = 0.02f;
+        float baselineCost = TetraAzimuthMinCostForThetaDeg(0f, a, b0, b1, b2, r0, r1, r2, out int baselinePermIx);
+
+        float bestCost = float.MaxValue;
+        float bestTheta = 0f;
+        int bestPermIndex = 0;
+        for (int s = 0; s < gridSteps; s++)
+        {
+            float th = s * stepDeg;
+            float c = TetraAzimuthMinCostForThetaDeg(th, a, b0, b1, b2, r0, r1, r2, out int pix);
+            bool better = c < bestCost - 1e-6f;
+            bool tieSmallerTheta = Mathf.Abs(c - bestCost) <= 1e-6f && th < bestTheta - 1e-6f;
+            if (better || tieSmallerTheta)
+            {
+                bestCost = c;
+                bestTheta = th;
+                bestPermIndex = pix;
+            }
+        }
+
+        float improveDeg = baselineCost - bestCost;
+        if (improveDeg <= minMeaningfulAzimuthImproveDeg)
+        {
+            LogGuideGroupTrace(
+                "azimuthOpt skip reason=noMeaningfulImprovement baselineCostDeg=" + baselineCost.ToString("F2") + " bestCostDeg=" + bestCost.ToString("F2") +
+                " improveDeg=" + improveDeg.ToString("F4") + " bestThetaWouldBeDeg=" + bestTheta.ToString("F2") + " baselinePermIx=" + baselinePermIx +
+                " bestPermIx=" + bestPermIndex + " pivotId=" + GetInstanceID());
+            return;
+        }
+
+        float canonTheta = float.MaxValue;
+        int canonPerm = bestPermIndex;
+        for (int s = 0; s < gridSteps; s++)
+        {
+            float th = s * stepDeg;
+            float c = TetraAzimuthMinCostForThetaDeg(th, a, b0, b1, b2, r0, r1, r2, out int pix);
+            if (c <= bestCost + azimuthCostTieBandDeg && th < canonTheta - 1e-6f)
+            {
+                canonTheta = th;
+                canonPerm = pix;
+            }
+        }
+
+        if (canonTheta < 360f)
+        {
+            bestTheta = canonTheta;
+            bestPermIndex = canonPerm;
+        }
+
+        bestCost = TetraAzimuthMinCostForThetaDeg(bestTheta, a, b0, b1, b2, r0, r1, r2, out bestPermIndex);
+
+        Quaternion az = Quaternion.AngleAxis(bestTheta, a);
+        for (int vi = 1; vi < 4; vi++)
+        {
+            Vector3 v = az * alignedIdealTet4[vi];
+            alignedIdealTet4[vi] = v.sqrMagnitude > 1e-14f ? v.normalized : alignedIdealTet4[vi];
+        }
+
+        LogGuideGroupTrace(
+            "azimuthOpt applied thetaDeg=" + bestTheta.ToString("F2") + " baselineCostDeg=" + baselineCost.ToString("F2") + " bestCostDeg=" + bestCost.ToString("F2") +
+            " improveDeg=" + (baselineCost - bestCost).ToString("F4") + " permIx=" + bestPermIndex + " pivotId=" + GetInstanceID());
+    }
+
     void CollectGuideGroupCoBondOrbitalTipsNucleusLocal(
         CovalentBond guideBond,
         CovalentBond redistributionOperationBond,
@@ -7170,10 +7449,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     /// <summary>
     /// Guide fixed by <see cref="TryResolveRedistributionGuideGroupForLayout"/>; movers = all other incident bond orbitals + nucleus <see cref="bondedOrbitals"/>.
-    /// Returned <paramref name="outSlots"/> lists movers only (not the guide) so <see cref="ApplyRedistributeTargets"/> does not rotate the guide bond’s fragment or re-aim its σ hybrid.
+    /// When <c>nOcc &gt; 0</c>, <paramref name="outSlots"/> starts with the guide at VSEPR vertex 0 (<see cref="VseprLayout.AlignFirstDirectionTo"/>), then permuted occupied movers; <see cref="orbitalsExcludedFromJointRigidInApplyRedistributeTargets"/> lists the guide so joint rotation skips it (partner atoms stay fixed) while <see cref="ApplyRedistributeTargets"/> still applies its pose and σ hybrid.
     /// Empty guide (tier 6): perpendicular-to-guide (pinned 0e) repulsion via <see cref="TryComputeRepulsionSumElectronDomainLayoutSlots"/> + permutation on non-pinned slots.
     /// Bonding or lone-pair guide (tiers 1–5): same <c>nVseprGroups = 1 + nOcc</c> as σ/π tiers (3–4); only the fixed guide differs (bond orbital vs ex-bond lone pair). <see cref="VseprLayout.GetIdealLocalDirections"/> for guide + <b>occupied</b> movers; 0e nonbond is excluded from ideal vertices and placed ⊥ that framework.
     /// All bond orders (single through quadruple) between the same two centers are <b>one</b> electron-domain group: hosting orbitals on the other edges of <see cref="guideBond"/>’s atom pair are stripped from <c>occ</c> via <see cref="RemoveGuideGroupCoBondOccupiedSamePair"/> and are not written to <paramref name="outSlots"/> (same as the fixed guide—no separate polyhedron vertex or joint-apply row).
+    /// For <c>nVseprGroups==4</c>, after aligning vertex 0 to the guide, <see cref="ApplyTetrahedralGuideAzimuthLockAboutVertex0InPlace"/> searches rotation about that axis (grid × 3! assignment) so tripod vertices 1–3 best match current occupied mover tips in nucleus local (preserves prior tetrahedral azimuth when adding the fourth substituent).
     /// When the guide is a π bond, <see cref="VseprLayout.AlignFirstDirectionTo"/> still uses <b>three</b> coplanar trigonal vertices; vertex 0 is aligned to the <b>internuclear axis</b> (σ-plane domain toward the partner), not <see cref="OrbitalTipDirectionInNucleusLocal"/> of the π lobe (which lies ⊥ that plane).
     /// If co-bond merge removes every occupied mover (<c>nOcc==0</c>, e.g. quadruple bond to a sole neighbor and no other domains), we return only empty nonbond targets (or none)—never fall through to repulsion electron-domains (which would re-aim σ and move the partner).
     /// Caller gates σ-cleavage break framing.
@@ -7393,6 +7673,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         var idealFrame = VseprLayout.GetIdealLocalDirections(nVseprGroups);
         var alignedIdeal = VseprLayout.AlignFirstDirectionTo(idealFrame, guideTip);
+        if (nVseprGroups == 4)
+            ApplyTetrahedralGuideAzimuthLockAboutVertex0InPlace(alignedIdeal, guideTip, occ);
 
         var moversOrdered2 = new List<ElectronOrbitalFunction>(occ);
         var permutationTargetDirs2 = new List<Vector3>(nVseprGroups - 1);
@@ -7420,7 +7702,13 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             perm2 = Enumerable.Range(0, moversOrdered2.Count).ToArray();
         }
 
-        outSlots = new List<(ElectronOrbitalFunction, Vector3, Quaternion)>(moversOrdered2.Count + emp.Count);
+        Vector3 dVertex0 = alignedIdeal[0];
+        if (dVertex0.sqrMagnitude < 1e-14f) dVertex0 = guideTip;
+        else dVertex0.Normalize();
+        var (guidePos, guideRot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(dVertex0, bondRadius, guide.transform.localRotation);
+        outSlots = new List<(ElectronOrbitalFunction, Vector3, Quaternion)>(1 + moversOrdered2.Count + emp.Count);
+        outSlots.Add((guide, guidePos, guideRot));
+        orbitalsExcludedFromJointRigidInApplyRedistributeTargets = new HashSet<ElectronOrbitalFunction> { guide };
         for (int i = 0; i < moversOrdered2.Count; i++)
         {
             int t = perm2[i];
@@ -7452,7 +7740,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         var coBondTipsForOverlap = new List<Vector3>();
         CollectGuideGroupCoBondOrbitalTipsNucleusLocal(guideBond, redistributionOperationBond, guide, coBondTipsForOverlap);
-        var occupiedAxesForEmptyIdeal = new List<Vector3>(moversOrdered2.Count + coBondTipsForOverlap.Count);
+        var occupiedAxesForEmptyIdeal = new List<Vector3>(1 + moversOrdered2.Count + coBondTipsForOverlap.Count);
+        AppendUniqueFrameworkDirection(occupiedAxesForEmptyIdeal, dVertex0);
         foreach (var o in moversOrdered2)
         {
             var t = OrbitalTipDirectionInNucleusLocal(o);
@@ -7487,11 +7776,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             placedEmptyTipsLocal.Add((eRot * Vector3.right).normalized);
         }
 
-        // Do not append the guide to outSlots: it is fixed by definition. Including it made ApplyRedistributeTargets
-        // fold the guide σ into joint rotation and move its partner fragment, changing the internuclear axis.
         LogGetRedistributeTargets3DLine(
             "EXIT_repulsionOnly_guideGroup",
-            "targets=" + outSlots.Count + " source=" + source + " nVseprGroups=" + nVseprGroups + " occMovers=" + moversOrdered2.Count + " empSlots=" + emp.Count + " mergedCoBondOccRemoved=" + mergedCoBondOccRemoved + " guideOrbId=" + guide.GetInstanceID() + " guideFixedNotInTargets=True guideBondId=" + (guideBond != null ? guideBond.GetInstanceID().ToString() : "null") + " opBondId=" + (redistributionOperationBond != null ? redistributionOperationBond.GetInstanceID().ToString() : "null"));
+            "targets=" + outSlots.Count + " source=" + source + " nVseprGroups=" + nVseprGroups + " occMovers=" + moversOrdered2.Count + " empSlots=" + emp.Count + " mergedCoBondOccRemoved=" + mergedCoBondOccRemoved + " guideOrbId=" + guide.GetInstanceID() + " guideVertex0InTargets=True guideExcludedFromJointRigid=True guideBondId=" + (guideBond != null ? guideBond.GetInstanceID().ToString() : "null") + " opBondId=" + (redistributionOperationBond != null ? redistributionOperationBond.GetInstanceID().ToString() : "null"));
         return true;
     }
 
@@ -7652,6 +7939,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> GetRedistributeTargets3D(int piBefore, AtomFunction newBondPartner, float? piBondAngleOverrideForBreakTargets, Vector3? refBondWorldDirectionForBreakTargets, ElectronOrbitalFunction bondBreakGuideLoneOrbitalForTargets, int sigmaNeighborCountBefore = -1, bool bondBreakIsSigmaCleavageBetweenFormerPartners = false, CovalentBond redistributionOperationBond = null)
     {
+        orbitalsExcludedFromJointRigidInApplyRedistributeTargets = null;
         if (UseRepulsionLayoutOnlyInGetRedistributeTargets3D)
             return GetRedistributeTargets3DRepulsionLayoutOnly(
                 piBefore,
@@ -7881,6 +8169,233 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>
     /// One world rotation mapping current hybrid tips to target tips (two non-parallel pairs; orthonormal bases). Falls back to <see cref="Quaternion.FromToRotation"/> when vectors are nearly collinear.
     /// </summary>
+    /// <summary>
+    /// Snapshot world positions of σ-substituent atoms that <see cref="ApplyRedistributeTargets"/> would rigidly rotate (same fragment / ring-fallback rules).
+    /// Used so bond-break / formation lerps can apply the same joint motion each frame without a post-apply teleport.
+    /// </summary>
+    public void SnapshotJointFragmentWorldPositionsForTargets(
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> targets,
+        Dictionary<AtomFunction, Vector3> outInitialWorld)
+    {
+        if (targets == null || outInitialWorld == null || !OrbitalAngleUtility.UseFull3DOrbitalGeometry) return;
+        var seenBondsMove = new HashSet<CovalentBond>();
+        foreach (var (orb, pos, rot) in targets)
+        {
+            if (orb == null || orb.Bond == null) continue;
+            if (IsOrbitalExcludedFromJointRigidRedistribute(orb)) continue;
+            var cb = orb.Bond;
+            if (!cb.IsSigmaBondLine()) continue;
+            if (orb.transform.parent != cb.transform) continue;
+            if (cb.AtomA != this && cb.AtomB != this) continue;
+            if (!seenBondsMove.Add(cb)) continue;
+
+            var partner = cb.AtomA == this ? cb.AtomB : cb.AtomA;
+            if (partner == null) continue;
+
+            var fragment = GetAtomsOnSideOfSigmaBond(partner);
+            bool ringFallback = PartnerSigmaFragmentOverlapsOtherEdges(partner, fragment);
+
+            if (ringFallback)
+            {
+                if (!outInitialWorld.ContainsKey(partner))
+                    outInitialWorld[partner] = partner.transform.position;
+            }
+            else
+            {
+                for (int i = 0; i < fragment.Count; i++)
+                {
+                    var a = fragment[i];
+                    if (a != null && !outInitialWorld.ContainsKey(a))
+                        outInitialWorld[a] = a.transform.position;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Joint rotation (world) from start lobe tips to target tuple tips — same basis as the first phase of <see cref="ApplyRedistributeTargets"/>.
+    /// <paramref name="starts"/> must align with <paramref name="targets"/>; missing entries use zero local pose.
+    /// </summary>
+    public Quaternion ComputeJointRedistributeRotationWorldFromTargetsAndStarts(
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> targets,
+        List<(Vector3 localPos, Quaternion localRot)> starts)
+    {
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || targets == null || targets.Count == 0)
+            return Quaternion.identity;
+
+        var currentTips = new List<Vector3>();
+        var desiredTips = new List<Vector3>();
+
+        for (int i = 0; i < targets.Count; i++)
+        {
+            var (orb, pos, rot) = targets[i];
+            var (sp, sr) = (starts != null && i < starts.Count) ? starts[i] : (Vector3.zero, Quaternion.identity);
+            if (orb == null) continue;
+            if (IsOrbitalExcludedFromJointRigidRedistribute(orb)) continue;
+
+            if (orb.Bond != null)
+            {
+                var cb = orb.Bond;
+                if (!cb.IsSigmaBondLine() || orb.transform.parent != cb.transform) continue;
+                if (cb.AtomA != this && cb.AtomB != this) continue;
+                Transform parent = orb.transform.parent;
+                if (parent == null) continue;
+                Vector3 cur = parent.TransformDirection((sr * Vector3.right).normalized);
+                if (cur.sqrMagnitude < 1e-16f) continue;
+                cur.Normalize();
+                Vector3 des = GetRedistributeTargetHybridTipWorldFromTuple(orb, rot);
+                if (des.sqrMagnitude < 1e-16f) continue;
+                des.Normalize();
+                currentTips.Add(cur);
+                desiredTips.Add(des);
+            }
+            else if (orb.transform.parent == transform)
+            {
+                Vector3 cur = transform.TransformDirection((sr * Vector3.right).normalized);
+                if (cur.sqrMagnitude < 1e-16f) continue;
+                cur.Normalize();
+                Vector3 des = GetRedistributeTargetHybridTipWorldFromTuple(orb, rot);
+                if (des.sqrMagnitude < 1e-16f) continue;
+                des.Normalize();
+                currentTips.Add(cur);
+                desiredTips.Add(des);
+            }
+        }
+
+        return ComputeJointRedistributeRotationWorld(currentTips, desiredTips);
+    }
+
+    /// <summary>
+    /// Rigid motion of σ-substituent fragments for a fraction of the full joint rotation (about <paramref name="pivotStartWorld"/>),
+    /// with pivot translation <c>pivotWorldNow minus pivotStartWorld</c> folded in so substituents stay coherent when the nucleus moves during σ-relax.
+    /// </summary>
+    public void ApplyJointRedistributeFragmentMotionFraction(
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> targets,
+        Quaternion deltaWorldFull,
+        float fraction,
+        Vector3 pivotStartWorld,
+        Vector3 pivotWorldNow,
+        Dictionary<AtomFunction, Vector3> fragmentInitialWorld)
+    {
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || targets == null || fragmentInitialWorld == null || fragmentInitialWorld.Count == 0)
+            return;
+        fraction = Mathf.Clamp01(fraction);
+        Quaternion r = Quaternion.Slerp(Quaternion.identity, deltaWorldFull, fraction);
+
+        var movedAtoms = new HashSet<AtomFunction>();
+        var seenBondsMove = new HashSet<CovalentBond>();
+        foreach (var (orb, pos, rot) in targets)
+        {
+            if (orb == null || orb.Bond == null) continue;
+            if (IsOrbitalExcludedFromJointRigidRedistribute(orb)) continue;
+            var cb = orb.Bond;
+            if (!cb.IsSigmaBondLine()) continue;
+            if (orb.transform.parent != cb.transform) continue;
+            if (cb.AtomA != this && cb.AtomB != this) continue;
+            if (!seenBondsMove.Add(cb)) continue;
+
+            var partner = cb.AtomA == this ? cb.AtomB : cb.AtomA;
+            if (partner == null) continue;
+
+            var fragment = GetAtomsOnSideOfSigmaBond(partner);
+            bool ringFallback = PartnerSigmaFragmentOverlapsOtherEdges(partner, fragment);
+
+            if (ringFallback)
+            {
+                if (!movedAtoms.Add(partner)) continue;
+                if (fragmentInitialWorld.TryGetValue(partner, out var p0))
+                    partner.transform.position = pivotWorldNow + r * (p0 - pivotStartWorld);
+            }
+            else
+            {
+                for (int fi = 0; fi < fragment.Count; fi++)
+                {
+                    var a = fragment[fi];
+                    if (a == null) continue;
+                    if (!movedAtoms.Add(a)) continue;
+                    if (fragmentInitialWorld.TryGetValue(a, out var p0))
+                        a.transform.position = pivotWorldNow + r * (p0 - pivotStartWorld);
+                }
+            }
+        }
+
+        foreach (var atom in movedAtoms)
+        {
+            if (atom?.CovalentBonds == null) continue;
+            for (int bi = 0; bi < atom.CovalentBonds.Count; bi++)
+                atom.CovalentBonds[bi]?.UpdateBondTransformToCurrentAtoms();
+        }
+    }
+
+    /// <summary>σ neighbor instance IDs for bonds that drive joint fragment motion in <see cref="SnapshotJointFragmentWorldPositionsForTargets"/>.</summary>
+    public static string BuildJointFragSigmaPartnerIdSummary(
+        AtomFunction pivot,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> targets)
+    {
+        if (pivot == null || targets == null || targets.Count == 0) return "partnerIds=none";
+        var ids = new List<int>(6);
+        var seenBonds = new HashSet<CovalentBond>();
+        for (int i = 0; i < targets.Count; i++)
+        {
+            var orb = targets[i].orb;
+            if (orb?.Bond == null) continue;
+            if (pivot.IsOrbitalExcludedFromJointRigidRedistribute(orb)) continue;
+            var cb = orb.Bond;
+            if (!cb.IsSigmaBondLine() || orb.transform.parent != cb.transform) continue;
+            if (cb.AtomA != pivot && cb.AtomB != pivot) continue;
+            if (!seenBonds.Add(cb)) continue;
+            var partner = cb.AtomA == pivot ? cb.AtomB : cb.AtomA;
+            if (partner != null) ids.Add(partner.GetInstanceID());
+        }
+        return ids.Count == 0 ? "partnerIds=none" : "partnerIds=" + string.Join(",", ids);
+    }
+
+    /// <summary>
+    /// One line: fragment centroid shift and max per-atom displacement vs snapshot, pivot motion, joint angle. phase=frame gated by <see cref="DebugLogJointFragRedistEveryFrame"/>; other phases by <see cref="DebugLogJointFragRedistMilestones"/>.
+    /// </summary>
+    public void LogJointFragRedistLine(
+        string phase,
+        string context,
+        IReadOnlyDictionary<AtomFunction, Vector3> initialWorld,
+        Vector3 pivotStartWorld,
+        Vector3 pivotNowWorld,
+        float smoothSOrNegOne,
+        Quaternion deltaFull,
+        string partnerIdSummary)
+    {
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry) return;
+        if (phase == "frame")
+        {
+            if (!DebugLogJointFragRedistEveryFrame) return;
+        }
+        else if (!DebugLogJointFragRedistMilestones) return;
+
+        int fragN = initialWorld != null ? initialWorld.Count : 0;
+        float centroidShift = 0f;
+        float maxDispFromSnap = 0f;
+        if (fragN > 0 && initialWorld != null)
+        {
+            Vector3 sum0 = Vector3.zero;
+            Vector3 sumNow = Vector3.zero;
+            foreach (var kv in initialWorld)
+            {
+                if (kv.Key == null) continue;
+                sum0 += kv.Value;
+                sumNow += kv.Key.transform.position;
+                maxDispFromSnap = Mathf.Max(maxDispFromSnap, Vector3.Distance(kv.Key.transform.position, kv.Value));
+            }
+            centroidShift = Vector3.Distance(sum0 / fragN, sumNow / fragN);
+        }
+
+        float jointDeg = Quaternion.Angle(Quaternion.identity, deltaFull);
+        string sStr = smoothSOrNegOne < 0f ? "na" : smoothSOrNegOne.ToString("F3");
+        Debug.Log(
+            "[joint-frag-redist] phase=" + phase + " context=" + context + " pivotId=" + GetInstanceID() +
+            " smoothS=" + sStr + " jointFullDeg=" + jointDeg.ToString("F2") + " fragN=" + fragN +
+            " centroidShiftFromSnap=" + centroidShift.ToString("F4") + " maxDispFromSnap=" + maxDispFromSnap.ToString("F4") +
+            " pivotDrift=" + Vector3.Distance(pivotStartWorld, pivotNowWorld).ToString("F5") + " " + partnerIdSummary);
+    }
+
     static Quaternion ComputeJointRedistributeRotationWorld(List<Vector3> fromDirs, List<Vector3> toDirs)
     {
         int n = fromDirs != null ? fromDirs.Count : 0;
@@ -7924,8 +8439,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// Applies redistribute target tuples from <see cref="GetRedistributeTargets3D"/>: nucleus-parented orbitals get <c>localPosition</c>/<c>localRotation</c>; σ orbitals on <see cref="CovalentBond"/> (3D) use pivot = this nucleus, one joint rigid rotation for all partner-side fragments (<see cref="GetAtomsOnSideOfSigmaBond"/> / ring-fallback unchanged), bond updates, and <see cref="CovalentBond.ApplySigmaOrbitalTipFromRedistribution"/>.
     /// Joint rotation uses current-to-desired hybrid tips for every nucleus- and bond-parented domain in <paramref name="targets"/> so substituents are not moved one σ at a time. Target <c>rot</c> for bond σ is parent-local; world hybrid tip = <c>orb.transform.parent.TransformDirection(rot * Vector3.right)</c>.
     /// Each atom that runs <see cref="RedistributeOrbitals"/> applies σ targets for bonds incident on this center; <see cref="CovalentBond.AuthoritativeAtomForOrbitalRedistributionPose"/> is not used to skip this pass (shared σ pose still converges via <see cref="CovalentBond.ApplySigmaOrbitalTipFromRedistribution"/> when both endpoints run).
+    /// <param name="skipJointRigidFragmentMotion">When true, skips the σ-substituent rigid pivot rotation (orbitals still snap; σ hybrid sync still runs). Use after a lerp already applied the same joint motion to fragments.</param>
     /// </summary>
-    public void ApplyRedistributeTargets(List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> targets)
+    public void ApplyRedistributeTargets(List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> targets, bool skipJointRigidFragmentMotion = false)
     {
         if (targets == null || targets.Count == 0) return;
 
@@ -7942,81 +8458,113 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             return;
         }
 
-        var currentTips = new List<Vector3>();
-        var desiredTips = new List<Vector3>();
-        Vector3 pivotWorld = transform.position;
-
-        foreach (var (orb, pos, rot) in targets)
+        try
         {
-            if (orb == null) continue;
-            if (orb.Bond != null)
-            {
-                var cb = orb.Bond;
-                if (!cb.IsSigmaBondLine() || orb.transform.parent != cb.transform) continue;
-                if (cb.AtomA != this && cb.AtomB != this) continue;
-                Vector3 cur = orb.transform.TransformDirection(Vector3.right);
-                if (cur.sqrMagnitude < 1e-16f) continue;
-                cur.Normalize();
-                Vector3 des = GetRedistributeTargetHybridTipWorldFromTuple(orb, rot);
-                if (des.sqrMagnitude < 1e-16f) continue;
-                des.Normalize();
-                currentTips.Add(cur);
-                desiredTips.Add(des);
-            }
-            else if (orb.transform.parent == transform)
-            {
-                Vector3 cur = transform.TransformDirection(OrbitalTipLocalDirection(orb));
-                if (cur.sqrMagnitude < 1e-16f) continue;
-                cur.Normalize();
-                Vector3 des = GetRedistributeTargetHybridTipWorldFromTuple(orb, rot);
-                if (des.sqrMagnitude < 1e-16f) continue;
-                des.Normalize();
-                currentTips.Add(cur);
-                desiredTips.Add(des);
-            }
-        }
-
-        Quaternion deltaWorld = ComputeJointRedistributeRotationWorld(currentTips, desiredTips);
-
-        var movedAtoms = new HashSet<AtomFunction>();
-        var seenBondsMove = new HashSet<CovalentBond>();
-        foreach (var (orb, pos, rot) in targets)
+        Quaternion jointDeltaRigidDiag = Quaternion.identity;
+        if (!skipJointRigidFragmentMotion)
         {
-            if (orb == null || orb.Bond == null) continue;
-            var cb = orb.Bond;
-            if (!cb.IsSigmaBondLine()) continue;
-            if (orb.transform.parent != cb.transform) continue;
-            if (cb.AtomA != this && cb.AtomB != this) continue;
-            if (!seenBondsMove.Add(cb)) continue;
+            var currentTips = new List<Vector3>();
+            var desiredTips = new List<Vector3>();
+            Vector3 pivotWorld = transform.position;
 
-            var partner = cb.AtomA == this ? cb.AtomB : cb.AtomA;
-            if (partner == null) continue;
-
-            var fragment = GetAtomsOnSideOfSigmaBond(partner);
-            bool ringFallback = PartnerSigmaFragmentOverlapsOtherEdges(partner, fragment);
-
-            if (ringFallback)
+            foreach (var (orb, pos, rot) in targets)
             {
-                if (movedAtoms.Add(partner))
-                    partner.transform.position = pivotWorld + deltaWorld * (partner.transform.position - pivotWorld);
-            }
-            else
-            {
-                for (int i = 0; i < fragment.Count; i++)
+                if (orb == null) continue;
+                if (orb.Bond != null)
                 {
-                    var a = fragment[i];
-                    if (a == null) continue;
-                    if (movedAtoms.Add(a))
-                        a.transform.position = pivotWorld + deltaWorld * (a.transform.position - pivotWorld);
+                    var cb = orb.Bond;
+                    if (!cb.IsSigmaBondLine() || orb.transform.parent != cb.transform) continue;
+                    if (cb.AtomA != this && cb.AtomB != this) continue;
+                    Vector3 cur = orb.transform.TransformDirection(Vector3.right);
+                    if (cur.sqrMagnitude < 1e-16f) continue;
+                    cur.Normalize();
+                    Vector3 des = GetRedistributeTargetHybridTipWorldFromTuple(orb, rot);
+                    if (des.sqrMagnitude < 1e-16f) continue;
+                    des.Normalize();
+                    bool exclSigma = IsOrbitalExcludedFromJointRigidRedistribute(orb);
+                    if (DebugLogRedistribute3DTipGapTrace)
+                    {
+                        Debug.Log(
+                            "[redist3d-tip-trace] phase=jointInput pivotId=" + GetInstanceID() + " kind=sigma" +
+                            " bondId=" + cb.GetInstanceID() + " orbId=" + orb.GetInstanceID() +
+                            " excludedFromJointRigid=" + exclSigma +
+                            " angleDeg=" + Vector3.Angle(cur, des).ToString("F2"));
+                    }
+                    if (exclSigma) continue;
+                    currentTips.Add(cur);
+                    desiredTips.Add(des);
+                }
+                else if (orb.transform.parent == transform)
+                {
+                    Vector3 cur = transform.TransformDirection(OrbitalTipLocalDirection(orb));
+                    if (cur.sqrMagnitude < 1e-16f) continue;
+                    cur.Normalize();
+                    Vector3 des = GetRedistributeTargetHybridTipWorldFromTuple(orb, rot);
+                    if (des.sqrMagnitude < 1e-16f) continue;
+                    des.Normalize();
+                    if (DebugLogRedistribute3DTipGapTrace)
+                    {
+                        Debug.Log(
+                            "[redist3d-tip-trace] phase=jointInput pivotId=" + GetInstanceID() + " kind=nucleusOrb" +
+                            " orbId=" + orb.GetInstanceID() +
+                            " angleDeg=" + Vector3.Angle(cur, des).ToString("F2"));
+                    }
+                    currentTips.Add(cur);
+                    desiredTips.Add(des);
                 }
             }
-        }
 
-        foreach (var atom in movedAtoms)
-        {
-            if (atom?.CovalentBonds == null) continue;
-            for (int bi = 0; bi < atom.CovalentBonds.Count; bi++)
-                atom.CovalentBonds[bi]?.UpdateBondTransformToCurrentAtoms();
+            Quaternion deltaWorld = ComputeJointRedistributeRotationWorld(currentTips, desiredTips);
+            jointDeltaRigidDiag = deltaWorld;
+            if (DebugLogRedistribute3DTipGapTrace)
+            {
+                Debug.Log(
+                    "[redist3d-tip-trace] phase=jointMotionComputed pivotId=" + GetInstanceID() +
+                    " tipPairCount=" + currentTips.Count +
+                    " jointAngleDeg=" + Quaternion.Angle(Quaternion.identity, deltaWorld).ToString("F2"));
+            }
+
+            var movedAtoms = new HashSet<AtomFunction>();
+            var seenBondsMove = new HashSet<CovalentBond>();
+            foreach (var (orb, pos, rot) in targets)
+            {
+                if (orb == null || orb.Bond == null) continue;
+                if (IsOrbitalExcludedFromJointRigidRedistribute(orb)) continue;
+                var cb = orb.Bond;
+                if (!cb.IsSigmaBondLine()) continue;
+                if (orb.transform.parent != cb.transform) continue;
+                if (cb.AtomA != this && cb.AtomB != this) continue;
+                if (!seenBondsMove.Add(cb)) continue;
+
+                var partner = cb.AtomA == this ? cb.AtomB : cb.AtomA;
+                if (partner == null) continue;
+
+                var fragment = GetAtomsOnSideOfSigmaBond(partner);
+                bool ringFallback = PartnerSigmaFragmentOverlapsOtherEdges(partner, fragment);
+
+                if (ringFallback)
+                {
+                    if (movedAtoms.Add(partner))
+                        partner.transform.position = pivotWorld + deltaWorld * (partner.transform.position - pivotWorld);
+                }
+                else
+                {
+                    for (int i = 0; i < fragment.Count; i++)
+                    {
+                        var a = fragment[i];
+                        if (a == null) continue;
+                        if (movedAtoms.Add(a))
+                            a.transform.position = pivotWorld + deltaWorld * (a.transform.position - pivotWorld);
+                    }
+                }
+            }
+
+            foreach (var atom in movedAtoms)
+            {
+                if (atom?.CovalentBonds == null) continue;
+                for (int bi = 0; bi < atom.CovalentBonds.Count; bi++)
+                    atom.CovalentBonds[bi]?.UpdateBondTransformToCurrentAtoms();
+            }
         }
 
         foreach (var (orb, pos, rot) in targets)
@@ -8048,20 +8596,82 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             currentTipWorld.Normalize();
 
             float alignGap = Vector3.Angle(currentTipWorld, desiredTipWorld);
+            float dotDesVsAxis = 0f;
+            Vector3 toPartnerUnit = Vector3.zero;
+            if (partner != null)
+            {
+                Vector3 toPartner = partner.transform.position - transform.position;
+                if (toPartner.sqrMagnitude > 1e-10f)
+                {
+                    toPartner.Normalize();
+                    toPartnerUnit = toPartner;
+                    dotDesVsAxis = Vector3.Dot(desiredTipWorld, toPartner);
+                }
+            }
+
+            if (DebugLogRedistribute3DTipGapTrace)
+            {
+                Debug.Log(
+                    "[redist3d-tip-trace] phase=sigmaBeforeBondUpdate pivotId=" + GetInstanceID() +
+                    " bondId=" + cb.GetInstanceID() + " partnerId=" + (partner != null ? partner.GetInstanceID().ToString() : "null") +
+                    " alignGapDeg=" + alignGap.ToString("F2") + " dotDesVsCPivotToPartner=" + dotDesVsAxis.ToString("F4"));
+            }
+
             cb.UpdateBondTransformToCurrentAtoms();
+            Vector3 curAfterBond = orb.transform.TransformDirection(Vector3.right);
+            if (curAfterBond.sqrMagnitude > 1e-16f)
+            {
+                curAfterBond.Normalize();
+                float gapAfterBond = Vector3.Angle(curAfterBond, desiredTipWorld);
+                if (DebugLogRedistribute3DTipGapTrace)
+                {
+                    Debug.Log(
+                        "[redist3d-tip-trace] phase=sigmaAfterBondUpdate pivotId=" + GetInstanceID() +
+                        " bondId=" + cb.GetInstanceID() +
+                        " alignGapDeg=" + gapAfterBond.ToString("F2"));
+                }
+            }
+
             cb.ApplySigmaOrbitalTipFromRedistribution(this, desiredTipWorld);
+
+            if (DebugLogRedistribute3DTipGapTrace)
+            {
+                Vector3 curPost = orb.transform.TransformDirection(Vector3.right);
+                float gapPostVsTuple = 0f;
+                if (curPost.sqrMagnitude > 1e-16f)
+                {
+                    curPost.Normalize();
+                    gapPostVsTuple = Vector3.Angle(curPost, desiredTipWorld);
+                }
+                Debug.Log(
+                    "[redist3d-tip-trace] phase=sigmaPostApply pivotId=" + GetInstanceID() +
+                    " bondId=" + cb.GetInstanceID() +
+                    " alignGapVsTupleTipDeg=" + gapPostVsTuple.ToString("F2"));
+            }
 
             if (DebugLogRedistribute3DApplyBondParented)
             {
                 var fragment = partner != null ? GetAtomsOnSideOfSigmaBond(partner) : null;
                 bool ringFallback = partner != null && fragment != null && PartnerSigmaFragmentOverlapsOtherEdges(partner, fragment);
                 Debug.Log(
-                    "[redist3d-apply-bond] joint pivot id=" + GetInstanceID() + " partner id=" + (partner != null ? partner.GetInstanceID().ToString() : "null") +
+                    "[redist3d-apply-bond] joint pivot id=" + GetInstanceID() + " bondId=" + cb.GetInstanceID() +
+                    " partner id=" + (partner != null ? partner.GetInstanceID().ToString() : "null") +
                     " fragCount=" + (fragment != null ? fragment.Count : 0) + " ringFallback=" + ringFallback + " alignGapDeg=" + alignGap.ToString("F2") +
-                    " jointAngleDeg=" + Quaternion.Angle(Quaternion.identity, deltaWorld).ToString("F2"));
+                    " jointAngleDeg=" + Quaternion.Angle(Quaternion.identity, jointDeltaRigidDiag).ToString("F2") +
+                    " skipRigidFrag=" + skipJointRigidFragmentMotion);
             }
         }
+        }
+        finally
+        {
+            orbitalsExcludedFromJointRigidInApplyRedistributeTargets = null;
+        }
     }
+
+    bool IsOrbitalExcludedFromJointRigidRedistribute(ElectronOrbitalFunction orb) =>
+        orb != null
+        && orbitalsExcludedFromJointRigidInApplyRedistributeTargets != null
+        && orbitalsExcludedFromJointRigidInApplyRedistributeTargets.Contains(orb);
 
     /// <summary>World +X hybrid tip implied by target tuple; <paramref name="targetOrbitalLocalRotation"/> is under <paramref name="orb"/>.transform.parent (bond-local for σ on <see cref="CovalentBond"/>).</summary>
     Vector3 GetRedistributeTargetHybridTipWorldFromTuple(ElectronOrbitalFunction orb, Quaternion targetOrbitalLocalRotation)
@@ -8104,7 +8714,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (maxSlots <= 1)
         {
             if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
-                && AtomicNumber > 1
                 && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
                 Debug.Log(
                     "[σ-form-rot-hybrid] skip maxSlots<=1 atom=" + name + "(Z=" + AtomicNumber + ") partner=" +
@@ -8125,7 +8734,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (domainCount < 1)
         {
             if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
-                && AtomicNumber > 1
                 && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
                 Debug.Log(
                     "[σ-form-rot-hybrid] skip domainCount<1 atom=" + name + "(Z=" + AtomicNumber + ") σAxes=" + bondAxes.Count +
@@ -8139,7 +8747,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (!TryMatchLoneOrbitalsToFreeIdealDirections(refLocal, domainCount, bondAxes, loneOrbitals, newDirs, out _, out _, out var bondIdealLocks, null))
         {
             if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
-                && AtomicNumber > 1
                 && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
                 Debug.Log(
                     "[σ-form-rot-hybrid] TryMatch FAIL (no bondIdealLocks) atom=" + name + "(Z=" + AtomicNumber + ") domainCount=" + domainCount +
@@ -8148,7 +8755,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
-            && AtomicNumber > 1
             && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
             Debug.Log(
                 "[σ-form-rot-hybrid] TryMatch OK → SyncSigmaBondOrbitalTips atom=" + name + "(Z=" + AtomicNumber + ") partner=" +

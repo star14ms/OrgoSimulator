@@ -661,22 +661,8 @@ public class EditModeManager : MonoBehaviour
             var anchor = selectedAtom;
             bool heavyHeavy = atomicNumber > 1 && anchor.AtomicNumber > 1;
             bool hOnHeavy = atomicNumber == 1 && anchor.AtomicNumber > 1;
-            bool anchorHasHeavySigmaNeighbor = false;
-            if (hOnHeavy)
-            {
-                foreach (var n in anchor.GetDistinctSigmaNeighborAtoms())
-                {
-                    if (n != null && n.AtomicNumber > 1)
-                    {
-                        anchorHasHeavySigmaNeighbor = true;
-                        break;
-                    }
-                }
-            }
-            // Heavy–heavy: keep anchor geometry (chain extend). H next to another heavy (e.g. —CH₂—): VSEPR relax on anchor.
-            // H on a center σ-bonded only to other H's (CH₄ / —CH₃): skip full anchor relax — it re-clamps to a canonical
-            // tetrahedron and visibly spins the molecule on the last H.
-            bool redistributeAnchor = !heavyHeavy && (!hOnHeavy || anchorHasHeavySigmaNeighbor);
+            // Heavy–heavy: keep anchor geometry (chain extend). H→heavy: do not run full anchor redistribute here (avoids diverging from heavy–heavy attach; VSEPR H placement uses hDir / newAtom redistribute only).
+            bool redistributeAnchor = !heavyHeavy && !hOnHeavy;
             HashSet<AtomFunction> pinChildSigmaRelax = atomicNumber > 1
                 ? new HashSet<AtomFunction>(newAtom.GetAtomsOnSideOfSigmaBond(anchor))
                 : null;
@@ -989,7 +975,7 @@ public class EditModeManager : MonoBehaviour
                 FormSigmaBondInstant(atom, hAtom2, carbonOrb2, hOrb2, redistributeAtomA: false, redistributeAtomB: false);
                 if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
                     atom.RedistributeOrbitals();
-                if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && atom.AtomicNumber > 1)
+                if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
                     atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
             }
             else if (hNeeded == 1)
@@ -1033,7 +1019,7 @@ public class EditModeManager : MonoBehaviour
                 FormSigmaBondInstant(atom, hAtom, carbonOrb, hOrb, redistributeAtomA: false, redistributeAtomB: false);
                 if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
                     atom.RedistributeOrbitals();
-                if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && atom.AtomicNumber > 1)
+                if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
                     atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
             }
         }
@@ -1071,10 +1057,7 @@ public class EditModeManager : MonoBehaviour
         else
             FormSigmaBondInstant(atom, hAtom, orb, hOrb, pinSigmaRelaxForAtomA: pinAddH, pinSigmaRelaxForAtomB: pinAddH);
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-        {
-            if (atom.AtomicNumber > 1)
-                atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLen);
-        }
+            atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLen);
         else
         {
             var bondAngle = atom.GetPrimaryBondDirectionAngle();
