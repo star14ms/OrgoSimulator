@@ -3763,6 +3763,67 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return true;
     }
 
+    /// <summary>One repulsion-layout empty (not pin): skip when tip already ⊥/opposite framework and separated from other empties; otherwise ±planeNormal chosen to avoid overlapping empty directions.</summary>
+    void AppendOneRepulsionSumEmptySlot(
+        ElectronOrbitalFunction e,
+        bool isPin,
+        Vector3 planeNormal,
+        IReadOnlyList<Vector3> occFrameworkDirsNormalized,
+        List<Vector3> placedEmptyTipDirs,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> slots,
+        List<Vector3> idealDirNucleusLocalForApply,
+        List<bool> skipApplyCarbonIdealDir,
+        System.Func<ElectronOrbitalFunction, Vector3> tipNucleusLocal,
+        IReadOnlyList<Vector3> occupiedLobeAxesMustSeparateFrom = null)
+    {
+        const float alreadyAlongNormalDot = 0.996f;
+        const float emptySepDeg = 18f;
+        if (isPin)
+        {
+            slots.Add((e, e.transform.localPosition, e.transform.localRotation));
+            idealDirNucleusLocalForApply.Add(Vector3.zero);
+            skipApplyCarbonIdealDir.Add(true);
+            return;
+        }
+
+        Vector3 rawTip = tipNucleusLocal(e);
+        Vector3 pn = planeNormal.sqrMagnitude > 1e-12f ? planeNormal.normalized : Vector3.forward;
+        Vector3 eTip = rawTip.sqrMagnitude < 1e-10f ? pn : rawTip.normalized;
+
+        if (occFrameworkDirsNormalized != null && occFrameworkDirsNormalized.Count > 0
+            && EmptyTipAlreadyIdealVsElectronFramework(eTip, occFrameworkDirsNormalized, occupiedLobeAxesMustSeparateFrom: occupiedLobeAxesMustSeparateFrom)
+            && MinAngleToAnyDirection(eTip, placedEmptyTipDirs) > emptySepDeg)
+        {
+            slots.Add((e, e.transform.localPosition, e.transform.localRotation));
+            idealDirNucleusLocalForApply.Add(Vector3.zero);
+            skipApplyCarbonIdealDir.Add(true);
+            placedEmptyTipDirs.Add(eTip);
+            return;
+        }
+
+        Vector3 emptyDir = PickEmptyDirOnAxisAvoidingOtherEmpties(pn, eTip, placedEmptyTipDirs);
+
+        if (Mathf.Abs(Vector3.Dot(eTip, emptyDir)) >= alreadyAlongNormalDot
+            && MinAngleToAnyDirection(eTip, placedEmptyTipDirs) > emptySepDeg
+            && EmptyTipAlreadyIdealVsElectronFramework(
+                eTip,
+                occFrameworkDirsNormalized,
+                occupiedLobeAxesMustSeparateFrom: occupiedLobeAxesMustSeparateFrom))
+        {
+            slots.Add((e, e.transform.localPosition, e.transform.localRotation));
+            idealDirNucleusLocalForApply.Add(Vector3.zero);
+            skipApplyCarbonIdealDir.Add(true);
+            placedEmptyTipDirs.Add(eTip);
+            return;
+        }
+
+        var (ePos, eRot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(emptyDir, bondRadius, e.transform.localRotation);
+        slots.Add((e, ePos, eRot));
+        idealDirNucleusLocalForApply.Add(emptyDir);
+        skipApplyCarbonIdealDir.Add(false);
+        placedEmptyTipDirs.Add(emptyDir.normalized);
+    }
+
     /// <summary>
     /// Element-agnostic non-bond layout for bond-break / sparse shells: <b>n</b> occupied and <b>m</b> empty non-bond orbitals (n≤6, m≤3) on <b>this</b> nucleus.
     /// <list type="bullet">
@@ -3785,7 +3846,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         out List<bool> skipApplyCarbonIdealDir)
     {
         const float sumEps = 1e-10f;
-        const float alreadyAlongNormalDot = 0.996f;
         slots = null;
         idealDirNucleusLocalForApply = null;
         skipApplyCarbonIdealDir = null;
@@ -3864,35 +3924,30 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 return false;
         }
 
+        var occFw = new List<Vector3>(nOcc);
+        for (int i = 0; i < nOcc; i++)
+            occFw.Add(occTargetDirs[i].normalized);
+        var occLobeTipsNb = new List<Vector3>(nOcc);
+        for (int i = 0; i < nOcc; i++)
+        {
+            var t = OrbitalTipLocalDirection(occupiedNonBond[i]);
+            if (t.sqrMagnitude > 1e-12f) occLobeTipsNb.Add(t.normalized);
+        }
+        var placedEmptyTipsRepulsion = new List<Vector3>();
         for (int k = 0; k < nEmp; k++)
         {
             var e = emptyNonBond[k];
-            if (e == pinEmptyGuideOrbital)
-            {
-                slots.Add((e, e.transform.localPosition, e.transform.localRotation));
-                idealDirNucleusLocalForApply.Add(Vector3.zero);
-                skipApplyCarbonIdealDir.Add(true);
-                continue;
-            }
-            Vector3 eTip = OrbitalTipLocalDirection(e);
-            if (eTip.sqrMagnitude < 1e-10f)
-                eTip = planeNormal;
-            else
-                eTip.Normalize();
-            Vector3 emptyDir = Vector3.Dot(eTip, planeNormal) >= 0f ? planeNormal : -planeNormal;
-            if (Mathf.Abs(Vector3.Dot(eTip, emptyDir)) >= alreadyAlongNormalDot)
-            {
-                slots.Add((e, e.transform.localPosition, e.transform.localRotation));
-                idealDirNucleusLocalForApply.Add(Vector3.zero);
-                skipApplyCarbonIdealDir.Add(true);
-            }
-            else
-            {
-                var (ePos, eRot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(emptyDir, bondRadius, e.transform.localRotation);
-                slots.Add((e, ePos, eRot));
-                idealDirNucleusLocalForApply.Add(emptyDir);
-                skipApplyCarbonIdealDir.Add(false);
-            }
+            AppendOneRepulsionSumEmptySlot(
+                e,
+                pinEmptyGuideOrbital != null && e == pinEmptyGuideOrbital,
+                planeNormal,
+                occFw,
+                placedEmptyTipsRepulsion,
+                slots,
+                idealDirNucleusLocalForApply,
+                skipApplyCarbonIdealDir,
+                OrbitalTipLocalDirection,
+                occLobeTipsNb);
         }
 
         return true;
@@ -3934,7 +3989,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         out List<bool> skipApplyCarbonIdealDir)
     {
         const float sumEps = 1e-10f;
-        const float alreadyAlongNormalDot = 0.996f;
         slots = null;
         idealDirNucleusLocalForApply = null;
         skipApplyCarbonIdealDir = null;
@@ -4012,35 +4066,27 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 return false;
         }
 
+        var occFwEd = new List<Vector3>(nOcc);
+        for (int i = 0; i < nOcc; i++)
+            occFwEd.Add(occTargetDirs[i].normalized);
+        var occLobeTipsEd = new List<Vector3>(nOcc);
+        for (int i = 0; i < nOcc; i++)
+            occLobeTipsEd.Add(occTips[i]);
+        var placedEmptyTipsEd = new List<Vector3>();
         for (int k = 0; k < nEmp; k++)
         {
             var e = emptyNonBond[k];
-            if (e == pinEmptyGuideOrbital)
-            {
-                slots.Add((e, e.transform.localPosition, e.transform.localRotation));
-                idealDirNucleusLocalForApply.Add(Vector3.zero);
-                skipApplyCarbonIdealDir.Add(true);
-                continue;
-            }
-            Vector3 eTip = OrbitalTipLocalDirection(e);
-            if (eTip.sqrMagnitude < 1e-10f)
-                eTip = planeNormal;
-            else
-                eTip.Normalize();
-            Vector3 emptyDir = Vector3.Dot(eTip, planeNormal) >= 0f ? planeNormal : -planeNormal;
-            if (Mathf.Abs(Vector3.Dot(eTip, emptyDir)) >= alreadyAlongNormalDot)
-            {
-                slots.Add((e, e.transform.localPosition, e.transform.localRotation));
-                idealDirNucleusLocalForApply.Add(Vector3.zero);
-                skipApplyCarbonIdealDir.Add(true);
-            }
-            else
-            {
-                var (ePos, eRot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(emptyDir, bondRadius, e.transform.localRotation);
-                slots.Add((e, ePos, eRot));
-                idealDirNucleusLocalForApply.Add(emptyDir);
-                skipApplyCarbonIdealDir.Add(false);
-            }
+            AppendOneRepulsionSumEmptySlot(
+                e,
+                pinEmptyGuideOrbital != null && e == pinEmptyGuideOrbital,
+                planeNormal,
+                occFwEd,
+                placedEmptyTipsEd,
+                slots,
+                idealDirNucleusLocalForApply,
+                skipApplyCarbonIdealDir,
+                OrbitalTipLocalDirection,
+                occLobeTipsEd);
         }
 
         return true;
@@ -5649,6 +5695,58 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return true;
     }
 
+    /// <summary>
+    /// Whether the empty lobe tip is already in an acceptable pose: one framework direction = opposite (−dir); two or more = ⊥ each (VSEPR plane normal family).
+    /// <paramref name="occupiedLobeAxesMustSeparateFrom"/> (optional): σ/π or lone axes that still occupy space but may be omitted from <paramref name="electronFrameworkUnitDirs"/> (e.g. co-bond merge, or repulsion targets vs current tips). Rejects tips within <paramref name="minUndirectedSeparationDegFromOccupied"/> of any such axis using undirected line separation min(θ, 180°−θ).
+    /// If <paramref name="electronFrameworkUnitDirs"/> is null or empty, only the separation test applies (returns true when there is nothing to separate from, or when all axes are clear).
+    /// </summary>
+    static bool EmptyTipAlreadyIdealVsElectronFramework(
+        Vector3 unitTip,
+        IReadOnlyList<Vector3> electronFrameworkUnitDirs,
+        float oppositeMinDot = -0.92f,
+        float perpToleranceDeg = 14f,
+        IReadOnlyList<Vector3> occupiedLobeAxesMustSeparateFrom = null,
+        float minUndirectedSeparationDegFromOccupied = 36f)
+    {
+        if (unitTip.sqrMagnitude < 1e-12f) return false;
+        unitTip = unitTip.normalized;
+
+        bool hasFw = electronFrameworkUnitDirs != null && electronFrameworkUnitDirs.Count > 0;
+        bool hasSep = occupiedLobeAxesMustSeparateFrom != null && occupiedLobeAxesMustSeparateFrom.Count > 0;
+        if (!hasFw && !hasSep) return false;
+
+        if (occupiedLobeAxesMustSeparateFrom != null)
+        {
+            foreach (var occ in occupiedLobeAxesMustSeparateFrom)
+            {
+                if (occ.sqrMagnitude < 1e-10f) continue;
+                float ang = Vector3.Angle(unitTip, occ.normalized);
+                if (Mathf.Min(ang, 180f - ang) < minUndirectedSeparationDegFromOccupied)
+                    return false;
+            }
+        }
+
+        if (!hasFw) return true;
+
+        if (electronFrameworkUnitDirs.Count == 1)
+        {
+            var f = electronFrameworkUnitDirs[0];
+            if (f.sqrMagnitude < 1e-10f) return false;
+            return Vector3.Dot(unitTip, f.normalized) <= oppositeMinDot;
+        }
+        return IsPerpendicularToDirections(unitTip, electronFrameworkUnitDirs, perpToleranceDeg);
+    }
+
+    /// <summary>Choose ±planeNormal so the empty axis is as far as possible from other empty lobe directions.</summary>
+    static Vector3 PickEmptyDirOnAxisAvoidingOtherEmpties(Vector3 planeNormalUnit, Vector3 eTipUnit, IReadOnlyList<Vector3> placedEmptyTips)
+    {
+        Vector3 a = Vector3.Dot(eTipUnit, planeNormalUnit) >= 0f ? planeNormalUnit : -planeNormalUnit;
+        Vector3 b = -a;
+        float sa = MinAngleToAnyDirection(a, placedEmptyTips);
+        float sb = MinAngleToAnyDirection(b, placedEmptyTips);
+        return sb > sa + 0.5f ? b : a;
+    }
+
     /// <summary>0e slot perpendicular to electron-containing framework; picks among candidates so direction stays separated from other empty tips.
     /// If there is exactly one framework group, prefer the opposite side (180°) when that side is not already occupied by another empty.</summary>
     static bool TryComputeSeparatedEmptySlot(
@@ -5701,47 +5799,69 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             AddCand(c2);
         }
 
-        Vector3 best = basePerp;
-        float bestScore = -1f;
+        const float minSepFromOtherEmptyDeg = 20f;
         Vector3 pref = preferredLocalDirection.HasValue && preferredLocalDirection.Value.sqrMagnitude > 1e-10f
             ? preferredLocalDirection.Value.normalized
             : Vector3.zero;
         bool hasPref = pref.sqrMagnitude > 1e-10f;
-        foreach (var raw in candidates)
+
+        void ScoreCandidate(Vector3 rawN, out float sepEmpty, out float score)
         {
-            if (raw.sqrMagnitude < 1e-10f) continue;
-            float sepEmpty = MinAngleToAnyDirection(raw, otherEmptyTipsLocal);
+            sepEmpty = MinAngleToAnyDirection(rawN, otherEmptyTipsLocal);
             float sepEl = 180f;
             foreach (var e in electronFrameworkDirs)
             {
                 if (e.sqrMagnitude < 1e-10f) continue;
-                float ang = Vector3.Angle(raw, e.normalized);
+                float ang = Vector3.Angle(rawN, e.normalized);
                 float m = Mathf.Min(ang, 180f - ang);
                 if (m < sepEl) sepEl = m;
             }
-            float score = Mathf.Min(sepEmpty, sepEl * 1.4f);
-            if (score > bestScore)
-            {
-                bestScore = score;
-                best = raw.normalized;
-            }
-            else if (Mathf.Abs(score - bestScore) <= 1e-4f)
-            {
-                // Deterministic tie-break: same intent as trigonal mapping path.
-                if (hasPref)
-                {
-                    float dRaw = Vector3.Dot(pref, raw.normalized);
-                    float dBest = Vector3.Dot(pref, best);
-                    const float dotEps = 1e-5f;
-                    if (dRaw > dBest + dotEps || (Mathf.Abs(dRaw - dBest) <= dotEps && CompareLex3(raw.normalized, best) > 0))
-                        best = raw.normalized;
-                }
-                else if (CompareLex3(raw.normalized, best) > 0)
-                {
-                    best = raw.normalized;
-                }
-            }
+            score = Mathf.Min(sepEmpty * 1.3f, sepEl * 1.4f);
         }
+
+        void TieBreakPrefer(ref Vector3 best, Vector3 rawN)
+        {
+            if (hasPref)
+            {
+                float dRaw = Vector3.Dot(pref, rawN);
+                float dBest = Vector3.Dot(pref, best);
+                const float dotEps = 1e-5f;
+                if (dRaw > dBest + dotEps || (Mathf.Abs(dRaw - dBest) <= dotEps && CompareLex3(rawN, best) > 0))
+                    best = rawN;
+            }
+            else if (CompareLex3(rawN, best) > 0)
+                best = rawN;
+        }
+
+        Vector3 bestStrict = Vector3.zero;
+        float bestStrictScore = -1f;
+        Vector3 bestLoose = basePerp.normalized;
+        float bestLooseScore = -1f;
+        foreach (var raw in candidates)
+        {
+            if (raw.sqrMagnitude < 1e-10f) continue;
+            Vector3 rawN = raw.normalized;
+            ScoreCandidate(rawN, out var sepEmpty, out float score);
+            if (sepEmpty >= minSepFromOtherEmptyDeg)
+            {
+                if (score > bestStrictScore + 1e-4f)
+                {
+                    bestStrictScore = score;
+                    bestStrict = rawN;
+                }
+                else if (Mathf.Abs(score - bestStrictScore) <= 1e-4f && bestStrictScore >= 0f)
+                    TieBreakPrefer(ref bestStrict, rawN);
+            }
+            if (score > bestLooseScore + 1e-4f)
+            {
+                bestLooseScore = score;
+                bestLoose = rawN;
+            }
+            else if (Mathf.Abs(score - bestLooseScore) <= 1e-4f)
+                TieBreakPrefer(ref bestLoose, rawN);
+        }
+
+        Vector3 best = bestStrictScore >= 0f ? bestStrict : bestLoose;
 
         var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(best, bondRadius);
         localPos = pos;
@@ -6960,6 +7080,39 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return (a.AtomA == b.AtomA && a.AtomB == b.AtomB) || (a.AtomA == b.AtomB && a.AtomB == b.AtomA);
     }
 
+    static void AppendUniqueFrameworkDirection(List<Vector3> list, Vector3 unitDir, float mergeAngleDeg = 8f)
+    {
+        if (unitDir.sqrMagnitude < 1e-12f) return;
+        unitDir = unitDir.normalized;
+        foreach (var e in list)
+        {
+            float ang = Vector3.Angle(e, unitDir);
+            if (ang < mergeAngleDeg || ang > 180f - mergeAngleDeg) return;
+        }
+        list.Add(unitDir);
+    }
+
+    /// <summary>σ/π hosting orbitals on the same neighbor pair as the guide bond still occupy angular space after co-bond merge removed them from occ.</summary>
+    void CollectGuideGroupCoBondOrbitalTipsNucleusLocal(
+        CovalentBond guideBond,
+        CovalentBond redistributionOperationBond,
+        ElectronOrbitalFunction guideOrbital,
+        List<Vector3> outTips)
+    {
+        outTips.Clear();
+        CovalentBond pairBond = guideBond ?? redistributionOperationBond;
+        if (pairBond == null) return;
+        var seen = new HashSet<ElectronOrbitalFunction>();
+        foreach (var b in covalentBonds)
+        {
+            if (b == null || b.Orbital == null || b.Orbital == guideOrbital) continue;
+            if (!CovalentBondConnectsSameAtomPair(b, pairBond)) continue;
+            if (!seen.Add(b.Orbital)) continue;
+            var t = OrbitalTipDirectionInNucleusLocal(b.Orbital);
+            if (t.sqrMagnitude > 1e-12f) outTips.Add(t.normalized);
+        }
+    }
+
     /// <summary>
     /// One VSEPR electron group can represent single/double/triple/quadruple bond order to a neighbor (multiple <see cref="CovalentBond"/> edges, same atom pair). Removes hosting orbitals of every <b>other</b> edge on that pair from <paramref name="occ"/> so <c>nVseprGroups = 1 + occ.Count</c> counts groups, not bond lines.
     /// </summary>
@@ -7177,13 +7330,31 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (nOcc == 0)
         {
             outSlots = new List<(ElectronOrbitalFunction, Vector3, Quaternion)>(emp.Count);
-            var electronFrameworkLocalOnlyGuide = new List<Vector3>(1) { guideTip };
+            var coBondTipsForEmpty = new List<Vector3>();
+            CollectGuideGroupCoBondOrbitalTipsNucleusLocal(guideBond, redistributionOperationBond, guide, coBondTipsForEmpty);
+            var electronFrameworkForEmpty = new List<Vector3>();
+            AppendUniqueFrameworkDirection(electronFrameworkForEmpty, guideTip);
+            foreach (var t in coBondTipsForEmpty)
+                AppendUniqueFrameworkDirection(electronFrameworkForEmpty, t);
+
+            const float emptySepDegGuide = 18f;
             var placedEmptyTipsLocal0 = new List<Vector3>();
             foreach (var e in emp)
             {
                 Vector3 tipPref = OrbitalTipLocalDirection(e);
                 Vector3? prefDir = tipPref.sqrMagnitude >= 1e-10f ? tipPref.normalized : (Vector3?)null;
-                if (!TryComputeSeparatedEmptySlot(electronFrameworkLocalOnlyGuide, placedEmptyTipsLocal0, bondRadius, out var ePos, out var eRot, prefDir))
+                if (prefDir.HasValue
+                    && EmptyTipAlreadyIdealVsElectronFramework(
+                        prefDir.Value,
+                        electronFrameworkForEmpty,
+                        occupiedLobeAxesMustSeparateFrom: coBondTipsForEmpty)
+                    && MinAngleToAnyDirection(prefDir.Value, placedEmptyTipsLocal0) > emptySepDegGuide)
+                {
+                    outSlots.Add((e, e.transform.localPosition, e.transform.localRotation));
+                    placedEmptyTipsLocal0.Add(prefDir.Value);
+                    continue;
+                }
+                if (!TryComputeSeparatedEmptySlot(electronFrameworkForEmpty, placedEmptyTipsLocal0, bondRadius, out var ePos, out var eRot, prefDir))
                 {
                     outSlots.Add((e, e.transform.localPosition, e.transform.localRotation));
                     continue;
@@ -7257,11 +7428,41 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         for (int vi = 1; vi < nVseprGroups; vi++)
             electronFrameworkLocal.Add(alignedIdeal[vi].normalized);
 
+        var fwForEmptySkip = new List<Vector3>(electronFrameworkLocal.Count);
+        foreach (var fd in electronFrameworkLocal)
+        {
+            if (fd.sqrMagnitude > 1e-10f)
+                fwForEmptySkip.Add(fd.normalized);
+        }
+
+        var coBondTipsForOverlap = new List<Vector3>();
+        CollectGuideGroupCoBondOrbitalTipsNucleusLocal(guideBond, redistributionOperationBond, guide, coBondTipsForOverlap);
+        var occupiedAxesForEmptyIdeal = new List<Vector3>(moversOrdered2.Count + coBondTipsForOverlap.Count);
+        foreach (var o in moversOrdered2)
+        {
+            var t = OrbitalTipDirectionInNucleusLocal(o);
+            if (t.sqrMagnitude > 1e-12f) occupiedAxesForEmptyIdeal.Add(t.normalized);
+        }
+        foreach (var t in coBondTipsForOverlap)
+            AppendUniqueFrameworkDirection(occupiedAxesForEmptyIdeal, t);
+
+        const float emptySepDegGuideMulti = 18f;
         var placedEmptyTipsLocal = new List<Vector3>();
         foreach (var e in emp)
         {
             Vector3 tipPref = OrbitalTipLocalDirection(e);
             Vector3? prefDir = tipPref.sqrMagnitude >= 1e-10f ? tipPref.normalized : (Vector3?)null;
+            if (prefDir.HasValue
+                && EmptyTipAlreadyIdealVsElectronFramework(
+                    prefDir.Value,
+                    fwForEmptySkip,
+                    occupiedLobeAxesMustSeparateFrom: occupiedAxesForEmptyIdeal)
+                && MinAngleToAnyDirection(prefDir.Value, placedEmptyTipsLocal) > emptySepDegGuideMulti)
+            {
+                outSlots.Add((e, e.transform.localPosition, e.transform.localRotation));
+                placedEmptyTipsLocal.Add(prefDir.Value);
+                continue;
+            }
             if (!TryComputeSeparatedEmptySlot(electronFrameworkLocal, placedEmptyTipsLocal, bondRadius, out var ePos, out var eRot, prefDir))
             {
                 outSlots.Add((e, e.transform.localPosition, e.transform.localRotation));
