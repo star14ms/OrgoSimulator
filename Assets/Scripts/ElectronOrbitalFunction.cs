@@ -2372,6 +2372,14 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 sourceOrbital.transform.position = bt.Item1;
                 sourceOrbital.transform.rotation = sourceTargetRot;
             }
+            // Reparent/snap updates bond frames; hybrid refresh above ran before this. Re-sync σ tips to the trigonal frame
+            // so domain directions stay coplanar (carbon sp²) after π orbital snap.
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
+                AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(new HashSet<AtomFunction> { sourceAtom, targetAtom });
+                sourceAtom.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(targetAtom);
+                targetAtom.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(sourceAtom);
+            }
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && AtomFunction.DebugLogJointFragRedistMilestones)
             {
                 sourceAtom.LogJointFragRedistLine("afterPiBondSnap", "piStep2Src", fragWorldPiA, pivotStartPiA, sourceAtom.transform.position, 1f, deltaJointPiA, partnerSummaryPiA);

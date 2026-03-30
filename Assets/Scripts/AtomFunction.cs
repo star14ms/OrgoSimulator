@@ -24,7 +24,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     readonly List<CovalentBond> covalentBonds = new List<CovalentBond>();
 
     /// <summary>
-    /// Guide-group layout lists the guide orbital in targets at VSEPR vertex 0; it is excluded here from joint rigid rotation so the guide bond’s partner fragment is not pivoted. Set in <see cref="TryBuildRedistributeTargets3DGuideGroupPrefix"/>; cleared at <see cref="GetRedistributeTargets3D"/> entry and in <see cref="ApplyRedistributeTargets"/> finally.
+    /// Guide-group layout lists the guide orbital in targets at VSEPR vertex 0; it is excluded from <strong>σ-substituent fragment motion</strong> (guide bond partner not pivoted) while <see cref="ApplyRedistributeTargets"/> still applies its pose. Joint <em>rotation</em> tip pairs still include the guide so <see cref="ComputeJointRedistributeRotationWorld"/> aligns all domains (e.g. trigonal planar). Set in <see cref="TryBuildRedistributeTargets3DGuideGroupPrefix"/>; cleared at <see cref="GetRedistributeTargets3D"/> entry and in <see cref="ApplyRedistributeTargets"/> finally.
     /// </summary>
     HashSet<ElectronOrbitalFunction> orbitalsExcludedFromJointRigidInApplyRedistributeTargets;
 
@@ -4020,9 +4020,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// Like <see cref="TryComputeRepulsionSumNonBondLayoutSlots"/> but <paramref name="occupiedDomains"/> may include σ bond host orbitals; tips use <see cref="OrbitalTipDirectionInNucleusLocal"/>. Pinned 0e guide defines the configuration plane ⊥ its lobe axis.
     /// </summary>
     /// <remarks>
-    /// Repulsion directions <c>d</c> passed to <see cref="ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection"/> are in <b>this nucleus</b> local space (same as <see cref="OrbitalTipDirectionInNucleusLocal"/>).
-    /// The returned <c>(pos, rot)</c> tuple is <b>orbital-parent-local</b>: for σ lobes parented under <see cref="CovalentBond"/>, <c>rot</c> is bond-local, not nucleus-local.
-    /// World hybrid tip = <c>orb.transform.parent.TransformDirection(rot * Vector3.right)</c>. <see cref="ApplyRedistributeTargets"/> applies one joint pivot rotation to all σ partner fragments (then nucleus-local rows); σ on <see cref="CovalentBond"/> uses hybrid sync.
+    /// Repulsion directions <c>d</c> are in <b>this nucleus</b> local space (same as <see cref="OrbitalTipDirectionInNucleusLocal"/>).
+    /// <see cref="GetCanonicalSlotPositionFromNucleusIdealForOrbitalParent"/> converts to the orbital parent’s local space before <see cref="ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection"/> so bond-parented σ get <c>rot</c> consistent with that same world hybrid as lone pairs.
     /// </remarks>
     bool TryComputeRepulsionSumElectronDomainLayoutSlots(
         IReadOnlyList<ElectronOrbitalFunction> occupiedDomains,
@@ -4092,7 +4091,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         {
             var o = occupiedDomains[i];
             Vector3 d = occTargetDirs[i];
-            var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(d, bondRadius, o.transform.localRotation);
+            var (pos, rot) = GetCanonicalSlotPositionFromNucleusIdealForOrbitalParent(o, d, bondRadius, o.transform.localRotation);
             slots.Add((o, pos, rot));
             idealDirNucleusLocalForApply.Add(d);
             skipApplyCarbonIdealDir.Add(false);
@@ -6527,6 +6526,27 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <summary>
+    /// VSEPR vertex directions are in <b>this nucleus</b> local space (same as lone <see cref="OrbitalTipLocalDirection"/>).
+    /// <see cref="ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection"/> expects <paramref name="idealDirNucleusLocal"/> in the orbital's <b>parent</b> local space (nucleus or <see cref="CovalentBond"/>).
+    /// When the parent is a bond, converts nucleus → bond so hybrid +X, joint rotation, and <see cref="GetRedistributeTargetHybridTipWorldFromTuple"/> agree with nonbonding domains.
+    /// </summary>
+    (Vector3 pos, Quaternion rot) GetCanonicalSlotPositionFromNucleusIdealForOrbitalParent(
+        ElectronOrbitalFunction orb, Vector3 idealDirNucleusLocal, float bondRadiusForSlot, Quaternion preferClosestLocalRotation)
+    {
+        Vector3 dirLocal = idealDirNucleusLocal.sqrMagnitude < 1e-14f ? Vector3.right : idealDirNucleusLocal.normalized;
+        if (orb != null)
+        {
+            Transform p = orb.transform.parent;
+            if (p != null && p != transform)
+            {
+                Vector3 w = transform.TransformDirection(dirLocal);
+                dirLocal = p.InverseTransformDirection(w).normalized;
+            }
+        }
+        return ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(dirLocal, bondRadiusForSlot, preferClosestLocalRotation);
+    }
+
+    /// <summary>
     /// First VSEPR vertex direction for <see cref="TryBuildRedistributeTargets3DGuideGroupPrefix"/>: bond guides use the internuclear axis only (not lobe +X, which can remain anti-parallel to the partner after bond formation/break). Ex-bond lone/empty guides use the measured vector from this nucleus pivot to the orbital transform (then lobe tip fallback), not saved lobe quaternion alone.
     /// </summary>
     Vector3 GuideGroupFirstVertexDirectionNucleusLocal(ElectronOrbitalFunction guide, CovalentBond guideBond)
@@ -7555,7 +7575,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     outSlots.Add((o, o.transform.localPosition, o.transform.localRotation));
                 else
                 {
-                    var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(d.normalized, bondRadius, o.transform.localRotation);
+                    var (pos, rot) = GetCanonicalSlotPositionFromNucleusIdealForOrbitalParent(o, d.normalized, bondRadius, o.transform.localRotation);
                     outSlots.Add((o, pos, rot));
                 }
             }
@@ -7705,7 +7725,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         Vector3 dVertex0 = alignedIdeal[0];
         if (dVertex0.sqrMagnitude < 1e-14f) dVertex0 = guideTip;
         else dVertex0.Normalize();
-        var (guidePos, guideRot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(dVertex0, bondRadius, guide.transform.localRotation);
+        var (guidePos, guideRot) = GetCanonicalSlotPositionFromNucleusIdealForOrbitalParent(guide, dVertex0, bondRadius, guide.transform.localRotation);
         outSlots = new List<(ElectronOrbitalFunction, Vector3, Quaternion)>(1 + moversOrdered2.Count + emp.Count);
         outSlots.Add((guide, guidePos, guideRot));
         orbitalsExcludedFromJointRigidInApplyRedistributeTargets = new HashSet<ElectronOrbitalFunction> { guide };
@@ -7721,7 +7741,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             else
             {
                 var o = moversOrdered2[i];
-                var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(d.normalized, bondRadius, o.transform.localRotation);
+                var (pos, rot) = GetCanonicalSlotPositionFromNucleusIdealForOrbitalParent(o, d.normalized, bondRadius, o.transform.localRotation);
                 outSlots.Add((o, pos, rot));
             }
         }
@@ -8215,6 +8235,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>
     /// Joint rotation (world) from start lobe tips to target tuple tips — same basis as the first phase of <see cref="ApplyRedistributeTargets"/>.
     /// <paramref name="starts"/> must align with <paramref name="targets"/>; missing entries use zero local pose.
+    /// Guide orbitals excluded from fragment motion are still included here so the quaternion fits all VSEPR domains together.
     /// </summary>
     public Quaternion ComputeJointRedistributeRotationWorldFromTargetsAndStarts(
         List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> targets,
@@ -8231,12 +8252,12 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             var (orb, pos, rot) = targets[i];
             var (sp, sr) = (starts != null && i < starts.Count) ? starts[i] : (Vector3.zero, Quaternion.identity);
             if (orb == null) continue;
-            if (IsOrbitalExcludedFromJointRigidRedistribute(orb)) continue;
 
             if (orb.Bond != null)
             {
                 var cb = orb.Bond;
-                if (!cb.IsSigmaBondLine() || orb.transform.parent != cb.transform) continue;
+                // σ and π lines both represent bond domains; joint rotation must see π guides (vertex 0) or trigonal fits use only two tips.
+                if (orb.transform.parent != cb.transform) continue;
                 if (cb.AtomA != this && cb.AtomB != this) continue;
                 Transform parent = orb.transform.parent;
                 if (parent == null) continue;
@@ -8437,7 +8458,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     /// <summary>
     /// Applies redistribute target tuples from <see cref="GetRedistributeTargets3D"/>: nucleus-parented orbitals get <c>localPosition</c>/<c>localRotation</c>; σ orbitals on <see cref="CovalentBond"/> (3D) use pivot = this nucleus, one joint rigid rotation for all partner-side fragments (<see cref="GetAtomsOnSideOfSigmaBond"/> / ring-fallback unchanged), bond updates, and <see cref="CovalentBond.ApplySigmaOrbitalTipFromRedistribution"/>.
-    /// Joint rotation uses current-to-desired hybrid tips for every nucleus- and bond-parented domain in <paramref name="targets"/> so substituents are not moved one σ at a time. Target <c>rot</c> for bond σ is parent-local; world hybrid tip = <c>orb.transform.parent.TransformDirection(rot * Vector3.right)</c>.
+    /// Joint rotation uses current-to-desired hybrid tips for every nucleus- and bond-parented domain in <paramref name="targets"/> (including guide σ excluded only from fragment motion) so substituents are not moved one σ at a time. Target <c>rot</c> for bond σ is parent-local; world hybrid tip = <c>orb.transform.parent.TransformDirection(rot * Vector3.right)</c>.
     /// Each atom that runs <see cref="RedistributeOrbitals"/> applies σ targets for bonds incident on this center; <see cref="CovalentBond.AuthoritativeAtomForOrbitalRedistributionPose"/> is not used to skip this pass (shared σ pose still converges via <see cref="CovalentBond.ApplySigmaOrbitalTipFromRedistribution"/> when both endpoints run).
     /// <param name="skipJointRigidFragmentMotion">When true, skips the σ-substituent rigid pivot rotation (orbitals still snap; σ hybrid sync still runs). Use after a lerp already applied the same joint motion to fragments.</param>
     /// </summary>
@@ -8473,9 +8494,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 if (orb.Bond != null)
                 {
                     var cb = orb.Bond;
-                    if (!cb.IsSigmaBondLine() || orb.transform.parent != cb.transform) continue;
+                    if (orb.transform.parent != cb.transform) continue;
                     if (cb.AtomA != this && cb.AtomB != this) continue;
-                    Vector3 cur = orb.transform.TransformDirection(Vector3.right);
+                    Vector3 cur = transform.TransformDirection(OrbitalTipDirectionInNucleusLocal(orb));
                     if (cur.sqrMagnitude < 1e-16f) continue;
                     cur.Normalize();
                     Vector3 des = GetRedistributeTargetHybridTipWorldFromTuple(orb, rot);
@@ -8490,7 +8511,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                             " excludedFromJointRigid=" + exclSigma +
                             " angleDeg=" + Vector3.Angle(cur, des).ToString("F2"));
                     }
-                    if (exclSigma) continue;
                     currentTips.Add(cur);
                     desiredTips.Add(des);
                 }
@@ -8591,7 +8611,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             if (desiredTipWorld.sqrMagnitude < 1e-16f) continue;
             desiredTipWorld.Normalize();
 
-            Vector3 currentTipWorld = orb.transform.TransformDirection(Vector3.right);
+            Vector3 currentTipWorld = transform.TransformDirection(OrbitalTipDirectionInNucleusLocal(orb));
             if (currentTipWorld.sqrMagnitude < 1e-16f) continue;
             currentTipWorld.Normalize();
 
