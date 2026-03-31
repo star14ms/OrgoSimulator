@@ -5,6 +5,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 using TMPro;
 
 /// <summary>How to derive the int shown on <c>ChargeLabel</c>: Lewis formal (octet) vs oxidation state (Pauling EN).</summary>
@@ -34,6 +35,26 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     /// <summary>NDJSON to <c>.cursor/debug-214323.log</c> for second π on terminal O (O=C=O). Default on for triage; set false for quiet runs.</summary>
     public static bool DebugLogOcoSecondPiNdjson = true;
+
+    /// <summary>π step 2: oxygen nucleus shell — tips not in redist rows vs operation π (O=C=C off-op lone joint). Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogOcoOffOpNucleusLoneAngles = true;
+
+    /// <summary>π snap + hybrid: NDJSON world tip vs mesh +X and screen probe. Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogOrbitalVisualTipProbe = true;
+
+    /// <summary>σ/π animated formation: NDJSON per-atom electron inventory for all atoms in the union of both fragments. Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogMoleculeElectronConfigAroundBond = true;
+
+    /// <summary>Oxygen-only: lone-domain and σ/π-to-carbon counts vs neutral terminal O in O=C=O. Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogOxygenOcoLewisDetail = true;
+
+    /// <summary>Mol-ecn snapshot: oxygen lobe +X directions in nucleus space, pairwise angle stats vs 109.5° and 120°. Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogOxygenMolEcnOrbitalAngles = true;
+
+    static int _molEcnEventSeq;
+
+    /// <summary>Pair before/after <see cref="LogMoleculeElectronConfigurationFromAtomUnion"/> snapshots in ingest logs via data.bondEventId.</summary>
+    public static int AllocateMoleculeEcnEventId() => ++_molEcnEventSeq;
 
     bool isBeingHeld;
     Vector3 dragOffset;
@@ -5699,7 +5720,10 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry) return;
         foreach (var b in covalentBonds)
-            b?.ResetOrbitalRedistributionDeltaIfAuthoritative(this);
+        {
+            if (b == null || !b.IsSigmaBondLine()) continue;
+            b.ResetOrbitalRedistributionDeltaIfAuthoritative(this);
+        }
     }
 
     /// <summary>
@@ -6564,7 +6588,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>
     /// π-step trigonal: canonical slot rotation can place +X on the opposite hemisphere of the pre-redist lobe in parent space (FromToRotation + 90° roll tie-break). Apply 180° about orbital-local Y so the lobe stays in the same hemisphere; matches user expectation when the only error is a 180° flip vs =O / neighbor framework.
     /// </summary>
-    void MaybeFlipPiTrigonalCanonicalSlotRotForParentHemisphereContinuity(ElectronOrbitalFunction orb, ref Quaternion slotLocalRot)
+    /// <param name="nucleusIdealDir">When set, skip the flip if it would worsen +X alignment to this VSEPR target in nucleus space (runtime: O lone movers had preTipToIdealDeg=0 and post 180 after flip).</param>
+    void MaybeFlipPiTrigonalCanonicalSlotRotForParentHemisphereContinuity(
+        ElectronOrbitalFunction orb, ref Quaternion slotLocalRot, Vector3? nucleusIdealDir = null)
     {
         if (orb == null || orb.transform.parent == null) return;
         Vector3 curTip = (orb.transform.localRotation * Vector3.right).normalized;
@@ -6574,7 +6600,28 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         // skews roll vs GetCanonicalSlotPositionFromLocalDirection. Use 180° about embedded slot +Y instead.
         Vector3 slotPlusY = (slotLocalRot * Vector3.up).normalized;
         if (slotPlusY.sqrMagnitude < 1e-10f) return;
-        slotLocalRot = Quaternion.AngleAxis(180f, slotPlusY) * slotLocalRot;
+        Quaternion flipped = Quaternion.AngleAxis(180f, slotPlusY) * slotLocalRot;
+        if (nucleusIdealDir.HasValue && nucleusIdealDir.Value.sqrMagnitude > 1e-14f)
+        {
+            Vector3 ideal = nucleusIdealDir.Value.normalized;
+            Vector3 tipUnflippedNuc = OrbitalSlotPlusXInNucleusLocal(orb, slotLocalRot);
+            Vector3 tipFlippedNuc = OrbitalSlotPlusXInNucleusLocal(orb, flipped);
+            if (tipUnflippedNuc.sqrMagnitude > 1e-14f && tipFlippedNuc.sqrMagnitude > 1e-14f)
+            {
+                float angUnflip = Vector3.Angle(tipUnflippedNuc, ideal);
+                float angFlip = Vector3.Angle(tipFlippedNuc, ideal);
+                const float hemiIdealWorseEpsDeg = 0.05f;
+                if (angFlip > angUnflip + hemiIdealWorseEpsDeg)
+                {
+                    if (DebugLogPiTrigonalOcoConformation)
+                        LogPiTrigonalOcoLine("hemi skipIdealWorse parentAtomId=" + GetInstanceID() + " orbId=" + orb.GetInstanceID()
+                            + " angUnflipToIdealDeg=" + angUnflip.ToString("F2", CultureInfo.InvariantCulture)
+                            + " angFlipToIdealDeg=" + angFlip.ToString("F2", CultureInfo.InvariantCulture));
+                    return;
+                }
+            }
+        }
+        slotLocalRot = flipped;
         if (DebugLogPiTrigonalOcoConformation)
             LogPiTrigonalOcoLine("hemi applied180 parentAtomId=" + GetInstanceID() + " orbId=" + orb.GetInstanceID() + " dotCurNewParentTip preFlipNeg=" + Vector3.Dot(curTip, newTip).ToString("F4", CultureInfo.InvariantCulture));
     }
@@ -8214,7 +8261,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                                 if (sigmaAxisEval.sqrMagnitude > 1e-14f)
                                     sigmaAxisEval.Normalize();
                             }
-                            MaybeFlipPiTrigonalCanonicalSlotRotForParentHemisphereContinuity(o, ref rotEval);
+                            MaybeFlipPiTrigonalCanonicalSlotRotForParentHemisphereContinuity(o, ref rotEval, tdEval);
                             Vector3 tipEval = OrbitalSlotPlusXInNucleusLocal(o, rotEval);
                             if (tipEval.sqrMagnitude < 1e-14f) return float.MaxValue;
                             if (mi == sigmaIdxEval && sigmaAxisEval.sqrMagnitude > 1e-14f)
@@ -8405,7 +8452,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         var (guidePos, guideRot) = GetCanonicalSlotPositionFromNucleusIdealForOrbitalParent(guide, dVertex0, bondRadius, guide.transform.localRotation);
         if (source == RedistributionGuideSource.PiBondInOperation && nVseprGroups == 3)
-            MaybeFlipPiTrigonalCanonicalSlotRotForParentHemisphereContinuity(guide, ref guideRot);
+            MaybeFlipPiTrigonalCanonicalSlotRotForParentHemisphereContinuity(guide, ref guideRot, dVertex0.sqrMagnitude > 1e-14f ? dVertex0.normalized : (Vector3?)null);
         // #region agent log
         if (DebugLogPiTrigonalOcoConformation
             && source == RedistributionGuideSource.PiBondInOperation
@@ -8435,18 +8482,23 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             {
                 var o = moversOrdered2[i];
                 var (pos, rot) = GetCanonicalSlotPositionFromNucleusIdealForOrbitalParent(o, d.normalized, bondRadius, o.transform.localRotation);
+                Quaternion rotBeforeHemi = rot;
                 if (source == RedistributionGuideSource.PiBondInOperation && nVseprGroups == 3)
-                    MaybeFlipPiTrigonalCanonicalSlotRotForParentHemisphereContinuity(o, ref rot);
+                    MaybeFlipPiTrigonalCanonicalSlotRotForParentHemisphereContinuity(o, ref rot, d.normalized);
                 // #region agent log
                 if (DebugLogPiTrigonalOcoConformation
                     && source == RedistributionGuideSource.PiBondInOperation
                     && nVseprGroups == 3)
                 {
+                    bool hemiApplied = Quaternion.Angle(rotBeforeHemi, rot) > 179.9f;
                     Vector3 tipN = OrbitalSlotPlusXInNucleusLocal(o, rot);
+                    Vector3 tipNPre = OrbitalSlotPlusXInNucleusLocal(o, rotBeforeHemi);
                     postMoverTipsN[i] = tipN;
                     Vector3 ideal = d.normalized;
                     float angPost = tipN.sqrMagnitude > 1e-14f ? Vector3.Angle(tipN, ideal) : -1f;
                     float angPostOpp = tipN.sqrMagnitude > 1e-14f ? Vector3.Angle(-tipN, ideal) : -1f;
+                    float angPre = tipNPre.sqrMagnitude > 1e-14f ? Vector3.Angle(tipNPre, ideal) : -1f;
+                    float angPreOpp = tipNPre.sqrMagnitude > 1e-14f ? Vector3.Angle(-tipNPre, ideal) : -1f;
                     string sigmaAxisPart = "";
                     if (o.Bond is CovalentBond cbLog && cbLog.IsSigmaBondLine())
                     {
@@ -8460,6 +8512,15 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                         + " angTipToAssignIdealDeg=" + angPost.ToString("F2", CultureInfo.InvariantCulture)
                         + " angOppTipToAssignIdealDeg=" + angPostOpp.ToString("F2", CultureInfo.InvariantCulture)
                         + sigmaAxisPart);
+                    if (atomicNumber == 8 && o.Bond == null && o.transform.parent == transform)
+                    {
+                        LogPiTrigonalOcoLine("hemiEval hypothesisId=H1 loneMover orbId=" + o.GetInstanceID()
+                            + " hemiApplied=" + (hemiApplied ? "true" : "false")
+                            + " preTipToIdealDeg=" + angPre.ToString("F2", CultureInfo.InvariantCulture)
+                            + " preOppToIdealDeg=" + angPreOpp.ToString("F2", CultureInfo.InvariantCulture)
+                            + " postTipToIdealDeg=" + angPost.ToString("F2", CultureInfo.InvariantCulture)
+                            + " postOppToIdealDeg=" + angPostOpp.ToString("F2", CultureInfo.InvariantCulture));
+                    }
                 }
                 // #endregion
                 outSlots.Add((o, pos, rot));
@@ -9261,7 +9322,884 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
     }
 
-    /// <summary>σ neighbor instance IDs for bonds that drive joint fragment motion in <see cref="SnapshotJointFragmentWorldPositionsForTargets"/>.</summary>
+    static bool TryFindLegacyCarbonylOxygenForCPiBond(
+        CovalentBond opPi,
+        out AtomFunction centralCarbon,
+        out AtomFunction operationOxygen,
+        out AtomFunction legacyCarbonylOxygen)
+    {
+        centralCarbon = null;
+        operationOxygen = null;
+        legacyCarbonylOxygen = null;
+        if (opPi == null || opPi.IsSigmaBondLine()) return false;
+        var a = opPi.AtomA;
+        var b = opPi.AtomB;
+        if (a == null || b == null) return false;
+        if (a.AtomicNumber == 6 && b.AtomicNumber == 8)
+        {
+            centralCarbon = a;
+            operationOxygen = b;
+        }
+        else if (a.AtomicNumber == 8 && b.AtomicNumber == 6)
+        {
+            centralCarbon = b;
+            operationOxygen = a;
+        }
+        else
+            return false;
+        AtomFunction found = null;
+        var bonds = centralCarbon.CovalentBonds;
+        for (int i = 0; i < bonds.Count; i++)
+        {
+            var cb = bonds[i];
+            if (cb == null) continue;
+            var other = cb.AtomA == centralCarbon ? cb.AtomB : cb.AtomA;
+            if (other == null || other.AtomicNumber != 8) continue;
+            if (other == operationOxygen) continue;
+            if (found != null && found != other)
+                return false;
+            found = other;
+        }
+        if (found == null) return false;
+        legacyCarbonylOxygen = found;
+        return true;
+    }
+
+    /// <summary>
+    /// After π snap + hybrid: logs mesh +X in world vs redistribute row local target (meaningful for solver mismatch),
+    /// and vs <see cref="OrbitalTipDirectionInNucleusLocal"/> (for nucleus children this matches mesh +X by construction).
+    /// Also logs π lobes vs bond <see cref="CovalentBond.GetOrbitalTargetWorldState"/> when parented on the bond.
+    /// </summary>
+    public static void LogPiOrbitalVisualTipProbeNdjson(
+        CovalentBond opPi,
+        AtomFunction endpointA,
+        AtomFunction endpointB,
+        string phase,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistRowsA = null,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistRowsB = null,
+        ElectronOrbitalFunction sourcePiOrb = null,
+        ElectronOrbitalFunction targetPiOrb = null,
+        string runId = "run1")
+    {
+        if (!DebugLogOrbitalVisualTipProbe || opPi == null || opPi.IsSigmaBondLine()) return;
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry) return;
+
+        var inv = CultureInfo.InvariantCulture;
+        Camera cam = Camera.main;
+        AtomFunction legacyO = null;
+        if (TryFindLegacyCarbonylOxygenForCPiBond(opPi, out _, out _, out var leg) && leg != null)
+            legacyO = leg;
+
+        var rowByOrb = new Dictionary<ElectronOrbitalFunction, (Vector3 pos, Quaternion rot)>();
+        void IndexRows(List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> rows)
+        {
+            if (rows == null) return;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                var o = rows[i].orb;
+                if (o != null) rowByOrb[o] = (rows[i].pos, rows[i].rot);
+            }
+        }
+        IndexRows(redistRowsA);
+        IndexRows(redistRowsB);
+
+        void AppendProbeLine(
+            AtomFunction nucleus,
+            ElectronOrbitalFunction orb,
+            string nucleusRole,
+            string domainRole)
+        {
+            if (nucleus == null || orb == null) return;
+            if (orb.transform.parent != nucleus.transform) return;
+            Vector3 tipN = nucleus.OrbitalTipDirectionInNucleusLocal(orb);
+            if (tipN.sqrMagnitude < 1e-14f) return;
+            tipN.Normalize();
+            Vector3 expectW = nucleus.transform.TransformDirection(tipN);
+            if (expectW.sqrMagnitude < 1e-14f) return;
+            expectW.Normalize();
+            Vector3 meshXw = orb.transform.TransformDirection(Vector3.right);
+            if (meshXw.sqrMagnitude < 1e-14f) return;
+            meshXw.Normalize();
+            float angErrDeg = Vector3.Angle(expectW, meshXw);
+            bool hasRow = false;
+            float angRowToMesh = -1f;
+            if (rowByOrb.TryGetValue(orb, out var tup))
+            {
+                Vector3 rowTipW = nucleus.transform.TransformDirection((tup.rot * Vector3.right).normalized);
+                if (rowTipW.sqrMagnitude > 1e-14f)
+                {
+                    rowTipW.Normalize();
+                    hasRow = true;
+                    angRowToMesh = Vector3.Angle(rowTipW, meshXw);
+                }
+            }
+            Vector3 originW = orb.transform.position;
+            var sb = new System.Text.StringBuilder(520);
+            sb.Append("{\"phase\":\"").Append(phase).Append('"');
+            sb.Append(",\"nucleusRole\":\"").Append(nucleusRole).Append('"');
+            sb.Append(",\"domainRole\":\"").Append(domainRole).Append('"');
+            sb.Append(",\"probeKind\":\"nucleusShell\"");
+            sb.Append(",\"pivotId\":").Append(nucleus.GetInstanceID());
+            sb.Append(",\"orbId\":").Append(orb.GetInstanceID());
+            sb.Append(",\"bondId\":").Append(orb.Bond != null ? orb.Bond.GetInstanceID() : 0);
+            sb.Append(",\"sigmaLine\":")
+                .Append(orb.Bond is CovalentBond cb0 && cb0.IsSigmaBondLine() ? "true" : "false");
+            sb.Append(",\"expectWx\":").Append(expectW.x.ToString(inv));
+            sb.Append(",\"expectWy\":").Append(expectW.y.ToString(inv));
+            sb.Append(",\"expectWz\":").Append(expectW.z.ToString(inv));
+            sb.Append(",\"meshXwx\":").Append(meshXw.x.ToString(inv));
+            sb.Append(",\"meshXwy\":").Append(meshXw.y.ToString(inv));
+            sb.Append(",\"meshXwz\":").Append(meshXw.z.ToString(inv));
+            sb.Append(",\"angExpectToMeshXDeg\":").Append(angErrDeg.ToString("F2", inv));
+            sb.Append(",\"hasRedistRow\":").Append(hasRow ? "true" : "false");
+            sb.Append(",\"angRedistRowToMeshXDeg\":").Append(hasRow ? angRowToMesh.ToString("F2", inv) : "-1");
+            if (cam != null)
+            {
+                var p0 = cam.WorldToScreenPoint(originW);
+                var pE = cam.WorldToScreenPoint(originW + expectW * 0.35f);
+                var pM = cam.WorldToScreenPoint(originW + meshXw * 0.35f);
+                sb.Append(",\"hasCam\":true");
+                sb.Append(",\"scrOx\":").Append(p0.x.ToString("F1", inv));
+                sb.Append(",\"scrOy\":").Append(p0.y.ToString("F1", inv));
+                sb.Append(",\"scrEx\":").Append(pE.x.ToString("F1", inv));
+                sb.Append(",\"scrEy\":").Append(pE.y.ToString("F1", inv));
+                sb.Append(",\"scrMx\":").Append(pM.x.ToString("F1", inv));
+                sb.Append(",\"scrMy\":").Append(pM.y.ToString("F1", inv));
+            }
+            else
+                sb.Append(",\"hasCam\":false");
+            sb.Append('}');
+            string msg = string.Concat(
+                "[orbital-visual-probe] phase=", phase,
+                " nucleusRole=", nucleusRole,
+                " domainRole=", domainRole,
+                " probeKind=nucleusShell",
+                " pivotId=", nucleus.GetInstanceID().ToString(inv),
+                " orbId=", orb.GetInstanceID().ToString(inv),
+                " angRedistRowToMeshXDeg=", hasRow ? angRowToMesh.ToString("F2", inv) : "na",
+                " angExpectToMeshXDeg=", angErrDeg.ToString("F2", inv));
+            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+                "H-visual-tip",
+                "AtomFunction.LogPiOrbitalVisualTipProbeNdjson",
+                msg,
+                sb.ToString(),
+                runId);
+
+#if UNITY_EDITOR
+            if (DebugLogOrbitalVisualTipProbe)
+            {
+                const float rayLen = 0.35f;
+                Debug.DrawRay(originW, expectW * rayLen, Color.green, 8f, depthTest: false);
+                Debug.DrawRay(originW, meshXw * rayLen, Color.magenta, 8f, depthTest: false);
+                if (hasRow && angRowToMesh > 0.25f)
+                {
+                    Vector3 rowTipW = nucleus.transform.TransformDirection((rowByOrb[orb].rot * Vector3.right).normalized);
+                    Debug.DrawRay(originW, rowTipW * rayLen, Color.cyan, 8f, depthTest: false);
+                }
+            }
+#endif
+        }
+
+        void AppendPiLobeProbe(ElectronOrbitalFunction orb, string lobeRole)
+        {
+            if (orb == null || orb.Bond != opPi) return;
+            Transform p = orb.transform.parent;
+            if (p == null) return;
+            Vector3 meshXw = orb.transform.TransformDirection(Vector3.right);
+            if (meshXw.sqrMagnitude < 1e-14f) return;
+            meshXw.Normalize();
+            Vector3 originW = orb.transform.position;
+            float angBondTargetToMesh = -1f;
+            float angRowToMesh = -1f;
+            bool hasRow = false;
+            bool hasBondTarget = false;
+            Vector3 bondWantW = Vector3.zero;
+
+            if (p == opPi.transform)
+            {
+                var (_, wr) = opPi.GetOrbitalTargetWorldState();
+                bondWantW = wr * Vector3.right;
+                if (bondWantW.sqrMagnitude > 1e-14f)
+                {
+                    bondWantW.Normalize();
+                    hasBondTarget = true;
+                    angBondTargetToMesh = Vector3.Angle(bondWantW, meshXw);
+                }
+            }
+
+            var nuc = p.GetComponent<AtomFunction>();
+            if (nuc != null && rowByOrb.TryGetValue(orb, out var tup))
+            {
+                Vector3 rowTipW = nuc.transform.TransformDirection((tup.rot * Vector3.right).normalized);
+                if (rowTipW.sqrMagnitude > 1e-14f)
+                {
+                    rowTipW.Normalize();
+                    hasRow = true;
+                    angRowToMesh = Vector3.Angle(rowTipW, meshXw);
+                }
+            }
+
+            string parentKind = p == opPi.transform ? "bond" : "nucleus";
+            var sb = new System.Text.StringBuilder(520);
+            sb.Append("{\"phase\":\"").Append(phase).Append('"');
+            sb.Append(",\"probeKind\":\"piLobe\"");
+            sb.Append(",\"lobeRole\":\"").Append(lobeRole).Append('"');
+            sb.Append(",\"parentKind\":\"").Append(parentKind).Append('"');
+            sb.Append(",\"orbId\":").Append(orb.GetInstanceID());
+            sb.Append(",\"opPiBondId\":").Append(opPi.GetInstanceID());
+            sb.Append(",\"meshXwx\":").Append(meshXw.x.ToString(inv));
+            sb.Append(",\"meshXwy\":").Append(meshXw.y.ToString(inv));
+            sb.Append(",\"meshXwz\":").Append(meshXw.z.ToString(inv));
+            sb.Append(",\"hasBondTarget\":").Append(hasBondTarget ? "true" : "false");
+            if (hasBondTarget)
+            {
+                sb.Append(",\"bondTargetWx\":").Append(bondWantW.x.ToString(inv));
+                sb.Append(",\"bondTargetWy\":").Append(bondWantW.y.ToString(inv));
+                sb.Append(",\"bondTargetWz\":").Append(bondWantW.z.ToString(inv));
+            }
+            sb.Append(",\"angBondTargetToMeshXDeg\":").Append(hasBondTarget ? angBondTargetToMesh.ToString("F2", inv) : "-1");
+            sb.Append(",\"hasRedistRow\":").Append(hasRow ? "true" : "false");
+            sb.Append(",\"angRedistRowToMeshXDeg\":").Append(hasRow ? angRowToMesh.ToString("F2", inv) : "-1");
+            if (cam != null)
+            {
+                var p0 = cam.WorldToScreenPoint(originW);
+                var pM = cam.WorldToScreenPoint(originW + meshXw * 0.35f);
+                sb.Append(",\"hasCam\":true");
+                sb.Append(",\"scrOx\":").Append(p0.x.ToString("F1", inv));
+                sb.Append(",\"scrOy\":").Append(p0.y.ToString("F1", inv));
+                sb.Append(",\"scrMx\":").Append(pM.x.ToString("F1", inv));
+                sb.Append(",\"scrMy\":").Append(pM.y.ToString("F1", inv));
+            }
+            else
+                sb.Append(",\"hasCam\":false");
+            sb.Append('}');
+            string msg = string.Concat(
+                "[orbital-visual-probe] phase=", phase,
+                " probeKind=piLobe lobeRole=", lobeRole,
+                " parentKind=", parentKind,
+                " orbId=", orb.GetInstanceID().ToString(inv),
+                " angBondTargetToMeshXDeg=",
+                hasBondTarget ? angBondTargetToMesh.ToString("F2", inv) : "na",
+                " angRedistRowToMeshXDeg=", hasRow ? angRowToMesh.ToString("F2", inv) : "na");
+            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+                "H-visual-tip",
+                "AtomFunction.LogPiOrbitalVisualTipProbeNdjson",
+                msg,
+                sb.ToString(),
+                runId);
+
+#if UNITY_EDITOR
+            if (DebugLogOrbitalVisualTipProbe && hasBondTarget && angBondTargetToMesh > 0.25f)
+            {
+                Debug.DrawRay(originW, bondWantW * 0.35f, Color.cyan, 8f, depthTest: false);
+                Debug.DrawRay(originW, meshXw * 0.35f, Color.magenta, 8f, depthTest: false);
+            }
+#endif
+        }
+
+        void ProbeNucleusEndpoints(AtomFunction nucleus, string nucleusRole)
+        {
+            if (nucleus == null) return;
+            for (int i = 0; i < nucleus.bondedOrbitals.Count; i++)
+            {
+                var orb = nucleus.bondedOrbitals[i];
+                if (orb == null || orb.transform.parent != nucleus.transform) continue;
+                string domainRole;
+                if (orb.Bond == null) domainRole = "lone";
+                else if (orb.Bond == opPi) domainRole = "piOp";
+                else if (orb.Bond is CovalentBond cb && cb.IsSigmaBondLine()) domainRole = "sigma";
+                else domainRole = "piOther";
+                AppendProbeLine(nucleus, orb, nucleusRole, domainRole);
+            }
+        }
+
+        ProbeNucleusEndpoints(endpointA, "endpointA");
+        ProbeNucleusEndpoints(endpointB, "endpointB");
+        if (legacyO != null && legacyO != endpointA && legacyO != endpointB)
+            ProbeNucleusEndpoints(legacyO, "legacyEqO");
+
+        AppendPiLobeProbe(sourcePiOrb, "sourcePi");
+        AppendPiLobeProbe(targetPiOrb, "targetPi");
+    }
+
+    /// <summary>
+    /// One NDJSON line per atom in the merged connected components of <paramref name="atomA"/> and <paramref name="atomB"/>.
+    /// </summary>
+    public static void LogMoleculeElectronConfigurationFromAtomUnion(
+        AtomFunction atomA,
+        AtomFunction atomB,
+        string phase,
+        int bondEventId,
+        CovalentBond opBond,
+        string bondKind,
+        string runId = "run1")
+    {
+        if (!DebugLogMoleculeElectronConfigAroundBond) return;
+        var atoms = new HashSet<AtomFunction>();
+        if (atomA != null) foreach (var x in atomA.GetConnectedMolecule()) atoms.Add(x);
+        if (atomB != null) foreach (var x in atomB.GetConnectedMolecule()) atoms.Add(x);
+        var list = new List<AtomFunction>(atoms);
+        list.Sort((x, y) => x.GetInstanceID().CompareTo(y.GetInstanceID()));
+        foreach (var a in list)
+            a.EmitMoleculeElectronConfigOneAtomNdjson(phase, bondEventId, opBond, bondKind, runId);
+        // #region agent log
+        if (DebugLogOxygenOcoLewisDetail)
+        {
+            foreach (var a in list)
+                a.EmitOxygenOcoTerminalNdjson(phase, bondEventId, opBond, bondKind, runId);
+        }
+        if (DebugLogOxygenMolEcnOrbitalAngles)
+        {
+            foreach (var a in list)
+                a.EmitOxygenMolEcnOrbitalPairwiseAnglesNdjson(phase, bondEventId, opBond, bondKind, runId);
+        }
+        // #endregion
+        EmitMoleculeEcnSnapshotSummaryNdjson(list, phase, bondEventId, opBond, bondKind, runId);
+    }
+
+    static void EmitMoleculeEcnSnapshotSummaryNdjson(
+        List<AtomFunction> list,
+        string phase,
+        int bondEventId,
+        CovalentBond opBond,
+        string bondKind,
+        string runId)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        int molNonBond = 0;
+        int molBondOwned = 0;
+        foreach (var a in list)
+        {
+            if (a == null) continue;
+            a.GetEcnNonBondAndBondOwnedSums(out int nb, out int bo);
+            molNonBond += nb;
+            molBondOwned += bo;
+        }
+        int molTotal = molNonBond + molBondOwned;
+        var sb = new StringBuilder(220);
+        sb.Append("{\"rowKind\":\"molSnapshot\"");
+        sb.Append(",\"phase\":\"").Append(phase).Append('"');
+        sb.Append(",\"bondEventId\":").Append(bondEventId);
+        sb.Append(",\"bondKind\":\"").Append(bondKind).Append('"');
+        sb.Append(",\"atomCount\":").Append(list.Count);
+        sb.Append(",\"molNonBondE\":").Append(molNonBond);
+        sb.Append(",\"molBondElectronsOwnedSum\":").Append(molBondOwned);
+        sb.Append(",\"molTotalValenceElectronsAttributed\":").Append(molTotal);
+        if (opBond != null)
+        {
+            sb.Append(",\"opBondId\":").Append(opBond.GetInstanceID());
+            sb.Append(",\"opBondIsSigma\":").Append(opBond.IsSigmaBondLine() ? "true" : "false");
+        }
+        sb.Append('}');
+        string msg = string.Concat(
+            "[mol-ecn] rowKind=molSnapshot phase=", phase,
+            " bondEventId=", bondEventId.ToString(inv),
+            " bondKind=", bondKind,
+            " molNonBondE=", molNonBond.ToString(inv),
+            " molBondOwnedE=", molBondOwned.ToString(inv),
+            " molTotalValenceE=", molTotal.ToString(inv));
+        ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+            "H-mol-ecn-sum",
+            "AtomFunction.EmitMoleculeEcnSnapshotSummaryNdjson",
+            msg,
+            sb.ToString(),
+            runId);
+    }
+
+    void GetEcnNonBondAndBondOwnedSums(out int nonBondEOnAtomList, out int electronsOwnedFromIncidentBonds)
+    {
+        nonBondEOnAtomList = 0;
+        for (int i = 0; i < bondedOrbitals.Count; i++)
+        {
+            var o = bondedOrbitals[i];
+            if (o == null || o.Bond != null) continue;
+            nonBondEOnAtomList += o.ElectronCount;
+        }
+        electronsOwnedFromIncidentBonds = 0;
+        foreach (var cb in covalentBonds)
+        {
+            if (cb == null) continue;
+            electronsOwnedFromIncidentBonds += cb.GetElectronsOwnedBy(this);
+        }
+    }
+
+    void EmitMoleculeElectronConfigOneAtomNdjson(string phase, int bondEventId, CovalentBond opBond, string bondKind, string runId)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        int sumE = 0;
+        int sumNonBond = 0;
+        var sbOrbs = new StringBuilder(128);
+        sbOrbs.Append('[');
+        bool firstOrb = true;
+        for (int i = 0; i < bondedOrbitals.Count; i++)
+        {
+            var o = bondedOrbitals[i];
+            if (o == null) continue;
+            sumE += o.ElectronCount;
+            bool lone = o.Bond == null;
+            if (lone) sumNonBond += o.ElectronCount;
+            if (!firstOrb) sbOrbs.Append(',');
+            firstOrb = false;
+            int bid = o.Bond != null ? o.Bond.GetInstanceID() : 0;
+            bool sigma = o.Bond is CovalentBond cb && cb.IsSigmaBondLine();
+            bool piB = o.Bond is CovalentBond cb2 && !cb2.IsSigmaBondLine();
+            int parentId = o.transform.parent != null ? o.transform.parent.GetInstanceID() : 0;
+            sbOrbs.Append("{\"id\":").Append(o.GetInstanceID());
+            sbOrbs.Append(",\"e\":").Append(o.ElectronCount);
+            sbOrbs.Append(",\"lone\":").Append(lone ? "true" : "false");
+            sbOrbs.Append(",\"bondId\":").Append(bid);
+            sbOrbs.Append(",\"sigma\":").Append(sigma ? "true" : "false");
+            sbOrbs.Append(",\"pi\":").Append(piB ? "true" : "false");
+            sbOrbs.Append(",\"parentId\":").Append(parentId);
+            sbOrbs.Append('}');
+        }
+        sbOrbs.Append(']');
+
+        var sbBonds = new StringBuilder(96);
+        sbBonds.Append('[');
+        bool firstB = true;
+        int eOwnedFromBonds = 0;
+        foreach (var cb in covalentBonds)
+        {
+            if (cb == null) continue;
+            int ownedThis = cb.GetElectronsOwnedBy(this);
+            eOwnedFromBonds += ownedThis;
+            var other = cb.AtomA == this ? cb.AtomB : cb.AtomA;
+            if (!firstB) sbBonds.Append(',');
+            firstB = false;
+            int orbE = cb.Orbital != null ? cb.Orbital.ElectronCount : 0;
+            int fadeE = cb.OrbitalBeingFadedForCharge != null ? cb.OrbitalBeingFadedForCharge.ElectronCount : 0;
+            sbBonds.Append("{\"bondId\":").Append(cb.GetInstanceID());
+            sbBonds.Append(",\"partnerId\":").Append(other != null ? other.GetInstanceID() : 0);
+            sbBonds.Append(",\"sigma\":").Append(cb.IsSigmaBondLine() ? "true" : "false");
+            sbBonds.Append(",\"orbitalE\":").Append(orbE);
+            sbBonds.Append(",\"fadedOrbE\":").Append(fadeE);
+            sbBonds.Append(",\"eOwnedByThisAtom\":").Append(ownedThis);
+            sbBonds.Append('}');
+        }
+        sbBonds.Append(']');
+
+        int totalValenceAttributed = sumNonBond + eOwnedFromBonds;
+
+        var sb = new StringBuilder(520);
+        sb.Append("{\"rowKind\":\"atom\"");
+        sb.Append(",\"phase\":\"").Append(phase).Append('"');
+        sb.Append(",\"bondEventId\":").Append(bondEventId);
+        sb.Append(",\"bondKind\":\"").Append(bondKind).Append('"');
+        sb.Append(",\"atomId\":").Append(GetInstanceID());
+        sb.Append(",\"Z\":").Append(AtomicNumber);
+        sb.Append(",\"charge\":").Append(Charge);
+        sb.Append(",\"sigmaN\":").Append(GetDistinctSigmaNeighborCount());
+        sb.Append(",\"piN\":").Append(GetPiBondCount());
+        sb.Append(",\"bondedOrbitalSlots\":").Append(bondedOrbitals.Count);
+        sb.Append(",\"sumOrbitalEOnAtomList\":").Append(sumE);
+        sb.Append(",\"nonBondEOnAtomList\":").Append(sumNonBond);
+        sb.Append(",\"eOwnedFromIncidentBonds\":").Append(eOwnedFromBonds);
+        sb.Append(",\"totalValenceElectronsAttributed\":").Append(totalValenceAttributed);
+        sb.Append(",\"orbitals\":").Append(sbOrbs.ToString());
+        sb.Append(",\"incidentBonds\":").Append(sbBonds.ToString());
+        if (opBond != null)
+        {
+            sb.Append(",\"opBondId\":").Append(opBond.GetInstanceID());
+            sb.Append(",\"opBondIsSigma\":").Append(opBond.IsSigmaBondLine() ? "true" : "false");
+        }
+        sb.Append('}');
+
+        string msg = string.Concat(
+            "[mol-ecn] rowKind=atom phase=", phase,
+            " bondEventId=", bondEventId.ToString(inv),
+            " bondKind=", bondKind,
+            " atomId=", GetInstanceID().ToString(inv),
+            " Z=", AtomicNumber.ToString(inv),
+            " charge=", Charge.ToString(inv),
+            " nonBondE=", sumNonBond.ToString(inv),
+            " eOwnedBonds=", eOwnedFromBonds.ToString(inv),
+            " totalValenceE=", totalValenceAttributed.ToString(inv),
+            " sigmaN=", GetDistinctSigmaNeighborCount().ToString(inv),
+            " piN=", GetPiBondCount().ToString(inv));
+        ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+            "H-mol-ecn",
+            "AtomFunction.EmitMoleculeElectronConfigOneAtomNdjson",
+            msg,
+            sb.ToString(),
+            runId);
+    }
+
+    void EmitOxygenOcoTerminalNdjson(string phase, int bondEventId, CovalentBond opBond, string bondKind, string runId)
+    {
+        if (!DebugLogOxygenOcoLewisDetail || AtomicNumber != 8) return;
+        var inv = CultureInfo.InvariantCulture;
+        int nLone2 = 0, nLone1 = 0, nLone0 = 0;
+        for (int i = 0; i < bondedOrbitals.Count; i++)
+        {
+            var o = bondedOrbitals[i];
+            if (o == null || o.Bond != null) continue;
+            int e = o.ElectronCount;
+            if (e >= 2) nLone2++;
+            else if (e == 1) nLone1++;
+            else nLone0++;
+        }
+        int nSigmaToC = 0, nPiToC = 0;
+        int centralCId = 0;
+        var carbonIds = new HashSet<int>();
+        foreach (var cb in covalentBonds)
+        {
+            if (cb == null) continue;
+            var other = cb.AtomA == this ? cb.AtomB : cb.AtomA;
+            if (other == null || other.AtomicNumber != 6) continue;
+            carbonIds.Add(other.GetInstanceID());
+            if (cb.IsSigmaBondLine()) nSigmaToC++;
+            else nPiToC++;
+            centralCId = other.GetInstanceID();
+        }
+        int nCarbonNeighborsDistinct = carbonIds.Count;
+        bool opPiTouchesThis = opBond != null && !opBond.IsSigmaBondLine() &&
+            (opBond.AtomA == this || opBond.AtomB == this);
+        bool lewisOcoNeutralTerminal = nCarbonNeighborsDistinct == 1 && nSigmaToC == 1 && nPiToC == 1 &&
+            nLone2 == 2 && nLone1 == 0;
+        var sb = new StringBuilder(360);
+        sb.Append("{\"rowKind\":\"ocoOTerminal\"");
+        sb.Append(",\"phase\":\"").Append(phase).Append('"');
+        sb.Append(",\"bondEventId\":").Append(bondEventId);
+        sb.Append(",\"bondKind\":\"").Append(bondKind).Append('"');
+        sb.Append(",\"atomId\":").Append(GetInstanceID());
+        sb.Append(",\"nLone2e\":").Append(nLone2);
+        sb.Append(",\"nLone1e\":").Append(nLone1);
+        sb.Append(",\"nLone0e\":").Append(nLone0);
+        sb.Append(",\"nSigmaToC\":").Append(nSigmaToC);
+        sb.Append(",\"nPiToC\":").Append(nPiToC);
+        sb.Append(",\"nCarbonNeighborsDistinct\":").Append(nCarbonNeighborsDistinct);
+        sb.Append(",\"centralCId\":").Append(nCarbonNeighborsDistinct == 1 ? centralCId : 0);
+        sb.Append(",\"opPiTouchesThis\":").Append(opPiTouchesThis ? "true" : "false");
+        sb.Append(",\"lewisOcoNeutralTerminal\":").Append(lewisOcoNeutralTerminal ? "true" : "false");
+        sb.Append('}');
+        string msg = string.Concat(
+            "[oco-O-lewis] phase=", phase,
+            " bondEventId=", bondEventId.ToString(inv),
+            " atomId=", GetInstanceID().ToString(inv),
+            " nLone2e=", nLone2.ToString(inv),
+            " nLone1e=", nLone1.ToString(inv),
+            " sigmaToC=", nSigmaToC.ToString(inv),
+            " piToC=", nPiToC.ToString(inv),
+            " lewisOco=", lewisOcoNeutralTerminal ? "ok" : "no");
+        // #region agent log
+        ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+            "H-oco-O-lewis",
+            "AtomFunction.EmitOxygenOcoTerminalNdjson",
+            msg,
+            sb.ToString(),
+            runId);
+        // #endregion
+    }
+
+    void EmitOxygenMolEcnOrbitalPairwiseAnglesNdjson(string phase, int bondEventId, CovalentBond opBond, string bondKind, string runId)
+    {
+        if (!DebugLogOxygenMolEcnOrbitalAngles || AtomicNumber != 8) return;
+        var inv = CultureInfo.InvariantCulture;
+        var tips = new List<Vector3>(8);
+        var sbTips = new StringBuilder(256);
+        sbTips.Append('[');
+        bool firstT = true;
+        int nSigma = 0, nPi = 0, nLone = 0;
+        var seen = new HashSet<ElectronOrbitalFunction>();
+        void AppendTip(ElectronOrbitalFunction o)
+        {
+            if (o == null || !seen.Add(o)) return;
+            Vector3 tip = OrbitalTipDirectionInNucleusLocal(o);
+            if (tip.sqrMagnitude < 1e-14f) return;
+            tip.Normalize();
+            tips.Add(tip);
+            bool lone = o.Bond == null;
+            bool sigma = o.Bond is CovalentBond cbS && cbS.IsSigmaBondLine();
+            bool piB = o.Bond is CovalentBond cbP && !cbP.IsSigmaBondLine();
+            char kind = lone ? 'L' : (sigma ? 'S' : (piB ? 'P' : '?'));
+            if (lone) nLone++;
+            else if (sigma) nSigma++;
+            else if (piB) nPi++;
+            if (!firstT) sbTips.Append(',');
+            firstT = false;
+            sbTips.Append("{\"id\":").Append(o.GetInstanceID());
+            sbTips.Append(",\"kind\":\"").Append(kind).Append('"');
+            sbTips.Append(",\"e\":").Append(o.ElectronCount);
+            sbTips.Append(",\"parentIsNuc\":").Append(o.transform.parent == transform ? "true" : "false");
+            sbTips.Append(",\"tx\":").Append(tip.x.ToString("F4", inv));
+            sbTips.Append(",\"ty\":").Append(tip.y.ToString("F4", inv));
+            sbTips.Append(",\"tz\":").Append(tip.z.ToString("F4", inv));
+            sbTips.Append('}');
+        }
+        for (int i = 0; i < bondedOrbitals.Count; i++)
+            AppendTip(bondedOrbitals[i]);
+        foreach (var cb in covalentBonds)
+        {
+            if (cb == null) continue;
+            if (cb.AtomA != this && cb.AtomB != this) continue;
+            AppendTip(cb.Orbital);
+        }
+        sbTips.Append(']');
+        int nTips = tips.Count;
+        if (nTips < 2) return;
+        TetraDomainPairwiseAngleStats(tips, out float pMin, out float pMax, out float pMean, out float pSpread, out float meanDev109);
+        float maxDev109 = 0f, maxDev120 = 0f;
+        for (int a = 0; a < nTips; a++)
+        {
+            for (int b = a + 1; b < nTips; b++)
+            {
+                float ang = Vector3.Angle(tips[a], tips[b]);
+                maxDev109 = Mathf.Max(maxDev109, Mathf.Abs(ang - TetrahedralInterdomainAngleDeg));
+                maxDev120 = Mathf.Max(maxDev120, Mathf.Abs(ang - 120f));
+            }
+        }
+        var sbPairs = new StringBuilder(120);
+        sbPairs.Append('[');
+        bool firstP = true;
+        for (int a = 0; a < nTips; a++)
+        {
+            for (int b = a + 1; b < nTips; b++)
+            {
+                if (!firstP) sbPairs.Append(',');
+                firstP = false;
+                float ang = Vector3.Angle(tips[a], tips[b]);
+                sbPairs.Append("{\"i\":").Append(a).Append(",\"j\":").Append(b);
+                sbPairs.Append(",\"deg\":").Append(ang.ToString("F2", inv)).Append('}');
+            }
+        }
+        sbPairs.Append(']');
+        var sb = new StringBuilder(420);
+        sb.Append("{\"rowKind\":\"ocoOAngleSnap\"");
+        sb.Append(",\"phase\":\"").Append(phase).Append('"');
+        sb.Append(",\"bondEventId\":").Append(bondEventId);
+        sb.Append(",\"bondKind\":\"").Append(bondKind).Append('"');
+        sb.Append(",\"atomId\":").Append(GetInstanceID());
+        sb.Append(",\"nTips\":").Append(nTips);
+        sb.Append(",\"nLoneTips\":").Append(nLone);
+        sb.Append(",\"nSigmaTips\":").Append(nSigma);
+        sb.Append(",\"nPiTips\":").Append(nPi);
+        sb.Append(",\"pairMinDeg\":").Append(pMin.ToString("F2", inv));
+        sb.Append(",\"pairMaxDeg\":").Append(pMax.ToString("F2", inv));
+        sb.Append(",\"pairMeanDeg\":").Append(pMean.ToString("F2", inv));
+        sb.Append(",\"pairSpreadDeg\":").Append(pSpread.ToString("F2", inv));
+        sb.Append(",\"meanPairDevFrom109p5Deg\":").Append(meanDev109.ToString("F2", inv));
+        sb.Append(",\"maxPairDevFrom109p5Deg\":").Append(maxDev109.ToString("F2", inv));
+        sb.Append(",\"maxPairDevFrom120Deg\":").Append(maxDev120.ToString("F2", inv));
+        sb.Append(",\"tips\":").Append(sbTips.ToString());
+        sb.Append(",\"pairwiseDeg\":").Append(sbPairs.ToString());
+        sb.Append(",\"full3D\":").Append(OrbitalAngleUtility.UseFull3DOrbitalGeometry ? "true" : "false");
+        sb.Append('}');
+        string msg = string.Concat(
+            "[OCO-O-angle] phase=", phase,
+            " bondEventId=", bondEventId.ToString(inv),
+            " atomId=", GetInstanceID().ToString(inv),
+            " nTips=", nTips.ToString(inv),
+            " pairMinDeg=", pMin.ToString("F2", inv),
+            " pairMaxDeg=", pMax.ToString("F2", inv),
+            " maxDev109p5=", maxDev109.ToString("F2", inv),
+            " maxDev120=", maxDev120.ToString("F2", inv));
+        // #region agent log
+        ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+            "H-O-angle-snap",
+            "AtomFunction.EmitOxygenMolEcnOrbitalPairwiseAnglesNdjson",
+            msg,
+            sb.ToString(),
+            runId);
+        // #endregion
+    }
+
+    /// <summary>
+    /// Debug: for oxygen, log all nucleus-parented lobe +X directions (nucleus local) and pairwise angles.
+    /// Highlights orbitals <b>not</b> in <paramref name="redistRows"/> and not on the operation π bond (off-op lone pairs that still get sibling joint motion).
+    /// </summary>
+    public void LogOxygenOffRedistShellDiagnostics(
+        string phase,
+        string hypothesisId,
+        CovalentBond operationPiBond,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistRows,
+        float smoothS,
+        Quaternion deltaJointFull,
+        int siblingSnapshotCount)
+    {
+        if (!DebugLogOcoOffOpNucleusLoneAngles || !OrbitalAngleUtility.UseFull3DOrbitalGeometry) return;
+        if (atomicNumber != 8) return;
+        var inv = CultureInfo.InvariantCulture;
+        int opId = operationPiBond != null ? operationPiBond.GetInstanceID() : 0;
+        var inRedist = new HashSet<ElectronOrbitalFunction>();
+        if (redistRows != null)
+        {
+            for (int i = 0; i < redistRows.Count; i++)
+            {
+                var o = redistRows[i].orb;
+                if (o != null && o.transform.parent == transform) inRedist.Add(o);
+            }
+        }
+        var entries = new List<(int id, bool inRedist, bool offOp, bool isLone, bool isSigma, int bondId, Vector3 tipN)>();
+        for (int i = 0; i < bondedOrbitals.Count; i++)
+        {
+            var o = bondedOrbitals[i];
+            if (o == null || o.transform.parent != transform) continue;
+            Vector3 tip = OrbitalTipDirectionInNucleusLocal(o);
+            if (tip.sqrMagnitude < 1e-14f) continue;
+            tip.Normalize();
+            bool ir = inRedist.Contains(o);
+            bool isSig = o.Bond is CovalentBond cb0 && cb0.IsSigmaBondLine();
+            bool onOpPi = operationPiBond != null && !operationPiBond.IsSigmaBondLine() && o.Bond == operationPiBond;
+            bool offOp = !onOpPi;
+            int bid = o.Bond != null ? o.Bond.GetInstanceID() : 0;
+            bool isLone = o.Bond == null;
+            entries.Add((o.GetInstanceID(), ir, offOp, isLone, isSig, bid, tip));
+        }
+        if (entries.Count < 2) return;
+        float pairMin = 999f, pairMax = -1f, maxDev120 = -1f;
+        for (int a = 0; a < entries.Count; a++)
+        {
+            for (int b = a + 1; b < entries.Count; b++)
+            {
+                float ang = Vector3.Angle(entries[a].tipN, entries[b].tipN);
+                if (ang < pairMin) pairMin = ang;
+                if (ang > pairMax) pairMax = ang;
+                float dev = Mathf.Abs(ang - 120f);
+                if (dev > maxDev120) maxDev120 = dev;
+            }
+        }
+        float offOpLoneToRedistMinDeg = 999f;
+        for (int i = 0; i < entries.Count; i++)
+        {
+            if (!entries[i].offOp || !entries[i].isLone) continue;
+            for (int j = 0; j < entries.Count; j++)
+            {
+                if (!entries[j].inRedist) continue;
+                float ang = Vector3.Angle(entries[i].tipN, entries[j].tipN);
+                if (ang < offOpLoneToRedistMinDeg) offOpLoneToRedistMinDeg = ang;
+            }
+        }
+        if (offOpLoneToRedistMinDeg > 998f) offOpLoneToRedistMinDeg = -1f;
+        int opPiOrbIdForTriad = 0;
+        Vector3 opPiTipNucleus = default;
+        bool haveOpPiTipNucleus = false;
+        float triadMinDeg = -1f;
+        float triadMaxDeg = -1f;
+        float triadMaxDevFrom120Deg = -1f;
+        if (operationPiBond != null && !operationPiBond.IsSigmaBondLine()
+            && operationPiBond.Orbital != null
+            && (operationPiBond.AtomA == this || operationPiBond.AtomB == this))
+        {
+            Vector3 tPi = OrbitalTipDirectionInNucleusLocal(operationPiBond.Orbital);
+            if (tPi.sqrMagnitude > 1e-14f)
+            {
+                tPi.Normalize();
+                opPiTipNucleus = tPi;
+                haveOpPiTipNucleus = true;
+                opPiOrbIdForTriad = operationPiBond.Orbital.GetInstanceID();
+            }
+        }
+        Vector3 loneTipA = default, loneTipB = default;
+        int nLoneTipsForTriad = 0;
+        for (int li = 0; li < entries.Count && nLoneTipsForTriad < 2; li++)
+        {
+            if (!entries[li].isLone) continue;
+            if (nLoneTipsForTriad == 0) loneTipA = entries[li].tipN;
+            else loneTipB = entries[li].tipN;
+            nLoneTipsForTriad++;
+        }
+        if (haveOpPiTipNucleus && nLoneTipsForTriad >= 2)
+        {
+            triadMinDeg = 999f;
+            triadMaxDeg = -1f;
+            triadMaxDevFrom120Deg = -1f;
+            var tri = new[] { loneTipA, loneTipB, opPiTipNucleus };
+            for (int ta = 0; ta < 3; ta++)
+            {
+                for (int tb = ta + 1; tb < 3; tb++)
+                {
+                    float ang = Vector3.Angle(tri[ta], tri[tb]);
+                    if (ang < triadMinDeg) triadMinDeg = ang;
+                    if (ang > triadMaxDeg) triadMaxDeg = ang;
+                    float dev = Mathf.Abs(ang - 120f);
+                    if (dev > triadMaxDevFrom120Deg) triadMaxDevFrom120Deg = dev;
+                }
+            }
+        }
+        var angVsRedistTargetByOrbId = new Dictionary<int, float>();
+        if (redistRows != null)
+        {
+            for (int ri = 0; ri < redistRows.Count; ri++)
+            {
+                var (oR, _, rotT) = redistRows[ri];
+                if (oR == null || oR.transform.parent != transform) continue;
+                Vector3 tipNow = OrbitalTipDirectionInNucleusLocal(oR);
+                if (tipNow.sqrMagnitude < 1e-14f) continue;
+                tipNow.Normalize();
+                Vector3 tipTgt = OrbitalSlotPlusXInNucleusLocal(oR, rotT);
+                if (tipTgt.sqrMagnitude < 1e-14f) continue;
+                tipTgt.Normalize();
+                angVsRedistTargetByOrbId[oR.GetInstanceID()] = Vector3.Angle(tipNow, tipTgt);
+            }
+        }
+        float jointDeg = Quaternion.Angle(Quaternion.identity, deltaJointFull);
+        var sbData = new System.Text.StringBuilder(400);
+        sbData.Append("{\"hypothesisId\":\"").Append(hypothesisId).Append('"');
+        sbData.Append(",\"phase\":\"").Append(phase).Append('"');
+        sbData.Append(",\"pivotId\":").Append(GetInstanceID());
+        sbData.Append(",\"frame\":").Append(Time.frameCount);
+        sbData.Append(",\"opBondId\":").Append(opId);
+        sbData.Append(",\"smoothS\":").Append(smoothS.ToString("F3", inv));
+        sbData.Append(",\"jointDeg\":").Append(jointDeg.ToString("F2", inv));
+        sbData.Append(",\"siblingSnapN\":").Append(siblingSnapshotCount);
+        sbData.Append(",\"pairMinDeg\":").Append(pairMin.ToString("F2", inv));
+        sbData.Append(",\"pairMaxDeg\":").Append(pairMax.ToString("F2", inv));
+        sbData.Append(",\"maxDevFrom120Deg\":").Append(maxDev120.ToString("F2", inv));
+        sbData.Append(",\"offOpLoneToRedistMinDeg\":").Append(offOpLoneToRedistMinDeg.ToString("F2", inv));
+        sbData.Append(",\"opPiOrbId\":").Append(opPiOrbIdForTriad);
+        if (haveOpPiTipNucleus && nLoneTipsForTriad >= 2)
+        {
+            sbData.Append(",\"triadMinDeg\":").Append(triadMinDeg.ToString("F2", inv));
+            sbData.Append(",\"triadMaxDeg\":").Append(triadMaxDeg.ToString("F2", inv));
+            sbData.Append(",\"triadMaxDevFrom120Deg\":").Append(triadMaxDevFrom120Deg.ToString("F2", inv));
+        }
+        else
+        {
+            sbData.Append(",\"triadMinDeg\":null,\"triadMaxDeg\":null,\"triadMaxDevFrom120Deg\":null");
+        }
+        sbData.Append(",\"tips\":[");
+        for (int i = 0; i < entries.Count; i++)
+        {
+            if (i > 0) sbData.Append(',');
+            var e = entries[i];
+            sbData.Append("{\"id\":").Append(e.id);
+            sbData.Append(",\"inRedist\":").Append(e.inRedist ? "true" : "false");
+            sbData.Append(",\"offOp\":").Append(e.offOp ? "true" : "false");
+            sbData.Append(",\"lone\":").Append(e.isLone ? "true" : "false");
+            sbData.Append(",\"sigma\":").Append(e.isSigma ? "true" : "false");
+            sbData.Append(",\"bondId\":").Append(e.bondId);
+            sbData.Append(",\"tx\":").Append(e.tipN.x.ToString("F4", inv));
+            sbData.Append(",\"ty\":").Append(e.tipN.y.ToString("F4", inv));
+            sbData.Append(",\"tz\":").Append(e.tipN.z.ToString("F4", inv));
+            if (angVsRedistTargetByOrbId.TryGetValue(e.id, out float angV))
+                sbData.Append(",\"angVsRedistTargetDeg\":").Append(angV.ToString("F2", inv));
+            else
+                sbData.Append(",\"angVsRedistTargetDeg\":null");
+            sbData.Append('}');
+        }
+        sbData.Append("]}");
+        string triadSuffix = "";
+        if (haveOpPiTipNucleus && nLoneTipsForTriad >= 2)
+            triadSuffix = " opPiOrbId=" + opPiOrbIdForTriad
+                + " triadMinDeg=" + triadMinDeg.ToString("F2", inv) + " triadMaxDeg=" + triadMaxDeg.ToString("F2", inv)
+                + " triadMaxDevFrom120Deg=" + triadMaxDevFrom120Deg.ToString("F2", inv);
+        string oneLine = "[oco-offop-lone] phase=" + phase + " hypothesisId=" + hypothesisId + " pivotId=" + GetInstanceID()
+            + " opBondId=" + opId + " frame=" + Time.frameCount + " smoothS=" + smoothS.ToString("F3", inv)
+            + " jointDeg=" + jointDeg.ToString("F2", inv) + " siblingSnapN=" + siblingSnapshotCount
+            + " nTips=" + entries.Count + " pairMinDeg=" + pairMin.ToString("F2", inv) + " pairMaxDeg=" + pairMax.ToString("F2", inv)
+            + " maxDevFrom120Deg=" + maxDev120.ToString("F2", inv)
+            + " offOpLoneToRedistMinDeg=" + (offOpLoneToRedistMinDeg >= 0f ? offOpLoneToRedistMinDeg.ToString("F2", inv) : "na")
+            + triadSuffix;
+        Debug.Log(oneLine);
+        if (DebugLogOcoSecondPiNdjson)
+            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+                hypothesisId,
+                "AtomFunction.LogOxygenOffRedistShellDiagnostics",
+                oneLine,
+                sbData.ToString());
+    }
+
     public static string BuildJointFragSigmaPartnerIdSummary(
         AtomFunction pivot,
         List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> targets)
@@ -9525,7 +10463,17 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         foreach (var (orb, pos, rot) in targets)
         {
-            if (orb != null && orb.transform.parent == transform)
+            if (orb == null) continue;
+            bool onThisNucleus = orb.transform.parent == transform;
+            bool piSharedOnPartnerNucleus = false;
+            if (!onThisNucleus && orb.Bond is CovalentBond cbPiApply && !cbPiApply.IsSigmaBondLine()
+                && (cbPiApply.AtomA == this || cbPiApply.AtomB == this))
+            {
+                var partnerApply = cbPiApply.AtomA == this ? cbPiApply.AtomB : cbPiApply.AtomA;
+                if (partnerApply != null && orb.transform.parent == partnerApply.transform)
+                    piSharedOnPartnerNucleus = true;
+            }
+            if (onThisNucleus || piSharedOnPartnerNucleus)
             {
                 orb.transform.localPosition = pos;
                 orb.transform.localRotation = rot;
@@ -9711,9 +10659,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <summary>
-    /// During σ bond formation, rotate shared σ lobes on <see cref="CovalentBond"/> to match ideal σ-vertices from <see cref="TryMatchLoneOrbitalsToFreeIdealDirections"/> (same locks as <see cref="GetRedistributeTargets3D"/>).
-    /// Call after lone lobes reflect the desired layout — once after <see cref="ApplyRedistributeTargets"/>, or each frame while step 2 lerps so <see cref="CovalentBond.GetOrbitalTargetWorldState"/> picks up <c>orbitalRedistributionWorldDelta</c>.
-    /// </summary>
+    /// During σ bond formation, align shared σ lobes on <see cref="CovalentBond"/> and (for trigonal electron geometry) nucleus lone lobes to the same <see cref="TryMatchLoneOrbitalsToFreeIdealDirections"/> frame as full <see cref="GetRedistributeTargets3D"/>.
+    /// Previously only σ received <see cref="SyncSigmaBondOrbitalTipsFromLocks"/>; lone pairs kept pre-hybrid directions so lone–σ angles could deviate from 120° on terminal O (e.g. O=C=O).</summary>
     public void RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(AtomFunction partnerAlongNewSigmaBond)
     {
         if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry) return;
@@ -9751,7 +10698,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var idealRaw = VseprLayout.GetIdealLocalDirections(domainCount);
         var newDirs = new List<Vector3>(VseprLayout.AlignFirstDirectionTo(idealRaw, refLocal));
 
-        if (!TryMatchLoneOrbitalsToFreeIdealDirections(refLocal, domainCount, bondAxes, loneOrbitals, newDirs, out _, out _, out var bondIdealLocks, null))
+        if (!TryMatchLoneOrbitalsToFreeIdealDirections(
+                refLocal, domainCount, bondAxes, loneOrbitals, newDirs, out var bestMapping, out var pinReservedDir, out var bondIdealLocks, null))
         {
             if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
                 && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
@@ -9764,11 +10712,230 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
             && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
             Debug.Log(
-                "[σ-form-rot-hybrid] TryMatch OK → SyncSigmaBondOrbitalTips atom=" + name + "(Z=" + AtomicNumber + ") partner=" +
+                "[σ-form-rot-hybrid] TryMatch OK → lone+SyncSigma atom=" + name + "(Z=" + AtomicNumber + ") partner=" +
                 (partnerAlongNewSigmaBond != null ? partnerAlongNewSigmaBond.name : "null") + " domainCount=" + domainCount +
                 " σAxesMerged=" + bondAxes.Count + " loneOcc=" + loneOrbitals.Count + " lockPairs=" + bondIdealLocks.Count);
 
+        // Trigonal domains (e.g. one merged σ axis + two lone pairs on terminal =O): apply lone slots like Redistribute3D
+        // so lone–σ pairwise angles match ~120°; σ-only sync left lobes stale (H-O-angle-snap legacy O lone–σ ~84° / ~145°).
+        if (domainCount == 3 && bestMapping != null && bestMapping.Count > 0 && bestMapping.Count == loneOrbitals.Count
+            && !pinReservedDir.HasValue)
+        {
+            for (int i = 0; i < bestMapping.Count; i++)
+            {
+                var orb = loneOrbitals[i];
+                if (orb == null) continue;
+                Vector3 newDir = bestMapping[i].newDir;
+                var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(newDir, bondRadius, orb.transform.localRotation);
+                orb.transform.localPosition = pos;
+                orb.transform.localRotation = rot;
+            }
+        }
+
         SyncSigmaBondOrbitalTipsFromLocks(bondIdealLocks);
+    }
+
+    /// <summary>
+    /// π formation only calls <see cref="RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute"/> on the two π endpoints.
+    /// σ-neighbor atoms (e.g. the other terminal O in O=C=O) keep stale lone-vs-σ hybrid frames until refreshed; see NDJSON H-O-angle-snap on "far" O.
+    /// </summary>
+    public static void RefreshSigmaBondOrbitalHybridAlignmentForConnectedMolecule(AtomFunction anyInMolecule)
+    {
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || anyInMolecule == null) return;
+        var mol = anyInMolecule.GetConnectedMolecule();
+        if (mol == null || mol.Count == 0) return;
+        UpdateSigmaBondLineTransformsOnlyForAtoms(mol);
+        foreach (var a in mol)
+        {
+            if (a == null) continue;
+            a.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(null);
+        }
+    }
+
+    /// <summary>World poses + bond π δ for π step-2 bake: lerp ends where post-hybrid finals land (no pop after animation).</summary>
+    public sealed class PiStep2VisualBakeState
+    {
+        public List<(AtomFunction atom, Vector3 wPos, Quaternion wRot)> Atoms;
+        public List<(CovalentBond bond, Vector3 wPos, Quaternion wRot, Quaternion orbDelta, bool orbFlipped)> Bonds;
+        public List<(ElectronOrbitalFunction orb, Vector3 wPos, Quaternion wRot)> Orbitals;
+
+        /// <param name="extraOrbitalsWorldSpace">
+        /// π step-2: orbitals detached from atom hierarchies (e.g. source lobe after <c>SetParent(null)</c>) must be listed so pre- and post-bake captures include the same orbital set.
+        /// </param>
+        public static PiStep2VisualBakeState Capture(AtomFunction anyInMolecule, params ElectronOrbitalFunction[] extraOrbitalsWorldSpace)
+        {
+            var state = new PiStep2VisualBakeState();
+            if (anyInMolecule == null)
+            {
+                state.Atoms = new List<(AtomFunction, Vector3, Quaternion)>();
+                state.Bonds = new List<(CovalentBond, Vector3, Quaternion, Quaternion, bool)>();
+                state.Orbitals = new List<(ElectronOrbitalFunction, Vector3, Quaternion)>();
+                return state;
+            }
+            var mol = anyInMolecule.GetConnectedMolecule();
+            state.Atoms = new List<(AtomFunction, Vector3, Quaternion)>(mol.Count);
+            foreach (var a in mol)
+            {
+                if (a == null) continue;
+                var t = a.transform;
+                state.Atoms.Add((a, t.position, t.rotation));
+            }
+            state.Atoms.Sort((x, y) =>
+            {
+                int ix = x.atom != null ? x.atom.GetInstanceID() : int.MaxValue;
+                int iy = y.atom != null ? y.atom.GetInstanceID() : int.MaxValue;
+                return ix.CompareTo(iy);
+            });
+            var seenBonds = new HashSet<CovalentBond>();
+            state.Bonds = new List<(CovalentBond, Vector3, Quaternion, Quaternion, bool)>();
+            foreach (var a in mol)
+            {
+                if (a?.CovalentBonds == null) continue;
+                foreach (var b in a.CovalentBonds)
+                {
+                    if (b == null || !seenBonds.Add(b)) continue;
+                    var bt = b.transform;
+                    var (d, f) = b.CapturePiStep2RedistributionForBake();
+                    state.Bonds.Add((b, bt.position, bt.rotation, d, f));
+                }
+            }
+            state.Bonds.Sort((x, y) =>
+            {
+                int ix = x.bond != null ? x.bond.GetInstanceID() : int.MaxValue;
+                int iy = y.bond != null ? y.bond.GetInstanceID() : int.MaxValue;
+                return ix.CompareTo(iy);
+            });
+            var orbsSeen = new HashSet<ElectronOrbitalFunction>();
+            state.Orbitals = new List<(ElectronOrbitalFunction, Vector3, Quaternion)>();
+            foreach (var a in mol)
+            {
+                if (a == null) continue;
+                var childOrbs = a.GetComponentsInChildren<ElectronOrbitalFunction>(true);
+                for (int i = 0; i < childOrbs.Length; i++)
+                {
+                    var o = childOrbs[i];
+                    if (o == null || !orbsSeen.Add(o)) continue;
+                    var ot = o.transform;
+                    state.Orbitals.Add((o, ot.position, ot.rotation));
+                }
+                if (a.CovalentBonds == null) continue;
+                foreach (var cb in a.CovalentBonds)
+                {
+                    if (cb?.Orbital == null || !orbsSeen.Add(cb.Orbital)) continue;
+                    var ot = cb.Orbital.transform;
+                    state.Orbitals.Add((cb.Orbital, ot.position, ot.rotation));
+                }
+            }
+            if (extraOrbitalsWorldSpace != null)
+            {
+                for (int ei = 0; ei < extraOrbitalsWorldSpace.Length; ei++)
+                {
+                    var o = extraOrbitalsWorldSpace[ei];
+                    if (o == null || !orbsSeen.Add(o)) continue;
+                    var ot = o.transform;
+                    state.Orbitals.Add((o, ot.position, ot.rotation));
+                }
+            }
+            state.Orbitals.Sort((x, y) =>
+            {
+                int ix = x.orb != null ? x.orb.GetInstanceID() : int.MaxValue;
+                int iy = y.orb != null ? y.orb.GetInstanceID() : int.MaxValue;
+                return ix.CompareTo(iy);
+            });
+            return state;
+        }
+
+        public static void Restore(PiStep2VisualBakeState s)
+        {
+            if (s == null) return;
+            if (s.Atoms != null)
+                for (int i = 0; i < s.Atoms.Count; i++)
+                {
+                    var (a, p, r) = s.Atoms[i];
+                    if (a != null) a.transform.SetPositionAndRotation(p, r);
+                }
+            if (s.Bonds != null)
+                for (int i = 0; i < s.Bonds.Count; i++)
+                {
+                    var (b, p, r, d, f) = s.Bonds[i];
+                    if (b == null) continue;
+                    b.transform.SetPositionAndRotation(p, r);
+                    b.RestorePiStep2RedistributionForBake(d, f);
+                }
+            if (s.Orbitals != null)
+                for (int i = 0; i < s.Orbitals.Count; i++)
+                {
+                    var (o, wp, wr) = s.Orbitals[i];
+                    if (o != null) o.transform.SetPositionAndRotation(wp, wr);
+                }
+        }
+
+        public static void Lerp(PiStep2VisualBakeState a, PiStep2VisualBakeState b, float s)
+        {
+            if (a == null || b == null) return;
+            s = Mathf.Clamp01(s);
+            if (a.Atoms != null && b.Atoms != null && a.Atoms.Count == b.Atoms.Count)
+                for (int i = 0; i < a.Atoms.Count; i++)
+                {
+                    var (atom, ap, ar) = a.Atoms[i];
+                    var (_, bp, br) = b.Atoms[i];
+                    if (atom != null) atom.transform.SetPositionAndRotation(Vector3.Lerp(ap, bp, s), Quaternion.Slerp(ar, br, s));
+                }
+            if (a.Bonds != null && b.Bonds != null && a.Bonds.Count == b.Bonds.Count)
+                for (int i = 0; i < a.Bonds.Count; i++)
+                {
+                    var (bond, ap, ar, ad, af) = a.Bonds[i];
+                    var (_, bp, br, bd, bf) = b.Bonds[i];
+                    if (bond == null) continue;
+                    bond.transform.SetPositionAndRotation(Vector3.Lerp(ap, bp, s), Quaternion.Slerp(ar, br, s));
+                    bond.RestorePiStep2RedistributionForBake(Quaternion.Slerp(ad, bd, s), s >= 0.999f ? bf : af);
+                }
+            if (a.Orbitals != null && b.Orbitals != null && a.Orbitals.Count == b.Orbitals.Count)
+                for (int i = 0; i < a.Orbitals.Count; i++)
+                {
+                    var (o, aw, arot) = a.Orbitals[i];
+                    var (_, bw, brot) = b.Orbitals[i];
+                    if (o != null) o.transform.SetPositionAndRotation(Vector3.Lerp(aw, bw, s), Quaternion.Slerp(arot, brot, s));
+                }
+        }
+
+        /// <summary>π step-2 motion: endpoint nuclei stay pinned — skip them so their child lobes are not dragged before world lerp reapplies tips.</summary>
+        public static void LerpAtomsExceptEndpoints(PiStep2VisualBakeState a, PiStep2VisualBakeState b, float s, AtomFunction endpointA, AtomFunction endpointB)
+        {
+            if (a == null || b == null) return;
+            s = Mathf.Clamp01(s);
+            if (a.Atoms == null || b.Atoms == null || a.Atoms.Count != b.Atoms.Count) return;
+            for (int i = 0; i < a.Atoms.Count; i++)
+            {
+                var (atom, ap, ar) = a.Atoms[i];
+                var (_, bp, br) = b.Atoms[i];
+                if (atom == null) continue;
+                if (atom == endpointA || atom == endpointB) continue;
+                atom.transform.SetPositionAndRotation(Vector3.Lerp(ap, bp, s), Quaternion.Slerp(ar, br, s));
+            }
+        }
+
+        public static void LerpBondsAndOrbitalsOnly(PiStep2VisualBakeState a, PiStep2VisualBakeState b, float s)
+        {
+            if (a == null || b == null) return;
+            s = Mathf.Clamp01(s);
+            if (a.Bonds != null && b.Bonds != null && a.Bonds.Count == b.Bonds.Count)
+                for (int i = 0; i < a.Bonds.Count; i++)
+                {
+                    var (bond, ap, ar, ad, af) = a.Bonds[i];
+                    var (_, bp, br, bd, bf) = b.Bonds[i];
+                    if (bond == null) continue;
+                    bond.transform.SetPositionAndRotation(Vector3.Lerp(ap, bp, s), Quaternion.Slerp(ar, br, s));
+                    bond.RestorePiStep2RedistributionForBake(Quaternion.Slerp(ad, bd, s), s >= 0.999f ? bf : af);
+                }
+            if (a.Orbitals != null && b.Orbitals != null && a.Orbitals.Count == b.Orbitals.Count)
+                for (int i = 0; i < a.Orbitals.Count; i++)
+                {
+                    var (o, aw, arot) = a.Orbitals[i];
+                    var (_, bw, brot) = b.Orbitals[i];
+                    if (o != null) o.transform.SetPositionAndRotation(Vector3.Lerp(aw, bw, s), Quaternion.Slerp(arot, brot, s));
+                }
+        }
     }
 
     static float NormalizeAngleTo360(float deg)

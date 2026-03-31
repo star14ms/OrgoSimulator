@@ -1,1 +1,1 @@
-When trying to drag bonding orbital from cylinder object, sometimes the orbital has no electrons.
+When dragging bondding orbital from cylinder object, bond should be borken only when I release orbital on the target atom, but the bond is borken when I release it into empty space.

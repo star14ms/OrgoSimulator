@@ -60,6 +60,15 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>Diagnostics only — read <see cref="orbitalRedistributionWorldDelta"/> for σ-formation pose logs.</summary>
     internal Quaternion GetOrbitalRedistributionWorldDeltaForDiagnostics() => orbitalRedistributionWorldDelta;
 
+    internal (Quaternion delta, bool flipped) CapturePiStep2RedistributionForBake() =>
+        (orbitalRedistributionWorldDelta, orbitalRotationFlipped);
+
+    internal void RestorePiStep2RedistributionForBake(Quaternion delta, bool flipped)
+    {
+        orbitalRedistributionWorldDelta = delta;
+        orbitalRotationFlipped = flipped;
+    }
+
     internal void BeginSigmaFormationStep2PeripheralOrbitalWorldRotFreeze()
     {
         if (!IsSigmaBondLine() || orbital == null) return;
@@ -140,6 +149,111 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbitalRedistributionWorldDelta = appliedRot * Quaternion.Inverse(baseR);
         }
         orbital.transform.rotation = appliedRot;
+    }
+
+    /// <summary>
+    /// π bond end of step 2: redistribution/animation sets the shared orbital world rotation, but
+    /// <see cref="GetOrbitalTargetWorldState"/> uses <see cref="orbitalRedistributionWorldDelta"/>·baseR.
+    /// Set δ from the current orbital world rotation after <see cref="UpdateBondTransformToCurrentAtoms"/> so
+    /// <see cref="SnapOrbitalToBondPosition"/> does not swing the π tip away from the post-redist pose (runtime: OL-3 triad 120 → OL-4 60 without this).
+    /// </summary>
+    public void SyncPiOrbitalRedistributionDeltaFromCurrentWorldRotation()
+    {
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || orbital == null || atomA == null || atomB == null) return;
+        if (IsSigmaBondLine()) return;
+        UpdateBondTransformToCurrentAtoms();
+        var baseR = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
+        if (orbitalRotationFlipped) baseR = baseR * Quaternion.Euler(0f, 0f, 180f);
+        orbitalRedistributionWorldDelta = orbital.transform.rotation * Quaternion.Inverse(baseR);
+    }
+
+    /// <summary>
+    /// π and σ between the same pair share the same cylinder <see cref="BondFrameRotation"/>; with δ=identity both lobes can
+    /// end up parallel (runtime: O=C=O second π, operation O <c>H-O-angle-snap</c> σ–π pair 0°). Twist δ by ±90° about the
+    /// internuclear axis so π +X is not colinear with the σ bond’s current target tip.
+    /// </summary>
+    public void TwistPiOrbitalRedistributionDeltaAwayFromColinearSigmaPartnerIfNeeded(float minSeparationDeg = 35f)
+    {
+        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || orbital == null || atomA == null || atomB == null) return;
+        if (IsSigmaBondLine()) return;
+        CovalentBond sigmaPartner = FindSigmaBondToSamePartner();
+        if (sigmaPartner == null || sigmaPartner.Orbital == null) return;
+
+        sigmaPartner.UpdateBondTransformToCurrentAtoms();
+        UpdateBondTransformToCurrentAtoms();
+        var (_, sigmaWorldRot) = sigmaPartner.GetOrbitalTargetWorldState();
+        Vector3 sigmaTip = (sigmaWorldRot * Vector3.right).normalized;
+        if (sigmaTip.sqrMagnitude < 1e-12f) return;
+
+        var baseR = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
+        if (orbitalRotationFlipped) baseR = baseR * Quaternion.Euler(0f, 0f, 180f);
+
+        Vector3 PiTipWorld(Quaternion delta) => (delta * baseR * Vector3.right).normalized;
+        Vector3 piTip = PiTipWorld(orbitalRedistributionWorldDelta);
+        float ang = Vector3.Angle(piTip, sigmaTip);
+        if (ang >= minSeparationDeg) return;
+
+        var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
+        var second = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomB : atomA;
+        Vector3 bondAxis = second.transform.position - first.transform.position;
+        if (bondAxis.sqrMagnitude < 1e-12f) return;
+        bondAxis.Normalize();
+
+        bool TryTwists(List<Vector3> axes)
+        {
+            for (int ai = 0; ai < axes.Count; ai++)
+            {
+                Vector3 ax = axes[ai];
+                if (ax.sqrMagnitude < 1e-12f) continue;
+                ax.Normalize();
+                for (int k = 0; k < 2; k++)
+                {
+                    float sign = k == 0 ? 1f : -1f;
+                    Quaternion twist = Quaternion.AngleAxis(90f * sign, ax);
+                    Quaternion tryDelta = twist * orbitalRedistributionWorldDelta;
+                    float angNew = Vector3.Angle(PiTipWorld(tryDelta), sigmaTip);
+                    if (angNew >= minSeparationDeg)
+                    {
+                        orbitalRedistributionWorldDelta = tryDelta;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        var axesToTry = new List<Vector3>(4) { bondAxis };
+        Vector3 orthoBondPi = Vector3.Cross(bondAxis, piTip);
+        if (orthoBondPi.sqrMagnitude > 1e-12f) axesToTry.Add(orthoBondPi);
+        Vector3 orthoBondSig = Vector3.Cross(bondAxis, sigmaTip);
+        if (orthoBondSig.sqrMagnitude > 1e-12f) axesToTry.Add(orthoBondSig);
+        Vector3 orthoSigPi = Vector3.Cross(sigmaTip, piTip);
+        if (orthoSigPi.sqrMagnitude > 1e-12f) axesToTry.Add(orthoSigPi);
+        if (axesToTry.Count <= 1 || Mathf.Abs(Vector3.Dot(piTip, bondAxis)) > 0.995f)
+        {
+            Vector3 aux = Mathf.Abs(Vector3.Dot(bondAxis, Vector3.up)) < 0.95f ? Vector3.up : Vector3.right;
+            Vector3 fb = Vector3.Cross(bondAxis, aux);
+            if (fb.sqrMagnitude > 1e-12f) axesToTry.Add(fb);
+        }
+        TryTwists(axesToTry);
+    }
+
+    CovalentBond FindSigmaBondToSamePartner()
+    {
+        if (atomA == null || atomB == null) return null;
+        CovalentBond TryPivot(AtomFunction pivot)
+        {
+            if (pivot == null) return null;
+            foreach (var b in pivot.CovalentBonds)
+            {
+                if (b == null || b == this || !b.IsSigmaBondLine()) continue;
+                var other = b.AtomA == pivot ? b.AtomB : b.AtomA;
+                if ((pivot == atomA && other == atomB) || (pivot == atomB && other == atomA))
+                    return b;
+            }
+            return null;
+        }
+        return TryPivot(atomA) ?? TryPivot(atomB);
     }
 
     /// <summary>
@@ -258,19 +372,11 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (hybridTipWorld.sqrMagnitude < 1e-12f) return;
         hybridTipWorld.Normalize();
         Vector3 geom = partner.transform.position - fromAtom.transform.position;
-        float dotInToGeom = -2f;
-        float dotOutToGeom = -2f;
-        bool flippedToGeom = false;
         if (geom.sqrMagnitude > 1e-10f)
         {
             geom.Normalize();
-            dotInToGeom = Vector3.Dot(hybridTipWorld, geom);
-            if (dotInToGeom < 0f)
-            {
+            if (Vector3.Dot(hybridTipWorld, geom) < 0f)
                 hybridTipWorld = -hybridTipWorld;
-                flippedToGeom = true;
-            }
-            dotOutToGeom = Vector3.Dot(hybridTipWorld, geom);
         }
 
         var baseR = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
@@ -279,33 +385,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         Vector3 want = hybridTipWorld;
         if (tip0.sqrMagnitude < 1e-10f || want.sqrMagnitude < 1e-10f) return;
         float dot = Vector3.Dot(tip0, want);
-        // #region agent log
-        if (AtomFunction.DebugLogOcoSecondPiNdjson && IsSigmaBondLine())
-        {
-            Vector3 actualTip = orbital.transform.rotation * Vector3.right;
-            if (actualTip.sqrMagnitude > 1e-10f) actualTip.Normalize();
-            float angTip0ToWant = Vector3.Angle(tip0, want);
-            float angActualToWant = actualTip.sqrMagnitude > 1e-10f ? Vector3.Angle(actualTip, want) : -1f;
-            float angWantToGeom = geom.sqrMagnitude > 1e-10f ? Vector3.Angle(want, geom) : -1f;
-            var sb = new System.Text.StringBuilder(300);
-            sb.Append("{\"bondId\":").Append(GetInstanceID());
-            sb.Append(",\"fromAtomId\":").Append(fromAtom.GetInstanceID());
-            sb.Append(",\"orbId\":").Append(orbital.GetInstanceID());
-            sb.Append(",\"dotInToGeom\":").Append(dotInToGeom.ToString("F4", System.Globalization.CultureInfo.InvariantCulture));
-            sb.Append(",\"dotOutToGeom\":").Append(dotOutToGeom.ToString("F4", System.Globalization.CultureInfo.InvariantCulture));
-            sb.Append(",\"flippedToGeom\":").Append(flippedToGeom ? "true" : "false");
-            sb.Append(",\"angTip0ToWant\":").Append(angTip0ToWant.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            sb.Append(",\"angActualToWant\":").Append(angActualToWant.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            sb.Append(",\"angWantToGeom\":").Append(angWantToGeom.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            sb.Append(",\"dotTip0Want\":").Append(dot.ToString("F4", System.Globalization.CultureInfo.InvariantCulture));
-            sb.Append('}');
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "R4",
-                "CovalentBond.ApplySigmaOrbitalTipFromRedistribution",
-                "sigma_apply_tip_response",
-                sb.ToString());
-        }
-        // #endregion
         if (dot > 0.9999f)
         {
             orbitalRedistributionWorldDelta = Quaternion.identity;
