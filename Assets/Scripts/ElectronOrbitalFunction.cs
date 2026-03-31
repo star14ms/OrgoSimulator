@@ -1580,6 +1580,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         string partnerSummaryStep2A = AtomFunction.BuildJointFragSigmaPartnerIdSummary(sourceAtom, redistA);
         string partnerSummaryStep2B = AtomFunction.BuildJointFragSigmaPartnerIdSummary(targetAtom, redistB);
         int lastSigmaStep2JointFragBucket = -1;
+        Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)> nucleusSiblingStep2A = null;
+        Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)> nucleusSiblingStep2B = null;
 
         if (!skipStep2)
         {
@@ -1619,6 +1621,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 targetAtom.SnapshotJointFragmentWorldPositionsForTargets(redistB, fragWorldStep2B);
                 deltaJointStep2A = sourceAtom.ComputeJointRedistributeRotationWorldFromTargetsAndStarts(redistA, redistAStarts);
                 deltaJointStep2B = targetAtom.ComputeJointRedistributeRotationWorldFromTargetsAndStarts(redistB, redistBStarts);
+                nucleusSiblingStep2A = new Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)>();
+                nucleusSiblingStep2B = new Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)>();
+                sourceAtom.SnapshotNucleusParentedSiblingsExcludedFromRedistTargets(redistA, nucleusSiblingStep2A);
+                targetAtom.SnapshotNucleusParentedSiblingsExcludedFromRedistTargets(redistB, nucleusSiblingStep2B);
                 sourceAtom.LogJointFragRedistLine("start", "sigmaStep2Src", fragWorldStep2A, pivotStartStep2A, sourceAtom.transform.position, -1f, deltaJointStep2A, partnerSummaryStep2A);
                 targetAtom.LogJointFragRedistLine("start", "sigmaStep2Tgt", fragWorldStep2B, pivotStartStep2B, targetAtom.transform.position, -1f, deltaJointStep2B, partnerSummaryStep2B);
             }
@@ -1666,6 +1672,12 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                     redistA, deltaJointStep2A, s, pivotStartStep2A, sourceAtom.transform.position, fragWorldStep2A);
                 targetAtom.ApplyJointRedistributeFragmentMotionFraction(
                     redistB, deltaJointStep2B, s, pivotStartStep2B, targetAtom.transform.position, fragWorldStep2B);
+                if (nucleusSiblingStep2A != null)
+                    sourceAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
+                        nucleusSiblingStep2A, deltaJointStep2A, s, pivotStartStep2A, sourceAtom.transform.position);
+                if (nucleusSiblingStep2B != null)
+                    targetAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
+                        nucleusSiblingStep2B, deltaJointStep2B, s, pivotStartStep2B, targetAtom.transform.position);
                 if (AtomFunction.DebugLogJointFragRedistEveryFrame)
                 {
                     sourceAtom.LogJointFragRedistLine("frame", "sigmaStep2Src", fragWorldStep2A, pivotStartStep2A, sourceAtom.transform.position, s, deltaJointStep2A, partnerSummaryStep2A);
@@ -1766,6 +1778,12 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                         redistA, deltaJointStep2A, sEnd, pivotStartStep2A, sourceAtom.transform.position, fragWorldStep2A);
                     targetAtom.ApplyJointRedistributeFragmentMotionFraction(
                         redistB, deltaJointStep2B, sEnd, pivotStartStep2B, targetAtom.transform.position, fragWorldStep2B);
+                    if (nucleusSiblingStep2A != null)
+                        sourceAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
+                            nucleusSiblingStep2A, deltaJointStep2A, sEnd, pivotStartStep2A, sourceAtom.transform.position);
+                    if (nucleusSiblingStep2B != null)
+                        targetAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
+                            nucleusSiblingStep2B, deltaJointStep2B, sEnd, pivotStartStep2B, targetAtom.transform.position);
                 }
                 var bondVisualAtomsCommit = new HashSet<AtomFunction> { sourceAtom, targetAtom };
                 foreach (var (a, _, _) in sigmaRelaxList)
@@ -2111,8 +2129,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     }
 
     /// <summary>
-    /// π step 2: call <see cref="AtomFunction.GetRedistributeTargets"/> in deterministic atom order (Z then instance id) so
-    /// <c>RefinePiTrigonalTwoMoverPermAxisAndTipCost</c> lead perm is consistent (e.g. C before O on C=O). σ bonds use legacy source-then-target order.
+    /// π step 2: call <see cref="AtomFunction.GetRedistributeTargets"/> in deterministic atom order (Z then instance id) for reproducible
+    /// joint / animation sequencing; each endpoint still runs its own 2×2 tip→target refine (no cross-atom perm index coupling). σ bonds use legacy source-then-target order.
     /// </summary>
     static void GetRedistributeTargetsPiStepPairOrdered(
         AtomFunction sourceAtom,
@@ -2170,6 +2188,31 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             bond,
             out var redistA,
             out var redistB);
+
+        // #region agent log
+        if (AtomFunction.DebugLogOcoSecondPiNdjson && bond != null && !bond.IsSigmaBondLine())
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            Vector3 sp = sourceAtom != null ? sourceAtom.transform.position : Vector3.zero;
+            Vector3 tp = targetAtom != null ? targetAtom.transform.position : Vector3.zero;
+            var sbD = new System.Text.StringBuilder(384);
+            sbD.Append("{\"srcId\":").Append(sourceAtom != null ? sourceAtom.GetInstanceID() : 0);
+            sbD.Append(",\"tgtId\":").Append(targetAtom != null ? targetAtom.GetInstanceID() : 0);
+            sbD.Append(",\"piBeforeSrc\":").Append(piBeforeSource);
+            sbD.Append(",\"piBeforeTgt\":").Append(piBeforeTarget);
+            sbD.Append(",\"redistACnt\":").Append(redistA != null ? redistA.Count : 0);
+            sbD.Append(",\"redistBCnt\":").Append(redistB != null ? redistB.Count : 0);
+            sbD.Append(",\"bondId\":").Append(bond.GetInstanceID());
+            sbD.Append(",\"srcPos\":[").Append(sp.x.ToString(inv)).Append(',').Append(sp.y.ToString(inv)).Append(',').Append(sp.z.ToString(inv)).Append(']');
+            sbD.Append(",\"tgtPos\":[").Append(tp.x.ToString(inv)).Append(',').Append(tp.y.ToString(inv)).Append(',').Append(tp.z.ToString(inv)).Append(']');
+            sbD.Append('}');
+            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+                "D",
+                "ElectronOrbitalFunction.AnimateRedistributeOrbitals",
+                "pi_anim_after_get_targets",
+                sbD.ToString());
+        }
+        // #endregion
 
         var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
         var redistBStarts = new List<(Vector3 pos, Quaternion rot)>();
@@ -2274,6 +2317,72 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (!hasRedistMovement && neighborTrigonalMoves.Count > 0)
             hasRedistMovement = true;
         bool skipPiStep2 = sourceAtBond && targetAtBond && !hasRedistMovement;
+        Vector3 opSourceStartPos = sourceAtom.transform.position;
+        Quaternion opSourceStartRot = sourceAtom.transform.rotation;
+        Vector3 opTargetStartPos = targetAtom.transform.position;
+        Quaternion opTargetStartRot = targetAtom.transform.rotation;
+        bool ShouldLerpPiRedistRow((ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot) row, AtomFunction pivotAtom)
+        {
+            if (row.orb == null) return false;
+            if (!OrbitalBelongsToAtomForSigmaFormationRedist(row.orb, pivotAtom)) return false;
+            return true;
+        }
+        // #region agent log
+        void LogPiBondedRowResponse(string phase, AtomFunction pivot, List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> rows, string hypothesisId)
+        {
+            if (!AtomFunction.DebugLogOcoSecondPiNdjson || pivot == null || rows == null || bond == null || bond.IsSigmaBondLine())
+                return;
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                var (orb, _, rot) = rows[i];
+                if (orb == null || orb.Bond == null) continue;
+                if (!OrbitalBelongsToAtomForSigmaFormationRedist(orb, pivot)) continue;
+                Transform parent = orb.transform.parent;
+                Vector3 desiredW = parent == null ? (rot * Vector3.right).normalized : parent.TransformDirection((rot * Vector3.right).normalized).normalized;
+                Vector3 currentW = orb.transform.TransformDirection(Vector3.right).normalized;
+                float angCurToDesired = Vector3.Angle(currentW, desiredW);
+                float angOppToDesired = Vector3.Angle(-currentW, desiredW);
+                bool isSigma = orb.Bond is CovalentBond cbSig && cbSig.IsSigmaBondLine();
+                float angCurToAxis = -1f;
+                float angDesiredToAxis = -1f;
+                if (isSigma)
+                {
+                    var cb = orb.Bond as CovalentBond;
+                    AtomFunction other = null;
+                    if (cb != null)
+                    {
+                        if (cb.AtomA == pivot) other = cb.AtomB;
+                        else if (cb.AtomB == pivot) other = cb.AtomA;
+                    }
+                    if (other != null)
+                    {
+                        Vector3 axisW = (other.transform.position - pivot.transform.position);
+                        if (axisW.sqrMagnitude > 1e-14f) axisW.Normalize();
+                        angCurToAxis = Vector3.Angle(currentW, axisW);
+                        angDesiredToAxis = Vector3.Angle(desiredW, axisW);
+                    }
+                }
+                var sb = new System.Text.StringBuilder(280);
+                sb.Append("{\"phase\":\"").Append(phase).Append("\"");
+                sb.Append(",\"pivotId\":").Append(pivot.GetInstanceID());
+                sb.Append(",\"orbId\":").Append(orb.GetInstanceID());
+                sb.Append(",\"bondId\":").Append(orb.Bond.GetInstanceID());
+                sb.Append(",\"isSigma\":").Append(isSigma ? "true" : "false");
+                sb.Append(",\"isOpBond\":").Append(orb.Bond == bond ? "true" : "false");
+                sb.Append(",\"angCurToDesired\":").Append(angCurToDesired.ToString("F2", inv));
+                sb.Append(",\"angOppToDesired\":").Append(angOppToDesired.ToString("F2", inv));
+                sb.Append(",\"angCurToAxis\":").Append(angCurToAxis.ToString("F2", inv));
+                sb.Append(",\"angDesiredToAxis\":").Append(angDesiredToAxis.ToString("F2", inv));
+                sb.Append('}');
+                ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+                    hypothesisId,
+                    "ElectronOrbitalFunction.AnimateRedistributeOrbitals",
+                    "pi_bonded_orb_response",
+                    sb.ToString());
+            }
+        }
+        // #endregion
 
         var fragWorldPiA = new Dictionary<AtomFunction, (Vector3 worldPos, Quaternion worldRot)>();
         var fragWorldPiB = new Dictionary<AtomFunction, (Vector3 worldPos, Quaternion worldRot)>();
@@ -2284,12 +2393,18 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         string partnerSummaryPiA = AtomFunction.BuildJointFragSigmaPartnerIdSummary(sourceAtom, redistA);
         string partnerSummaryPiB = AtomFunction.BuildJointFragSigmaPartnerIdSummary(targetAtom, redistB);
         int lastPiJointFragBucket = -1;
+        Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)> nucleusSiblingPiA = null;
+        Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)> nucleusSiblingPiB = null;
         if (!skipPiStep2 && OrbitalAngleUtility.UseFull3DOrbitalGeometry)
         {
             sourceAtom.SnapshotJointFragmentWorldPositionsForTargets(redistA, fragWorldPiA);
             targetAtom.SnapshotJointFragmentWorldPositionsForTargets(redistB, fragWorldPiB);
             deltaJointPiA = sourceAtom.ComputeJointRedistributeRotationWorldFromTargetsAndStarts(redistA, redistAStarts);
             deltaJointPiB = targetAtom.ComputeJointRedistributeRotationWorldFromTargetsAndStarts(redistB, redistBStarts);
+            nucleusSiblingPiA = new Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)>();
+            nucleusSiblingPiB = new Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)>();
+            sourceAtom.SnapshotNucleusParentedSiblingsExcludedFromRedistTargets(redistA, nucleusSiblingPiA);
+            targetAtom.SnapshotNucleusParentedSiblingsExcludedFromRedistTargets(redistB, nucleusSiblingPiB);
             sourceAtom.LogJointFragRedistLine("start", "piStep2Src", fragWorldPiA, pivotStartPiA, sourceAtom.transform.position, -1f, deltaJointPiA, partnerSummaryPiA);
             targetAtom.LogJointFragRedistLine("start", "piStep2Tgt", fragWorldPiB, pivotStartPiB, targetAtom.transform.position, -1f, deltaJointPiB, partnerSummaryPiB);
         }
@@ -2298,8 +2413,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         for (float t = 0; t < bondAnimStep2Duration; t += Time.deltaTime)
         {
             float s = Mathf.Clamp01(t / bondAnimStep2Duration);
-            s = s * s * (3f - 2f * s); // smoothstep for position
-            float rotT = 1f - (1f - s) * (1f - s); // ease-out quad - rotation leads, expresses orbital rotation visibly
+            s = s * s * (3f - 2f * s); // smoothstep
+            // Use same s for rotation as position: ease-out rotation ahead of position made the last rendered frame disagree
+            // with the commit pose and with σ-neighbor relax ends (teleport after step 2).
+            float rotT = s;
 
             if (sourceOrbital != null && bond != null)
             {
@@ -2315,7 +2432,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             for (int i = 0; i < redistA.Count; i++)
             {
                 var entry = redistA[i];
-                if (entry.orb != null && OrbitalBelongsToAtomForSigmaFormationRedist(entry.orb, sourceAtom))
+                if (ShouldLerpPiRedistRow(entry, sourceAtom))
                 {
                     var (sp, sr) = redistAStarts[i];
                     entry.orb.transform.localPosition = Vector3.Lerp(sp, entry.pos, s);
@@ -2325,21 +2442,55 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             for (int i = 0; i < redistB.Count; i++)
             {
                 var entry = redistB[i];
-                if (entry.orb != null && OrbitalBelongsToAtomForSigmaFormationRedist(entry.orb, targetAtom))
+                if (ShouldLerpPiRedistRow(entry, targetAtom))
                 {
                     var (sp, sr) = redistBStarts[i];
                     entry.orb.transform.localPosition = Vector3.Lerp(sp, entry.pos, s);
                     entry.orb.transform.localRotation = Quaternion.Slerp(sr, entry.rot, rotT);
                 }
             }
-            foreach (var kv in neighborTrigonalMoves)
-                kv.Key.transform.position = Vector3.Lerp(kv.Value.start, kv.Value.end, s);
+            // #region agent log
+            LogPiBondedRowResponse("afterRowLerp", sourceAtom, redistA, "R1");
+            LogPiBondedRowResponse("afterRowLerp", targetAtom, redistB, "R1");
+            // #endregion
+            // Joint from orbital tips first; then σ-neighbor linear/trigonal relax positions win (same targets as
+            // BuildSigmaNeighborTargetsWithFragmentRigidRotation). Previous order overwrote relax with a different rigid map → end-of-anim pop.
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
                 sourceAtom.ApplyJointRedistributeFragmentMotionFraction(
                     redistA, deltaJointPiA, s, pivotStartPiA, sourceAtom.transform.position, fragWorldPiA);
                 targetAtom.ApplyJointRedistributeFragmentMotionFraction(
                     redistB, deltaJointPiB, s, pivotStartPiB, targetAtom.transform.position, fragWorldPiB);
+                if (nucleusSiblingPiA != null)
+                    sourceAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
+                        nucleusSiblingPiA, deltaJointPiA, s, pivotStartPiA, sourceAtom.transform.position);
+                if (nucleusSiblingPiB != null)
+                    targetAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
+                        nucleusSiblingPiB, deltaJointPiB, s, pivotStartPiB, targetAtom.transform.position);
+            }
+            foreach (var kv in neighborTrigonalMoves)
+                kv.Key.transform.position = Vector3.Lerp(kv.Value.start, kv.Value.end, s);
+            // Operation endpoints stay fixed during π step 2; only non-operation branches should move.
+            sourceAtom.transform.SetPositionAndRotation(opSourceStartPos, opSourceStartRot);
+            targetAtom.transform.SetPositionAndRotation(opTargetStartPos, opTargetStartRot);
+            // Reapply op-orbital world pose after pinning endpoints; if an op orbital is still parented under an
+            // endpoint atom, pinning can otherwise overwrite its intended bond-direction rotation for this frame.
+            if (sourceOrbital != null && bond != null)
+            {
+                sourceOrbital.transform.position = Vector3.Lerp(sourceOrbStart.Item1, bondTargetPos, s);
+                sourceOrbital.transform.rotation = Quaternion.Slerp(sourceOrbStart.Item2, sourceTargetRot, rotT);
+            }
+            if (targetOrbital != null && bond != null)
+            {
+                targetOrbital.transform.position = Vector3.Lerp(targetOrbStart.Item1, bondTargetPos, s);
+                targetOrbital.transform.rotation = Quaternion.Slerp(targetOrbStart.Item2, targetTargetRot, rotT);
+            }
+            // #region agent log
+            LogPiBondedRowResponse("afterJointAndPin", sourceAtom, redistA, "R2");
+            LogPiBondedRowResponse("afterJointAndPin", targetAtom, redistB, "R2");
+            // #endregion
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
                 if (AtomFunction.DebugLogJointFragRedistEveryFrame)
                 {
                     sourceAtom.LogJointFragRedistLine("frame", "piStep2Src", fragWorldPiA, pivotStartPiA, sourceAtom.transform.position, s, deltaJointPiA, partnerSummaryPiA);
@@ -2375,7 +2526,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             for (int i = 0; i < redistA.Count; i++)
             {
                 var entry = redistA[i];
-                if (entry.orb != null && OrbitalBelongsToAtomForSigmaFormationRedist(entry.orb, sourceAtom))
+                if (ShouldLerpPiRedistRow(entry, sourceAtom))
                 {
                     var (sp, sr) = redistAStarts[i];
                     entry.orb.transform.localPosition = Vector3.Lerp(sp, entry.pos, sEnd);
@@ -2385,22 +2536,44 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             for (int i = 0; i < redistB.Count; i++)
             {
                 var entry = redistB[i];
-                if (entry.orb != null && OrbitalBelongsToAtomForSigmaFormationRedist(entry.orb, targetAtom))
+                if (ShouldLerpPiRedistRow(entry, targetAtom))
                 {
                     var (sp, sr) = redistBStarts[i];
                     entry.orb.transform.localPosition = Vector3.Lerp(sp, entry.pos, sEnd);
                     entry.orb.transform.localRotation = Quaternion.Slerp(sr, entry.rot, rotTEnd);
                 }
             }
-            foreach (var kv in neighborTrigonalMoves)
-                kv.Key.transform.position = kv.Value.end;
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
                 sourceAtom.ApplyJointRedistributeFragmentMotionFraction(
                     redistA, deltaJointPiA, sEnd, pivotStartPiA, sourceAtom.transform.position, fragWorldPiA);
                 targetAtom.ApplyJointRedistributeFragmentMotionFraction(
                     redistB, deltaJointPiB, sEnd, pivotStartPiB, targetAtom.transform.position, fragWorldPiB);
+                if (nucleusSiblingPiA != null)
+                    sourceAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
+                        nucleusSiblingPiA, deltaJointPiA, sEnd, pivotStartPiA, sourceAtom.transform.position);
+                if (nucleusSiblingPiB != null)
+                    targetAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
+                        nucleusSiblingPiB, deltaJointPiB, sEnd, pivotStartPiB, targetAtom.transform.position);
             }
+            foreach (var kv in neighborTrigonalMoves)
+                kv.Key.transform.position = kv.Value.end;
+            sourceAtom.transform.SetPositionAndRotation(opSourceStartPos, opSourceStartRot);
+            targetAtom.transform.SetPositionAndRotation(opTargetStartPos, opTargetStartRot);
+            if (sourceOrbital != null && bond != null)
+            {
+                sourceOrbital.transform.position = Vector3.Lerp(sourceOrbStart.Item1, bondTargetPos, sEnd);
+                sourceOrbital.transform.rotation = Quaternion.Slerp(sourceOrbStart.Item2, sourceTargetRot, rotTEnd);
+            }
+            if (targetOrbital != null && bond != null)
+            {
+                targetOrbital.transform.position = Vector3.Lerp(targetOrbStart.Item1, bondTargetPos, sEnd);
+                targetOrbital.transform.rotation = Quaternion.Slerp(targetOrbStart.Item2, targetTargetRot, rotTEnd);
+            }
+            // #region agent log
+            LogPiBondedRowResponse("commitBeforeApply", sourceAtom, redistA, "R3");
+            LogPiBondedRowResponse("commitBeforeApply", targetAtom, redistB, "R3");
+            // #endregion
             AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(new HashSet<AtomFunction> { sourceAtom, targetAtom });
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {

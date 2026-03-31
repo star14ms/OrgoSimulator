@@ -111,6 +111,121 @@ public static class ProjectAgentDebugLog
         return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
     }
 
+    /// <summary>NDJSON path under <c>.cursor/</c> for Cursor Debug Mode ingest (workspace-visible only).</summary>
+    public const string CursorWorkspaceDebugNdjsonFileName = "debug-workspace.ndjson";
+
+    /// <summary>Single-session agent ingest file under <c>.cursor/</c>; update filename when the IDE debug session id changes.</summary>
+    public const string CursorDebugModeIngestNdjsonFileName = "debug-214323.log";
+
+    /// <summary>Session id embedded in <see cref="CursorDebugModeIngestNdjsonFileName"/> lines for Cursor Debug Mode.</summary>
+    public const string CursorDebugModeIngestSessionId = "214323";
+
+    /// <summary>When true (default), <see cref="AppendCursorWorkspaceDebugNdjson"/> writes under project <c>.cursor/</c>. Set false for quiet runs.</summary>
+    public static bool WriteCursorWorkspaceDebugNdjson = true;
+
+    /// <summary>When true (default), duplicates each workspace NDJSON line to <see cref="CursorDebugModeIngestNdjsonFileName"/> with <see cref="CursorDebugModeIngestSessionId"/> so the agent reads one file. Default on for triage; set false for quiet runs.</summary>
+    public static bool WriteCursorDebugModeIngestNdjson = true;
+
+    static string _cursorWorkspaceDebugResolvedPath;
+    static bool _cursorWorkspaceDebugLoggedPathOnce;
+    static bool _cursorDebugModeIngestLoggedPathOnce;
+
+    static string BuildCursorWorkspaceNdjsonLine(
+        string sessionIdForLine,
+        string hypothesisId,
+        string location,
+        string message,
+        string dataJsonObject,
+        string runId,
+        long timestampMs)
+    {
+        if (string.IsNullOrEmpty(dataJsonObject)) dataJsonObject = "{}";
+        var sb = new StringBuilder(384);
+        sb.Append("{\"sessionId\":\"").Append(EscapeJson(sessionIdForLine ?? ""));
+        sb.Append("\",\"runId\":\"").Append(EscapeJson(runId ?? "run1"));
+        sb.Append("\",\"hypothesisId\":\"").Append(EscapeJson(hypothesisId ?? ""));
+        sb.Append("\",\"location\":\"").Append(EscapeJson(location ?? ""));
+        sb.Append("\",\"message\":\"").Append(EscapeJson(message));
+        sb.Append("\",\"data\":").Append(dataJsonObject);
+        sb.Append(",\"timestamp\":").Append(timestampMs).Append("}\n");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// One NDJSON line to <c>{project}/.cursor/debug-workspace.ndjson</c> (and optionally <c>debug-214323.log</c> for Cursor Debug Mode ingest).
+    /// Same shape as agent ingest: sessionId, runId, hypothesisId, location, message, data, timestamp.
+    /// </summary>
+    public static void AppendCursorWorkspaceDebugNdjson(
+        string hypothesisId,
+        string location,
+        string message,
+        string dataJsonObject = "{}",
+        string runId = "run1")
+    {
+        if (!WriteCursorWorkspaceDebugNdjson || string.IsNullOrEmpty(message)) return;
+        long ts = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+        string lineWorkspace = BuildCursorWorkspaceNdjsonLine(
+            "cursor-workspace", hypothesisId, location, message, dataJsonObject, runId, ts);
+
+        string root = null;
+        try
+        {
+            root = Directory.GetParent(Application.dataPath)?.FullName;
+        }
+        catch
+        {
+            return;
+        }
+        if (string.IsNullOrEmpty(root)) return;
+
+        string path = Path.GetFullPath(Path.Combine(root, ".cursor", CursorWorkspaceDebugNdjsonFileName));
+        try
+        {
+            string dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+            File.AppendAllText(path, lineWorkspace);
+            _cursorWorkspaceDebugResolvedPath = path;
+#if UNITY_EDITOR
+            if (!_cursorWorkspaceDebugLoggedPathOnce)
+            {
+                _cursorWorkspaceDebugLoggedPathOnce = true;
+                Debug.Log("[cursor-workspace-debug] NDJSON path=" + path);
+            }
+#endif
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("[cursor-workspace-debug] append failed path=" + path + " err=" + e.Message);
+        }
+
+        if (!WriteCursorDebugModeIngestNdjson) return;
+        string lineIngest = BuildCursorWorkspaceNdjsonLine(
+            CursorDebugModeIngestSessionId, hypothesisId, location, message, dataJsonObject, runId, ts);
+        string pathIngest = Path.GetFullPath(Path.Combine(root, ".cursor", CursorDebugModeIngestNdjsonFileName));
+        try
+        {
+            string dirIngest = Path.GetDirectoryName(pathIngest);
+            if (!string.IsNullOrEmpty(dirIngest) && !Directory.Exists(dirIngest))
+                Directory.CreateDirectory(dirIngest);
+            File.AppendAllText(pathIngest, lineIngest);
+#if UNITY_EDITOR
+            if (!_cursorDebugModeIngestLoggedPathOnce)
+            {
+                _cursorDebugModeIngestLoggedPathOnce = true;
+                Debug.Log("[cursor-debug-mode-ingest] NDJSON path=" + pathIngest + " sessionId=" + CursorDebugModeIngestSessionId);
+            }
+#endif
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("[cursor-debug-mode-ingest] append failed path=" + pathIngest + " err=" + e.Message);
+        }
+    }
+
+    /// <summary>Resolved path after first successful <see cref="AppendCursorWorkspaceDebugNdjson"/> in this session, or null.</summary>
+    public static string CursorWorkspaceDebugResolvedPath => _cursorWorkspaceDebugResolvedPath;
+
     static readonly HashSet<string> _accessibleDiagPathLoggedOnce = new HashSet<string>();
 
     /// <summary>Append one text line to <c>project-root/</c><paramref name="fileName"/> (e.g. <c>debug-redist3d-angle.log</c>), then <see cref="Application.persistentDataPath"/> if that fails. Emits <paramref name="firstWriteConsoleTag"/> plus path on first success (tag should start with <c>[…]</c>).</summary>
@@ -161,13 +276,13 @@ public static class ProjectAgentDebugLog
         }
     }
 
-    /// <summary>File name under project root (and <c>.cursor/</c>) for consolidated orbital-redistribution plaintext mirrors.</summary>
+    /// <summary>Plaintext mirror file name, written only under <c>.cursor/</c> — not at project root.</summary>
     public const string OrbitalRedistMirrorFileName = "debug-orbitals-redist.log";
 
-    /// <summary>When true, <see cref="AppendOrbitalRedistMirrorLine"/> writes plaintext to <c>debug-orbitals-redist.log</c> (project root or persistent data path).</summary>
+    /// <summary>When true (default), <see cref="AppendOrbitalRedistMirrorLine"/> appends under <c>.cursor/debug-orbitals-redist.log</c> only.</summary>
     public static bool MirrorOrbitalRedistDiagnosticsToProjectFile = true;
 
-    /// <summary>Appends one plaintext line to <c>debug-orbitals-redist.log</c> when <see cref="MirrorOrbitalRedistDiagnosticsToProjectFile"/> is true.</summary>
+    /// <summary>Appends one plaintext diagnostics line to <c>.cursor/debug-orbitals-redist.log</c> when <see cref="MirrorOrbitalRedistDiagnosticsToProjectFile"/> is true. Workspace-only; no project-root copy.</summary>
     public static void AppendOrbitalRedistMirrorLine(string line)
     {
         if (string.IsNullOrEmpty(line)) return;
@@ -176,7 +291,6 @@ public static class ProjectAgentDebugLog
         if (!MirrorOrbitalRedistDiagnosticsToProjectFile) return;
 
         string payload = trimmed + Environment.NewLine;
-        string usedPath = null;
         string root = null;
         try
         {
@@ -184,45 +298,21 @@ public static class ProjectAgentDebugLog
         }
         catch
         {
-            /* ignored */
+            return;
         }
+        if (string.IsNullOrEmpty(root)) return;
 
-        if (!string.IsNullOrEmpty(root))
+        string path = Path.GetFullPath(Path.Combine(root, ".cursor", OrbitalRedistMirrorFileName));
+        try
         {
-            string[] candidates =
-            {
-                Path.GetFullPath(Path.Combine(root, ".cursor", OrbitalRedistMirrorFileName)),
-                Path.GetFullPath(Path.Combine(root, OrbitalRedistMirrorFileName)),
-            };
-            foreach (string path in candidates)
-            {
-                try
-                {
-                    string dir = Path.GetDirectoryName(path);
-                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                        Directory.CreateDirectory(dir);
-                    File.AppendAllText(path, payload);
-                    usedPath = path;
-                    break;
-                }
-                catch
-                {
-                    /* try next */
-                }
-            }
+            string dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+            File.AppendAllText(path, payload);
         }
-
-        if (usedPath == null)
+        catch (Exception e)
         {
-            try
-            {
-                usedPath = Path.Combine(Application.persistentDataPath, OrbitalRedistMirrorFileName);
-                File.AppendAllText(usedPath, payload);
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning("[orbitals-redist-file] append failed all paths err=" + e.Message);
-            }
+            Debug.LogWarning("[orbitals-redist-file] append failed path=" + path + " err=" + e.Message);
         }
     }
 

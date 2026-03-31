@@ -258,11 +258,19 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (hybridTipWorld.sqrMagnitude < 1e-12f) return;
         hybridTipWorld.Normalize();
         Vector3 geom = partner.transform.position - fromAtom.transform.position;
+        float dotInToGeom = -2f;
+        float dotOutToGeom = -2f;
+        bool flippedToGeom = false;
         if (geom.sqrMagnitude > 1e-10f)
         {
             geom.Normalize();
-            if (Vector3.Dot(hybridTipWorld, geom) < 0f)
+            dotInToGeom = Vector3.Dot(hybridTipWorld, geom);
+            if (dotInToGeom < 0f)
+            {
                 hybridTipWorld = -hybridTipWorld;
+                flippedToGeom = true;
+            }
+            dotOutToGeom = Vector3.Dot(hybridTipWorld, geom);
         }
 
         var baseR = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
@@ -271,6 +279,33 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         Vector3 want = hybridTipWorld;
         if (tip0.sqrMagnitude < 1e-10f || want.sqrMagnitude < 1e-10f) return;
         float dot = Vector3.Dot(tip0, want);
+        // #region agent log
+        if (AtomFunction.DebugLogOcoSecondPiNdjson && IsSigmaBondLine())
+        {
+            Vector3 actualTip = orbital.transform.rotation * Vector3.right;
+            if (actualTip.sqrMagnitude > 1e-10f) actualTip.Normalize();
+            float angTip0ToWant = Vector3.Angle(tip0, want);
+            float angActualToWant = actualTip.sqrMagnitude > 1e-10f ? Vector3.Angle(actualTip, want) : -1f;
+            float angWantToGeom = geom.sqrMagnitude > 1e-10f ? Vector3.Angle(want, geom) : -1f;
+            var sb = new System.Text.StringBuilder(300);
+            sb.Append("{\"bondId\":").Append(GetInstanceID());
+            sb.Append(",\"fromAtomId\":").Append(fromAtom.GetInstanceID());
+            sb.Append(",\"orbId\":").Append(orbital.GetInstanceID());
+            sb.Append(",\"dotInToGeom\":").Append(dotInToGeom.ToString("F4", System.Globalization.CultureInfo.InvariantCulture));
+            sb.Append(",\"dotOutToGeom\":").Append(dotOutToGeom.ToString("F4", System.Globalization.CultureInfo.InvariantCulture));
+            sb.Append(",\"flippedToGeom\":").Append(flippedToGeom ? "true" : "false");
+            sb.Append(",\"angTip0ToWant\":").Append(angTip0ToWant.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+            sb.Append(",\"angActualToWant\":").Append(angActualToWant.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+            sb.Append(",\"angWantToGeom\":").Append(angWantToGeom.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+            sb.Append(",\"dotTip0Want\":").Append(dot.ToString("F4", System.Globalization.CultureInfo.InvariantCulture));
+            sb.Append('}');
+            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+                "R4",
+                "CovalentBond.ApplySigmaOrbitalTipFromRedistribution",
+                "sigma_apply_tip_response",
+                sb.ToString());
+        }
+        // #endregion
         if (dot > 0.9999f)
         {
             orbitalRedistributionWorldDelta = Quaternion.identity;
