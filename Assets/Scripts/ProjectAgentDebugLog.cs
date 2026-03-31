@@ -111,6 +111,121 @@ public static class ProjectAgentDebugLog
         return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
     }
 
+    static readonly HashSet<string> _accessibleDiagPathLoggedOnce = new HashSet<string>();
+
+    /// <summary>Append one text line to <c>project-root/</c><paramref name="fileName"/> (e.g. <c>debug-redist3d-angle.log</c>), then <see cref="Application.persistentDataPath"/> if that fails. Emits <paramref name="firstWriteConsoleTag"/> plus path on first success (tag should start with <c>[…]</c>).</summary>
+    public static void AppendAccessibleDiagnosticLine(string fileName, string line, string firstWriteConsoleTag = null)
+    {
+        if (string.IsNullOrEmpty(fileName) || line == null) return;
+        string payload = line + Environment.NewLine;
+        string usedPath = null;
+        string root = null;
+        try
+        {
+            root = Directory.GetParent(Application.dataPath)?.FullName;
+        }
+        catch { /* ignored */ }
+
+        if (!string.IsNullOrEmpty(root))
+        {
+            try
+            {
+                usedPath = Path.GetFullPath(Path.Combine(root, fileName));
+                File.AppendAllText(usedPath, payload);
+            }
+            catch
+            {
+                usedPath = null;
+            }
+        }
+
+        if (usedPath == null)
+        {
+            try
+            {
+                usedPath = Path.Combine(Application.persistentDataPath, fileName);
+                File.AppendAllText(usedPath, payload);
+            }
+            catch (Exception e)
+            {
+                if (!string.IsNullOrEmpty(firstWriteConsoleTag))
+                    Debug.LogWarning(firstWriteConsoleTag + " append failed all paths err=" + e.Message);
+                return;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(firstWriteConsoleTag) && !_accessibleDiagPathLoggedOnce.Contains(fileName))
+        {
+            _accessibleDiagPathLoggedOnce.Add(fileName);
+            Debug.Log(firstWriteConsoleTag + " diagnostic path=" + usedPath);
+        }
+    }
+
+    /// <summary>File name under project root (and <c>.cursor/</c>) for consolidated orbital-redistribution plaintext mirrors.</summary>
+    public const string OrbitalRedistMirrorFileName = "debug-orbitals-redist.log";
+
+    /// <summary>When true, <see cref="AppendOrbitalRedistMirrorLine"/> writes plaintext to <c>debug-orbitals-redist.log</c> (project root or persistent data path).</summary>
+    public static bool MirrorOrbitalRedistDiagnosticsToProjectFile = true;
+
+    /// <summary>Appends one plaintext line to <c>debug-orbitals-redist.log</c> when <see cref="MirrorOrbitalRedistDiagnosticsToProjectFile"/> is true.</summary>
+    public static void AppendOrbitalRedistMirrorLine(string line)
+    {
+        if (string.IsNullOrEmpty(line)) return;
+        string trimmed = line.TrimEnd();
+
+        if (!MirrorOrbitalRedistDiagnosticsToProjectFile) return;
+
+        string payload = trimmed + Environment.NewLine;
+        string usedPath = null;
+        string root = null;
+        try
+        {
+            root = Directory.GetParent(Application.dataPath)?.FullName;
+        }
+        catch
+        {
+            /* ignored */
+        }
+
+        if (!string.IsNullOrEmpty(root))
+        {
+            string[] candidates =
+            {
+                Path.GetFullPath(Path.Combine(root, ".cursor", OrbitalRedistMirrorFileName)),
+                Path.GetFullPath(Path.Combine(root, OrbitalRedistMirrorFileName)),
+            };
+            foreach (string path in candidates)
+            {
+                try
+                {
+                    string dir = Path.GetDirectoryName(path);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                        Directory.CreateDirectory(dir);
+                    File.AppendAllText(path, payload);
+                    usedPath = path;
+                    break;
+                }
+                catch
+                {
+                    /* try next */
+                }
+            }
+        }
+
+        if (usedPath == null)
+        {
+            try
+            {
+                usedPath = Path.Combine(Application.persistentDataPath, OrbitalRedistMirrorFileName);
+                File.AppendAllText(usedPath, payload);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[orbitals-redist-file] append failed all paths err=" + e.Message);
+            }
+        }
+    }
+
     /// <summary>Append one line to <c>project-root/.log</c> (used by <c>[vsepr3d]</c> / <c>[bond-break]</c> diagnostics).</summary>
     public static void MirrorToProjectDotLog(string line)
     {

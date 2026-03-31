@@ -1571,8 +1571,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         Quaternion? step2PoseDiagLockedRot = skipPostFormationRedistAndHybrid3D ? bondOrbitalStartWorldRot : (Quaternion?)null;
 
         List<CovalentBond> step2PeripheralSigmaFrozen = null;
-        var fragWorldStep2A = new Dictionary<AtomFunction, Vector3>();
-        var fragWorldStep2B = new Dictionary<AtomFunction, Vector3>();
+        var fragWorldStep2A = new Dictionary<AtomFunction, (Vector3 worldPos, Quaternion worldRot)>();
+        var fragWorldStep2B = new Dictionary<AtomFunction, (Vector3 worldPos, Quaternion worldRot)>();
         Quaternion deltaJointStep2A = Quaternion.identity;
         Quaternion deltaJointStep2B = Quaternion.identity;
         Vector3 pivotStartStep2A = sourceAtom.transform.position;
@@ -2110,12 +2110,66 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
-    IEnumerator AnimateRedistributeOrbitals(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget,
+    /// <summary>
+    /// π step 2: call <see cref="AtomFunction.GetRedistributeTargets"/> in deterministic atom order (Z then instance id) so
+    /// <c>RefinePiTrigonalTwoMoverPermAxisAndTipCost</c> lead perm is consistent (e.g. C before O on C=O). σ bonds use legacy source-then-target order.
+    /// </summary>
+    static void GetRedistributeTargetsPiStepPairOrdered(
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        int piBeforeSource,
+        int piBeforeTarget,
+        int sigmaBeforeSource,
+        int sigmaBeforeTarget,
+        CovalentBond bond,
+        out List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistA,
+        out List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistB)
+    {
+        if (bond == null || bond.IsSigmaBondLine())
+        {
+            redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom, sigmaNeighborCountBefore: sigmaBeforeSource, redistributionOperationBond: bond);
+            redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom, sigmaNeighborCountBefore: sigmaBeforeTarget, redistributionOperationBond: bond);
+            return;
+        }
+        AtomFunction first = sourceAtom.AtomicNumber != targetAtom.AtomicNumber
+            ? (sourceAtom.AtomicNumber < targetAtom.AtomicNumber ? sourceAtom : targetAtom)
+            : (sourceAtom.GetInstanceID() < targetAtom.GetInstanceID() ? sourceAtom : targetAtom);
+        AtomFunction second = first == sourceAtom ? targetAtom : sourceAtom;
+        int piFirst = first == sourceAtom ? piBeforeSource : piBeforeTarget;
+        int piSecond = first == sourceAtom ? piBeforeTarget : piBeforeSource;
+        int sigFirst = first == sourceAtom ? sigmaBeforeSource : sigmaBeforeTarget;
+        int sigSecond = first == sourceAtom ? sigmaBeforeTarget : sigmaBeforeSource;
+        var rFirst = first.GetRedistributeTargets(piFirst, second, sigmaNeighborCountBefore: sigFirst, redistributionOperationBond: bond);
+        var rSecond = second.GetRedistributeTargets(piSecond, first, sigmaNeighborCountBefore: sigSecond, redistributionOperationBond: bond);
+        if (first == sourceAtom)
+        {
+            redistA = rFirst;
+            redistB = rSecond;
+        }
+        else
+        {
+            redistA = rSecond;
+            redistB = rFirst;
+        }
+    }
+
+        IEnumerator AnimateRedistributeOrbitals(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget,
         int sigmaBeforeSource, int sigmaBeforeTarget,
         ElectronOrbitalFunction sourceOrbital, ElectronOrbitalFunction targetOrbital, CovalentBond bond)
     {
-        var redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom, sigmaNeighborCountBefore: sigmaBeforeSource, redistributionOperationBond: bond);
-        var redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom, sigmaNeighborCountBefore: sigmaBeforeTarget, redistributionOperationBond: bond);
+        bool piFlipTargetChosen = false;
+        float piBondSourceDiffDeg = 0f;
+        float piBondTargetDiffDeg = 0f;
+        GetRedistributeTargetsPiStepPairOrdered(
+            sourceAtom,
+            targetAtom,
+            piBeforeSource,
+            piBeforeTarget,
+            sigmaBeforeSource,
+            sigmaBeforeTarget,
+            bond,
+            out var redistA,
+            out var redistB);
 
         var redistAStarts = new List<(Vector3 pos, Quaternion rot)>();
         var redistBStarts = new List<(Vector3 pos, Quaternion rot)>();
@@ -2165,7 +2219,23 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             bondTargetPos = bt.Item1;
             bondTargetRot = bt.Item2;
             (float sourceDiff, float targetDiff) = ComputePiBondAngleDiffs(sourceAtom, targetAtom, bondTargetPos, bondTargetRot, bond);
-            bool flipTarget = Mathf.Abs(sourceDiff) < Mathf.Abs(targetDiff); // Source closer to bond → flip target
+            piBondSourceDiffDeg = sourceDiff;
+            piBondTargetDiffDeg = targetDiff;
+            // Default: flip bond orbital frame when animation source leg is closer to bondDir than target leg.
+            bool flipTarget = Mathf.Abs(sourceDiff) < Mathf.Abs(targetDiff);
+            // 3D center-ray fallback often yields a complementary acute-or-obtuse pair (~12° + ~167° ≈ 180°): the inequality
+            // above depends on which atom is animation source, so C-src vs O-src disagree. If one dev is tiny and the other
+            // near 180° against bondDir, apply flipped bond frame (runtime evidence: failure logs vs success both show this split).
+            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            {
+                float ad = Mathf.Abs(sourceDiff);
+                float bd = Mathf.Abs(targetDiff);
+                float sm = Mathf.Min(ad, bd);
+                float lg = Mathf.Max(ad, bd);
+                if (sm + lg > 160f && sm < 35f && lg > 145f)
+                    flipTarget = true;
+            }
+            piFlipTargetChosen = flipTarget;
             if (flipTarget)
             {
                 bond.orbitalRotationFlipped = true;
@@ -2205,8 +2275,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             hasRedistMovement = true;
         bool skipPiStep2 = sourceAtBond && targetAtBond && !hasRedistMovement;
 
-        var fragWorldPiA = new Dictionary<AtomFunction, Vector3>();
-        var fragWorldPiB = new Dictionary<AtomFunction, Vector3>();
+        var fragWorldPiA = new Dictionary<AtomFunction, (Vector3 worldPos, Quaternion worldRot)>();
+        var fragWorldPiB = new Dictionary<AtomFunction, (Vector3 worldPos, Quaternion worldRot)>();
         Quaternion deltaJointPiA = Quaternion.identity;
         Quaternion deltaJointPiB = Quaternion.identity;
         Vector3 pivotStartPiA = sourceAtom.transform.position;
@@ -2341,6 +2411,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         foreach (var kv in neighborTrigonalMoves)
             kv.Key.transform.position = kv.Value.end;
 
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && sourceOrbital != null
+            && sourceOrbital.transform.parent != sourceAtom.transform)
+            sourceOrbital.transform.SetParent(sourceAtom.transform, worldPositionStays: true);
+
         bool piDidJointFragmentLerp = OrbitalAngleUtility.UseFull3DOrbitalGeometry && !skipPiStep2;
         sourceAtom.ApplyRedistributeTargets(redistA, skipJointRigidFragmentMotion: piDidJointFragmentLerp);
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
@@ -2368,9 +2442,12 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             bond.SnapOrbitalToBondPosition();
             if (sourceOrbital != null)
             {
-                var bt = bond.GetOrbitalTargetWorldState();
-                sourceOrbital.transform.position = bt.Item1;
-                sourceOrbital.transform.rotation = sourceTargetRot;
+                if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+                {
+                    var bt = bond.GetOrbitalTargetWorldState();
+                    sourceOrbital.transform.position = bt.Item1;
+                    sourceOrbital.transform.rotation = sourceTargetRot;
+                }
             }
             // Reparent/snap updates bond frames; hybrid refresh above ran before this. Re-sync σ tips to the trigonal frame
             // so domain directions stay coplanar (carbon sp²) after π orbital snap.
@@ -2399,6 +2476,47 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     {
         var toCenterFromSource = bondPos - sourceAtom.transform.position;
         if (toCenterFromSource.sqrMagnitude < 0.0001f) return (0f, 0f);
+
+        // Full 3D, no XY stomp. Internuclear rays source→partner vs target→partner are opposite; Angle(bondDir, u) and
+        // Angle(bondDir, -u) are supplementary — when bondDir is nearly parallel to σ we log degenerate 180° vs 0° (bad flip).
+        // Use π plane: project bondDir and atom→orbital-center onto plane ⊥ σ; fallback to full 3D center rays if projection collapses.
+        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && bond != null && targetAtom != null && sourceAtom != null)
+        {
+            Vector3 bondDir = bondRot * Vector3.right;
+            if (bondDir.sqrMagnitude < 1e-8f) return (0f, 0f);
+            bondDir.Normalize();
+
+            Vector3 sigma = targetAtom.transform.position - sourceAtom.transform.position;
+            if (sigma.sqrMagnitude < 1e-8f) return (0f, 0f);
+            sigma.Normalize();
+
+            Vector3 toCenS = bondPos - sourceAtom.transform.position;
+            Vector3 toCenT = bondPos - targetAtom.transform.position;
+            if (toCenS.sqrMagnitude < 1e-8f || toCenT.sqrMagnitude < 1e-8f) return (0f, 0f);
+
+            const float projEps = 1e-6f;
+            Vector3 bondDirFlat = Vector3.ProjectOnPlane(bondDir, sigma);
+            if (bondDirFlat.sqrMagnitude < projEps)
+            {
+                float sd = Vector3.Angle(bondDir, toCenS.normalized);
+                float td = Vector3.Angle(bondDir, toCenT.normalized);
+                return (sd, td);
+            }
+            bondDirFlat.Normalize();
+
+            Vector3 perpS = Vector3.ProjectOnPlane(toCenS, sigma);
+            Vector3 perpT = Vector3.ProjectOnPlane(toCenT, sigma);
+            if (perpS.sqrMagnitude < projEps || perpT.sqrMagnitude < projEps)
+            {
+                float sd = Vector3.Angle(bondDir, toCenS.normalized);
+                float td = Vector3.Angle(bondDir, toCenT.normalized);
+                return (sd, td);
+            }
+            perpS.Normalize();
+            perpT.Normalize();
+            return (Vector3.Angle(bondDirFlat, perpS), Vector3.Angle(bondDirFlat, perpT));
+        }
+
         toCenterFromSource.Normalize();
         toCenterFromSource.z = 0;
         float sourceAngle = OrbitalAngleUtility.DirectionToAngleWorld(toCenterFromSource);

@@ -1,5 +1,5 @@
 # Last compact
-- **When**: 2026-03-29
+- **When**: 2026-03-30
 - **Ref**: pending
 
-(Summarized in `instruction/history/2026-03-29-orbital-redistribute-nucleus-frame.md`. Set **Ref** to your commit hash after you commit.)
+(Summarized in `instruction/history/2026-03-30-pi-trigonal-redistribute-3d.md`. Set **Ref** to your commit hash after you commit.)
