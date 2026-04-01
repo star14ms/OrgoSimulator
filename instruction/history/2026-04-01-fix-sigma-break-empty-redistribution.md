@@ -1,0 +1,3 @@
+Since the last /compact point (still marked pending), the O-C sigma-break redistribution path was debugged and corrected so Carbon in the 0 occupied / 4 empty state no longer gets a forced empty-orbital swing. The fix keeps empty rows at their current local pose in the guide-group `SigmaBondInOperation` + `nOcc==0` path, and removes the sigma-only fallback that re-aimed empties along the break reference when perpendicular targeting failed.
+
+Temporary debug instrumentation used during triage was removed from `AtomFunction`, and debug ingest constants in `ProjectAgentDebugLog` were restored to the normal session values. The workspace also includes a `TODO` edit that removed one prior note and kept the cyclic-redistribution note.

@@ -111,23 +111,15 @@ public static class ProjectAgentDebugLog
         return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
     }
 
-    /// <summary>NDJSON path under <c>.cursor/</c> for Cursor Debug Mode ingest (workspace-visible only).</summary>
-    public const string CursorWorkspaceDebugNdjsonFileName = "debug-workspace.ndjson";
-
     /// <summary>Single-session agent ingest file under <c>.cursor/</c>; update filename when the IDE debug session id changes.</summary>
     public const string CursorDebugModeIngestNdjsonFileName = "debug-282ed4.log";
 
     /// <summary>Session id embedded in <see cref="CursorDebugModeIngestNdjsonFileName"/> lines for Cursor Debug Mode.</summary>
     public const string CursorDebugModeIngestSessionId = "282ed4";
 
-    /// <summary>When true (default), <see cref="AppendCursorWorkspaceDebugNdjson"/> writes under project <c>.cursor/</c>. Set false for quiet runs.</summary>
-    public static bool WriteCursorWorkspaceDebugNdjson = true;
-
-    /// <summary>When true (default), duplicates each workspace NDJSON line to <see cref="CursorDebugModeIngestNdjsonFileName"/> with <see cref="CursorDebugModeIngestSessionId"/> so the agent reads one file. Default on for triage; set false for quiet runs.</summary>
+    /// <summary>When true (default), <see cref="AppendCursorWorkspaceDebugNdjson"/> appends NDJSON to <see cref="CursorDebugModeIngestNdjsonFileName"/>. Default on for triage; set false for quiet runs.</summary>
     public static bool WriteCursorDebugModeIngestNdjson = true;
 
-    static string _cursorWorkspaceDebugResolvedPath;
-    static bool _cursorWorkspaceDebugLoggedPathOnce;
     static bool _cursorDebugModeIngestLoggedPathOnce;
 
     static string BuildCursorWorkspaceNdjsonLine(
@@ -152,8 +144,8 @@ public static class ProjectAgentDebugLog
     }
 
     /// <summary>
-    /// One NDJSON line to <c>{project}/.cursor/debug-workspace.ndjson</c> (and optionally <c>debug-214323.log</c> for Cursor Debug Mode ingest).
-    /// Same shape as agent ingest: sessionId, runId, hypothesisId, location, message, data, timestamp.
+    /// One NDJSON line to <c>{project}/.cursor/</c><see cref="CursorDebugModeIngestNdjsonFileName"/> for Cursor Debug Mode ingest.
+    /// Shape: sessionId, runId, hypothesisId, location, message, data, timestamp.
     /// </summary>
     public static void AppendCursorWorkspaceDebugNdjson(
         string hypothesisId,
@@ -162,10 +154,10 @@ public static class ProjectAgentDebugLog
         string dataJsonObject = "{}",
         string runId = "run1")
     {
-        if (!WriteCursorWorkspaceDebugNdjson || string.IsNullOrEmpty(message)) return;
+        if (!WriteCursorDebugModeIngestNdjson || string.IsNullOrEmpty(message)) return;
         long ts = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
-        string lineWorkspace = BuildCursorWorkspaceNdjsonLine(
-            "cursor-workspace", hypothesisId, location, message, dataJsonObject, runId, ts);
+        string lineIngest = BuildCursorWorkspaceNdjsonLine(
+            CursorDebugModeIngestSessionId, hypothesisId, location, message, dataJsonObject, runId, ts);
 
         string root = null;
         try
@@ -178,30 +170,6 @@ public static class ProjectAgentDebugLog
         }
         if (string.IsNullOrEmpty(root)) return;
 
-        string path = Path.GetFullPath(Path.Combine(root, ".cursor", CursorWorkspaceDebugNdjsonFileName));
-        try
-        {
-            string dir = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                Directory.CreateDirectory(dir);
-            File.AppendAllText(path, lineWorkspace);
-            _cursorWorkspaceDebugResolvedPath = path;
-#if UNITY_EDITOR
-            if (!_cursorWorkspaceDebugLoggedPathOnce)
-            {
-                _cursorWorkspaceDebugLoggedPathOnce = true;
-                Debug.Log("[cursor-workspace-debug] NDJSON path=" + path);
-            }
-#endif
-        }
-        catch (Exception e)
-        {
-            Debug.LogWarning("[cursor-workspace-debug] append failed path=" + path + " err=" + e.Message);
-        }
-
-        if (!WriteCursorDebugModeIngestNdjson) return;
-        string lineIngest = BuildCursorWorkspaceNdjsonLine(
-            CursorDebugModeIngestSessionId, hypothesisId, location, message, dataJsonObject, runId, ts);
         string pathIngest = Path.GetFullPath(Path.Combine(root, ".cursor", CursorDebugModeIngestNdjsonFileName));
         try
         {
@@ -222,9 +190,6 @@ public static class ProjectAgentDebugLog
             Debug.LogWarning("[cursor-debug-mode-ingest] append failed path=" + pathIngest + " err=" + e.Message);
         }
     }
-
-    /// <summary>Resolved path after first successful <see cref="AppendCursorWorkspaceDebugNdjson"/> in this session, or null.</summary>
-    public static string CursorWorkspaceDebugResolvedPath => _cursorWorkspaceDebugResolvedPath;
 
     static readonly HashSet<string> _accessibleDiagPathLoggedOnce = new HashSet<string>();
 

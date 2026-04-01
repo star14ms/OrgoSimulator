@@ -5663,10 +5663,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             else if (opIsSigmaLine)
             {
                 perpAppliedThis = TryOverrideSigmaOpPiEmptyGuidePerpendicularToFramework(targetsThis, guideThis);
-                if (!perpAppliedThis)
-                    override0eThis = TryOverridePiBreakEmptyGuideTargetAlongRef(targetsThis, guideThis, refWorldThis);
-                else
-                    override0eThis = true;
+                // Sigma-only cleavage with 0 occ / 4 empty can have no meaningful overlap right after break.
+                // If perpendicular target cannot be resolved, keep the precomputed target set unchanged.
+                override0eThis = perpAppliedThis;
             }
         }
         string causeThis = piBreak ? "piOp" : (opIsSigmaLine && hasPiRowThis ? "sigmaOpPiTargets" : (opIsSigmaLine ? "sigmaOnly" : "none"));
@@ -5713,10 +5712,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             else if (opIsSigmaLine)
             {
                 perpAppliedPartner = partnerAtom.TryOverrideSigmaOpPiEmptyGuidePerpendicularToFramework(targetsPartner, guidePartner);
-                if (!perpAppliedPartner)
-                    override0ePartner = partnerAtom.TryOverridePiBreakEmptyGuideTargetAlongRef(targetsPartner, guidePartner, refWorldPartner);
-                else
-                    override0ePartner = true;
+                // Keep sigma-only behavior symmetric on partner side.
+                override0ePartner = perpAppliedPartner;
             }
         }
         string causePartner = piBreak ? "piOp" : (opIsSigmaLine && hasPiRowPartner ? "sigmaOpPiTargets" : (opIsSigmaLine ? "sigmaOnly" : "none"));
@@ -8295,6 +8292,32 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (nOcc == 0)
         {
             outSlots = new List<(ElectronOrbitalFunction, Vector3, Quaternion)>(emp.Count);
+            // Sigma-only break with no occupied movers: keep all empty rows at their current locals.
+            // Right after cleavage there is no occupied overlap to resolve, so re-slotting empties here causes artificial swings.
+            if (source == RedistributionGuideSource.SigmaBondInOperation)
+            {
+                for (int i = 0; i < emp.Count; i++)
+                {
+                    var e = emp[i];
+                    if (e == null) continue;
+                    outSlots.Add((e, e.transform.localPosition, e.transform.localRotation));
+                }
+                LogGetRedistributeTargets3DLine(
+                    "EXIT_repulsionOnly_guideGroup",
+                    "targets=" + outSlots.Count + " source=" + source
+                    + " nVseprGroups=1 occMovers=0 empSlots=" + emp.Count
+                    + " mergedCoBondOccRemoved=" + mergedCoBondOccRemoved
+                    + " onlyMultiplyBondedPairNoOcc=true guideOrbId=" + guide.GetInstanceID()
+                    + " guideOrbE=" + guide.ElectronCount
+                    + " guideOnNucleus=" + (guide.transform.parent == transform ? "true" : "false")
+                    + " guideTipLocal={"
+                    + OrbitalTipLocalDirection(guide).x.ToString("F4", System.Globalization.CultureInfo.InvariantCulture) + ","
+                    + OrbitalTipLocalDirection(guide).y.ToString("F4", System.Globalization.CultureInfo.InvariantCulture) + ","
+                    + OrbitalTipLocalDirection(guide).z.ToString("F4", System.Globalization.CultureInfo.InvariantCulture) + "}"
+                    + " guideFixedNotInTargets=True guideBondId=" + (guideBond != null ? guideBond.GetInstanceID().ToString() : "null")
+                    + " opBondId=" + (redistributionOperationBond != null ? redistributionOperationBond.GetInstanceID().ToString() : "null"));
+                return true;
+            }
             var coBondTipsForEmpty = new List<Vector3>();
             CollectGuideGroupCoBondOrbitalTipsNucleusLocal(guideBond, redistributionOperationBond, guide, coBondTipsForEmpty);
             var electronFrameworkForEmpty = new List<Vector3>();
@@ -9082,7 +9105,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             else if (sigmaCleavageGuideForTargets != null
                 && sigmaCleavageGuideForTargets.ElectronCount == 0
                 && IsBondBreakGuideOrbitalWithBondingCleared(sigmaCleavageGuideForTargets))
+            {
                 AppendEmptyNonbondRedistributeTargetsForSigmaFramework(result, null, sigmaCleavageGuideForTargets, bondBreakIsSigmaCleavageBetweenFormerPartners);
+            }
             LogGetRedistributeTargets3DLine("EXIT_zeroLone_repulsionOnly", "resultCount=" + result.Count);
             return result;
         }

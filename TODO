@@ -1,2 +1,1 @@
-When dragging bondding orbital from cylinder object, bond should be borken only when I release orbital on the target atom, but the bond is borken when I release it into empty space.
 Consider speical cases for electron redisribution: Cyclic molecules, when bonding formed, if you detect it's cyclic, you should rearrange the atoms except the two atoms in op, to form regular polygons, in that case the rest orbital groups of atoms not involed in cycle should under electron redisribution with special rule, heading opposite direction from center of the ring.
