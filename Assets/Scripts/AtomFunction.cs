@@ -698,7 +698,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
     }
 
-    /// <summary>Compute the perpendicular empty-slot target for a specific guide orbital using current framework dirs.</summary>
+    /// <summary>Compute the perpendicular empty-slot target for a specific guide orbital using current framework dirs. Other 0e non-bond lobes are passed as <c>avoid</c> so the chosen hemisphere (±perp) does not stack on an existing empty.</summary>
     public bool TryGetPerpendicularEmptyTargetForGuide(ElectronOrbitalFunction guideOrbital, out Vector3 localPos, out Quaternion localRot)
     {
         localPos = Vector3.zero;
@@ -714,7 +714,21 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (!TryAppendCarbocationFrameworkSigmaLobeTips(dirs, guideOrbital, null))
             AppendSigmaBondDirectionsLocalDistinctNeighbors(dirs);
         if (dirs.Count == 0) return false;
-        if (!TryComputePerpendicularEmptySlotFromFrameworkDirs(dirs, bondRadius, out var pos, out var rot)) return false;
+
+        List<Vector3> avoidOtherEmptyTips = null;
+        foreach (var o in bondedOrbitals)
+        {
+            if (o == null || o == guideOrbital || o.Bond != null || o.ElectronCount != 0) continue;
+            Vector3 t = OrbitalTipLocalDirection(o);
+            if (t.sqrMagnitude < 1e-14f) continue;
+            avoidOtherEmptyTips ??= new List<Vector3>(2);
+            avoidOtherEmptyTips.Add(t.normalized);
+        }
+
+        if (!TryComputePerpendicularEmptySlotFromFrameworkDirs(
+                dirs, bondRadius, out var pos, out var rot, null,
+                avoidOtherEmptyTips != null && avoidOtherEmptyTips.Count > 0 ? avoidOtherEmptyTips : null))
+            return false;
         localPos = pos;
         localRot = rot;
         return true;
@@ -746,7 +760,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public void RefreshElectronSyncOnBondedOrbitals()
     {
         foreach (var orb in bondedOrbitals)
-            orb?.RefreshElectronSyncAfterLayout();
+        {
+            // UnityEngine.Object: do not use ?. — destroyed orbitals must be skipped with an explicit null check before any call.
+            if (orb == null) continue;
+            orb.RefreshElectronSyncAfterLayout();
+        }
     }
 
     /// <summary>Returns true if orbitals are not on ideal VSEPR directions (3D) or evenly spaced in the XY plane (2D).</summary>
@@ -5557,7 +5575,49 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             redistributionOperationBond);
     }
 
+    /// <summary>
+    /// π cleavage: freeze non-guide domains to current pose (see <see cref="CovalentBond.FreezeRedistTargetsExceptGuideToCurrentLocals"/>); optionally set only a 0e guide along the former π axis (toward partner). <see cref="CovalentBond.BreakBond"/> often splits a 2e π into 1e+1e, so the freeze step applies even when the guide is not empty.
+    /// </summary>
+    bool TryOverridePiBreakEmptyGuideTargetAlongRef(
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> targets,
+        ElectronOrbitalFunction emptyGuide,
+        Vector3 refWorldFromThisTowardPartner)
+    {
+        if (targets == null || emptyGuide == null) return false;
+        if (refWorldFromThisTowardPartner.sqrMagnitude < 1e-16f) return false;
+        Vector3 refLocal = transform.InverseTransformDirection(refWorldFromThisTowardPartner.normalized);
+        if (refLocal.sqrMagnitude < 1e-16f) return false;
+        var (pos, rot) = GetCanonicalSlotPositionFromNucleusIdealForOrbitalParent(
+            emptyGuide, refLocal, bondRadius, emptyGuide.transform.localRotation);
+        for (int i = 0; i < targets.Count; i++)
+        {
+            if (targets[i].orb != emptyGuide) continue;
+            targets[i] = (emptyGuide, pos, rot);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// σ cleavage 0e ex-bond guide: <see cref="TryOverridePiBreakEmptyGuideTargetAlongRef"/> aligns along internuclear ref and can overlap the remaining σ / lone framework. Prefer the same perpendicular slot as <see cref="TryGetPerpendicularEmptyTargetForGuide"/> (also when no π rows remain — final σ on O=C=O fragment).
+    /// </summary>
+    bool TryOverrideSigmaOpPiEmptyGuidePerpendicularToFramework(
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> targets,
+        ElectronOrbitalFunction emptyGuide)
+    {
+        if (targets == null || emptyGuide == null) return false;
+        if (!TryGetPerpendicularEmptyTargetForGuide(emptyGuide, out var pos, out var rot)) return false;
+        for (int i = 0; i < targets.Count; i++)
+        {
+            if (targets[i].orb != emptyGuide) continue;
+            targets[i] = (emptyGuide, pos, rot);
+            return true;
+        }
+        return false;
+    }
+
     /// <summary>Lerps nucleus-parented redistribute targets after <see cref="CovalentBond.BreakBond"/>, then applies targets and hybrid refresh. Electron sync and bond GO destroy run in <paramref name="onComplete"/>.</summary>
+    /// <param name="redistributionOperationBond">Cleaved bond (e.g. <c>this</c> from <see cref="CovalentBond.BreakBond"/>); π breaks pass it so guide resolution prefers each endpoint's ex-bond lobe over a remaining π.</param>
     public IEnumerator CoLerpBondBreakRedistribution(
         AtomFunction partnerAtom,
         Vector3 refWorldThis,
@@ -5567,7 +5627,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         int sigmaBeforeThis,
         int sigmaBeforePartner,
         bool sigmaCleavage,
-        System.Action onComplete)
+        System.Action onComplete,
+        CovalentBond redistributionOperationBond = null)
     {
         const float duration = 0.65f;
         if (partnerAtom == null)
@@ -5576,15 +5637,178 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             yield break;
         }
 
-        var targetsThis = PeekRedistributeTargetsSameAsRedistributeOrbitals3D(null, refWorldThis, guideThis, sigmaBeforeThis, sigmaCleavage, null);
-        var targetsPartner = partnerAtom.PeekRedistributeTargetsSameAsRedistributeOrbitals3D(null, refWorldPartner, guidePartner, sigmaBeforePartner, sigmaCleavage, null);
+        var targetsThis = PeekRedistributeTargetsSameAsRedistributeOrbitals3D(null, refWorldThis, guideThis, sigmaBeforeThis, sigmaCleavage, redistributionOperationBond);
+        var targetsPartner = partnerAtom.PeekRedistributeTargetsSameAsRedistributeOrbitals3D(null, refWorldPartner, guidePartner, sigmaBeforePartner, sigmaCleavage, redistributionOperationBond);
+
+        bool piBreak = redistributionOperationBond != null && !redistributionOperationBond.IsSigmaBondLine();
+        bool opIsSigmaLine = redistributionOperationBond != null && redistributionOperationBond.IsSigmaBondLine();
+        bool hasPiRowThis = CovalentBond.TargetsListContainsPiBondLineRow(targetsThis);
+        bool hasPiRowPartner = CovalentBond.TargetsListContainsPiBondLineRow(targetsPartner);
+        // σ bond break: Peek still includes remaining π bond rows → same joint fight as π cleavage; freeze non-guide rows per side when that side's targets include a π line.
+        bool freezeThis = piBreak || (opIsSigmaLine && hasPiRowThis);
+        bool freezePartner = piBreak || (opIsSigmaLine && hasPiRowPartner);
+        if (freezeThis && guideThis != null)
+            CovalentBond.FreezeRedistTargetsExceptGuideToCurrentLocals(targetsThis, guideThis, this);
+        if (freezePartner && guidePartner != null)
+            CovalentBond.FreezeRedistTargetsExceptGuideToCurrentLocals(targetsPartner, guidePartner, partnerAtom);
+
+        // 0e ex-bond guide: must run for σ cleavage even when no π rows remain (e.g. second σ break on O=C=O fragment)
+        // — previously gated inside freezeThis, so last σ break skipped override and layout looked random/overlapping.
+        bool perpAppliedThis = false;
+        bool override0eThis = false;
+        if (guideThis != null && guideThis.ElectronCount == 0 && redistributionOperationBond != null)
+        {
+            if (piBreak)
+                override0eThis = TryOverridePiBreakEmptyGuideTargetAlongRef(targetsThis, guideThis, refWorldThis);
+            else if (opIsSigmaLine)
+            {
+                perpAppliedThis = TryOverrideSigmaOpPiEmptyGuidePerpendicularToFramework(targetsThis, guideThis);
+                if (!perpAppliedThis)
+                    override0eThis = TryOverridePiBreakEmptyGuideTargetAlongRef(targetsThis, guideThis, refWorldThis);
+                else
+                    override0eThis = true;
+            }
+        }
+        string causeThis = piBreak ? "piOp" : (opIsSigmaLine && hasPiRowThis ? "sigmaOpPiTargets" : (opIsSigmaLine ? "sigmaOnly" : "none"));
+        bool sigma0eThis = opIsSigmaLine && !piBreak && guideThis != null && guideThis.ElectronCount == 0;
+        // #region agent log
+        if (guideThis != null && redistributionOperationBond != null && (freezeThis || guideThis.ElectronCount == 0))
+        {
+            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+                "H5",
+                "AtomFunction.CoLerpBondBreakRedistribution",
+                "empty0e_override_this",
+                "{\"atomId\":" + GetInstanceID()
+                + ",\"targetsN\":" + targetsThis.Count
+                + ",\"guideId\":" + guideThis.GetInstanceID()
+                + ",\"guideEC\":" + guideThis.ElectronCount
+                + ",\"freezeThis\":" + (freezeThis ? "true" : "false")
+                + ",\"hasPiRowThis\":" + (hasPiRowThis ? "true" : "false")
+                + ",\"override0e\":" + (override0eThis ? "true" : "false")
+                + ",\"sigmaCleavage0eTryPerp\":" + (sigma0eThis ? "true" : "false")
+                + ",\"perpApplied\":" + (perpAppliedThis ? "true" : "false")
+                + ",\"cause\":\"" + causeThis + "\"}",
+                "perp-empty");
+            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+                "H3",
+                "AtomFunction.CoLerpBondBreakRedistribution",
+                "pi_break_freeze_except_guide_this",
+                "{\"atomId\":" + GetInstanceID()
+                + ",\"targetsN\":" + targetsThis.Count
+                + ",\"guideId\":" + guideThis.GetInstanceID()
+                + ",\"guideEC\":" + guideThis.ElectronCount
+                + ",\"override0e\":" + (override0eThis ? "true" : "false")
+                + ",\"cause\":\"" + causeThis + "\"}",
+                "post-fix");
+            Debug.Log("[pi-break-stub] this atomId=" + GetInstanceID() + " targetsN=" + targetsThis.Count + " guideEC=" + guideThis.ElectronCount + " override0e=" + override0eThis + " perpApplied=" + perpAppliedThis + " freeze=" + freezeThis + " cause=" + causeThis);
+        }
+        // #endregion
+
+        bool perpAppliedPartner = false;
+        bool override0ePartner = false;
+        if (guidePartner != null && guidePartner.ElectronCount == 0 && redistributionOperationBond != null)
+        {
+            if (piBreak)
+                override0ePartner = partnerAtom.TryOverridePiBreakEmptyGuideTargetAlongRef(targetsPartner, guidePartner, refWorldPartner);
+            else if (opIsSigmaLine)
+            {
+                perpAppliedPartner = partnerAtom.TryOverrideSigmaOpPiEmptyGuidePerpendicularToFramework(targetsPartner, guidePartner);
+                if (!perpAppliedPartner)
+                    override0ePartner = partnerAtom.TryOverridePiBreakEmptyGuideTargetAlongRef(targetsPartner, guidePartner, refWorldPartner);
+                else
+                    override0ePartner = true;
+            }
+        }
+        string causePartner = piBreak ? "piOp" : (opIsSigmaLine && hasPiRowPartner ? "sigmaOpPiTargets" : (opIsSigmaLine ? "sigmaOnly" : "none"));
+        bool sigma0ePartner = opIsSigmaLine && !piBreak && guidePartner != null && guidePartner.ElectronCount == 0;
+        // #region agent log
+        if (guidePartner != null && redistributionOperationBond != null && (freezePartner || guidePartner.ElectronCount == 0))
+        {
+            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+                "H5",
+                "AtomFunction.CoLerpBondBreakRedistribution",
+                "empty0e_override_partner",
+                "{\"atomId\":" + partnerAtom.GetInstanceID()
+                + ",\"targetsN\":" + targetsPartner.Count
+                + ",\"guideId\":" + guidePartner.GetInstanceID()
+                + ",\"guideEC\":" + guidePartner.ElectronCount
+                + ",\"freezePartner\":" + (freezePartner ? "true" : "false")
+                + ",\"hasPiRowPartner\":" + (hasPiRowPartner ? "true" : "false")
+                + ",\"override0e\":" + (override0ePartner ? "true" : "false")
+                + ",\"sigmaCleavage0eTryPerp\":" + (sigma0ePartner ? "true" : "false")
+                + ",\"perpApplied\":" + (perpAppliedPartner ? "true" : "false")
+                + ",\"cause\":\"" + causePartner + "\"}",
+                "perp-empty");
+            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+                "H3",
+                "AtomFunction.CoLerpBondBreakRedistribution",
+                "pi_break_freeze_except_guide_partner",
+                "{\"atomId\":" + partnerAtom.GetInstanceID()
+                + ",\"targetsN\":" + targetsPartner.Count
+                + ",\"guideId\":" + guidePartner.GetInstanceID()
+                + ",\"guideEC\":" + guidePartner.ElectronCount
+                + ",\"override0e\":" + (override0ePartner ? "true" : "false")
+                + ",\"cause\":\"" + causePartner + "\"}",
+                "post-fix");
+            Debug.Log("[pi-break-stub] partner atomId=" + partnerAtom.GetInstanceID() + " targetsN=" + targetsPartner.Count + " guideEC=" + guidePartner.ElectronCount + " override0e=" + override0ePartner + " perpApplied=" + perpAppliedPartner + " freeze=" + freezePartner + " cause=" + causePartner);
+        }
+        // #endregion
+
+        // #region agent log
+        if (atomicNumber == 6 || partnerAtom.atomicNumber == 6)
+        {
+            float OcoAngleWorldDeg(AtomFunction c)
+            {
+                if (c == null || c.atomicNumber != 6) return -1f;
+                var sig = new List<AtomFunction>();
+                foreach (var b in c.CovalentBonds)
+                {
+                    if (b == null || !b.IsSigmaBondLine()) continue;
+                    var o = b.AtomA == c ? b.AtomB : b.AtomA;
+                    if (o != null) sig.Add(o);
+                }
+                if (sig.Count < 2) return -1f;
+                Vector3 a = (sig[0].transform.position - c.transform.position).normalized;
+                Vector3 d = (sig[1].transform.position - c.transform.position).normalized;
+                if (a.sqrMagnitude < 1e-10f || d.sqrMagnitude < 1e-10f) return -1f;
+                return Vector3.Angle(a, d);
+            }
+            float angThis = OcoAngleWorldDeg(this);
+            float angP = OcoAngleWorldDeg(partnerAtom);
+            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+                "H2",
+                "AtomFunction.CoLerpBondBreakRedistribution",
+                "peek_targets_sigma_framework_angle_deg",
+                "{\"thisAtomId\":" + GetInstanceID()
+                + ",\"thisZ\":" + atomicNumber
+                + ",\"partnerId\":" + partnerAtom.GetInstanceID()
+                + ",\"partnerZ\":" + partnerAtom.atomicNumber
+                + ",\"sigmaAngleThisDeg\":" + angThis.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"sigmaAnglePartnerDeg\":" + angP.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"opBondParamNull\":" + (redistributionOperationBond == null ? "true" : "false")
+                + ",\"opBondId\":" + (redistributionOperationBond != null ? redistributionOperationBond.GetInstanceID().ToString() : "0")
+                + ",\"opIsSigmaLine\":" + (redistributionOperationBond == null ? "null" : (redistributionOperationBond.IsSigmaBondLine() ? "true" : "false"))
+                + ",\"piBreak\":" + (redistributionOperationBond != null && !redistributionOperationBond.IsSigmaBondLine() ? "true" : "false")
+                + ",\"hasPiRowThis\":" + (hasPiRowThis ? "true" : "false")
+                + ",\"hasPiRowPartner\":" + (hasPiRowPartner ? "true" : "false")
+                + ",\"freezeThis\":" + (freezeThis ? "true" : "false")
+                + ",\"freezePartner\":" + (freezePartner ? "true" : "false") + "}");
+        }
+        // #endregion
 
         var startsThis = new List<(Vector3 p, Quaternion r)>(targetsThis.Count);
         foreach (var e in targetsThis)
-            startsThis.Add(e.orb != null ? (e.orb.transform.localPosition, e.orb.transform.localRotation) : (Vector3.zero, Quaternion.identity));
+        {
+            var o = e.orb;
+            // UnityEngine.Object: explicit destroyed check before .transform (same as orb == null for fake-null).
+            startsThis.Add(o != null ? (o.transform.localPosition, o.transform.localRotation) : (Vector3.zero, Quaternion.identity));
+        }
         var startsPartner = new List<(Vector3 p, Quaternion r)>(targetsPartner.Count);
         foreach (var e in targetsPartner)
-            startsPartner.Add(e.orb != null ? (e.orb.transform.localPosition, e.orb.transform.localRotation) : (Vector3.zero, Quaternion.identity));
+        {
+            var o = e.orb;
+            startsPartner.Add(o != null ? (o.transform.localPosition, o.transform.localRotation) : (Vector3.zero, Quaternion.identity));
+        }
 
         var fragWorldThis = new Dictionary<AtomFunction, (Vector3 worldPos, Quaternion worldRot)>();
         var fragWorldPartner = new Dictionary<AtomFunction, (Vector3 worldPos, Quaternion worldRot)>();
@@ -5805,36 +6029,82 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <summary>Same geometry as <see cref="OrientEmptyNonbondedOrbitalsPerpendicularToFramework"/> — perpendicular slot from framework directions (occupied tips + σ).
-    /// If there is exactly one framework group, prefer the opposite side (180°) for the empty slot.</summary>
-    static bool TryComputePerpendicularEmptySlotFromFrameworkDirs(IReadOnlyList<Vector3> dirs, float bondRadius, out Vector3 localPos, out Quaternion localRot, Vector3? preferredLocalDirection = null)
+    /// If there is exactly one framework group, prefer the opposite side (180°) for the empty slot.
+    /// <paramref name="avoidTipLocalDirections"/> (other 0e lobes): pick ±perp to maximize minimum angular separation from those tips so released empties do not stack.</summary>
+    static bool TryComputePerpendicularEmptySlotFromFrameworkDirs(
+        IReadOnlyList<Vector3> dirs,
+        float bondRadius,
+        out Vector3 localPos,
+        out Quaternion localRot,
+        Vector3? preferredLocalDirection = null,
+        IReadOnlyList<Vector3> avoidTipLocalDirections = null)
     {
         localPos = default;
         localRot = default;
         if (dirs != null && dirs.Count == 1 && dirs[0].sqrMagnitude > 1e-10f)
         {
-            Vector3 opposite = -dirs[0].normalized;
+            Vector3 ax = dirs[0].normalized;
+            Vector3 opposite = -ax;
+            if (avoidTipLocalDirections != null && avoidTipLocalDirections.Count > 0)
+            {
+                float so = MinAngleToAnyDirection(opposite, avoidTipLocalDirections);
+                float sa = MinAngleToAnyDirection(ax, avoidTipLocalDirections);
+                const float sepEps = 1.5f;
+                if (sa > so + sepEps)
+                    opposite = ax;
+            }
             var (posOpp, rotOpp) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(opposite, bondRadius);
             localPos = posOpp;
             localRot = rotOpp;
             return true;
         }
-        if (!TryComputePerpendicularDirectionFromElectronFramework(dirs, out Vector3 perp)) return false;
-        if (preferredLocalDirection.HasValue && preferredLocalDirection.Value.sqrMagnitude > 1e-10f)
+        if (!TryComputePerpendicularDirectionFromElectronFramework(dirs, out Vector3 perpRaw)) return false;
+        Vector3 c0 = perpRaw.normalized;
+        Vector3 c1 = -c0;
+        Vector3 chosen;
+        bool avoidActive = avoidTipLocalDirections != null && avoidTipLocalDirections.Count > 0;
+        if (avoidActive)
+        {
+            float s0 = MinAngleToAnyDirection(c0, avoidTipLocalDirections);
+            float s1 = MinAngleToAnyDirection(c1, avoidTipLocalDirections);
+            const float sepEps = 1.5f;
+            if (s1 > s0 + sepEps)
+                chosen = c1;
+            else if (s0 > s1 + sepEps)
+                chosen = c0;
+            else if (preferredLocalDirection.HasValue && preferredLocalDirection.Value.sqrMagnitude > 1e-10f)
+            {
+                Vector3 pref = preferredLocalDirection.Value.normalized;
+                float d0 = Vector3.Dot(pref, c0);
+                float d1 = Vector3.Dot(pref, c1);
+                const float dotEps = 1e-5f;
+                if (d1 > d0 + dotEps)
+                    chosen = c1;
+                else if (Mathf.Abs(d1 - d0) <= dotEps && CompareLex3(c1, c0) > 0)
+                    chosen = c1;
+                else
+                    chosen = c0;
+            }
+            else
+                chosen = c0;
+        }
+        else if (preferredLocalDirection.HasValue && preferredLocalDirection.Value.sqrMagnitude > 1e-10f)
         {
             Vector3 pref = preferredLocalDirection.Value.normalized;
-            Vector3 c0 = perp.normalized;
-            Vector3 c1 = -c0;
             float d0 = Vector3.Dot(pref, c0);
             float d1 = Vector3.Dot(pref, c1);
             const float dotEps = 1e-5f;
             if (d1 > d0 + dotEps)
-                perp = c1;
+                chosen = c1;
             else if (Mathf.Abs(d1 - d0) <= dotEps && CompareLex3(c1, c0) > 0)
-                perp = c1;
+                chosen = c1;
             else
-                perp = c0;
+                chosen = c0;
         }
-        var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(perp, bondRadius);
+        else
+            chosen = c0;
+
+        var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(chosen, bondRadius);
         localPos = pos;
         localRot = rot;
         return true;
@@ -7428,10 +7698,10 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <summary>
-    /// Single guide group in strict priority (tiers 1–6): (1) π not operation bond, (2) π = operation bond,
-    /// (3) σ not op, (4) σ = op — these win whenever incident bond orbitals remain after breakage;
-    /// (5) ex-bond lobe with e⁻ from <paramref name="bondBreakGuideLoneOrbitalForTargets"/> (no <see cref="CovalentBond"/> required),
-    /// (6) ex-bond 0e from the same parameter.
+    /// Single guide group in strict priority: **π cleavage with operation bond** (ex-bond lobe on this nucleus along the
+    /// broken edge, 0e or &gt;0e) runs before π/σ tiers so CO₂-style centers use the break axis as VSEPR vertex 0, not a
+    /// remaining π. Then (1) π not operation bond, (2) π = operation bond, (3) σ not op, (4) σ = op; (5) ex-bond lobe with e⁻;
+    /// (6) ex-bond 0e when no operation bond marks cleavage.
     /// </summary>
     bool TryResolveRedistributionGuideGroupForLayout(
         CovalentBond redistributionOperationBond,
@@ -7443,6 +7713,41 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         guideOrbital = null;
         guideBond = null;
         guideSource = default;
+
+        // π bond break (3D CoLerp passes redistributionOperationBond): anchor layout to this nucleus's ex-bond lobe along
+        // the cleaved edge. Carbon often receives a 0e stub (Tier 6 would run too late vs PiBondNotInOperation); use main
+        // VSEPR path via LonePairFromOperation source for both 0e and &gt;0e here.
+        // Host check: BreakBond sets <see cref="ElectronOrbitalFunction.SetBondedAtom"/> on both ex-bond lobes — prefer that over
+        // transform ancestry (GetComponentInParent / IsChildOf) when the lobe is not under a transform that has AtomFunction.
+        // Do not require <see cref="IsBondBreakGuideOrbitalWithBondingCleared"/> — stub may be absent from bondedOrbitals when slots are full.
+        if (redistributionOperationBond != null
+            && !redistributionOperationBond.IsSigmaBondLine()
+            && (redistributionOperationBond.AtomA == this || redistributionOperationBond.AtomB == this)
+            && bondBreakGuideLoneOrbitalForTargets != null
+            && (bondBreakGuideLoneOrbitalForTargets.BondedAtom == this
+                || bondBreakGuideLoneOrbitalForTargets.GetComponentInParent<AtomFunction>() == this))
+        {
+            guideOrbital = bondBreakGuideLoneOrbitalForTargets;
+            guideBond = null;
+            guideSource = RedistributionGuideSource.LonePairFromOperation;
+            // #region agent log
+            if (atomicNumber == 6)
+            {
+                int opId = redistributionOperationBond.GetInstanceID();
+                ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
+                    "H1fix",
+                    "AtomFunction.TryResolveRedistributionGuideGroupForLayout",
+                    "pi_cleavage_ex_bond_guide",
+                    "{\"atomId\":" + GetInstanceID()
+                    + ",\"opBondId\":" + opId
+                    + ",\"breakGuideId\":" + bondBreakGuideLoneOrbitalForTargets.GetInstanceID()
+                    + ",\"breakGuideE\":" + bondBreakGuideLoneOrbitalForTargets.ElectronCount
+                    + ",\"sigmaN\":" + GetDistinctSigmaNeighborCount()
+                    + ",\"piN\":" + GetPiBondCount() + "}");
+            }
+            // #endregion
+            return true;
+        }
 
         // π formation/break staging: prefer the operation π edge as guide so operation endpoints stay anchored while
         // non-operation branches become movers.
@@ -7947,7 +8252,23 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         occ.Sort((a, b) => a.GetInstanceID().CompareTo(b.GetInstanceID()));
         emp.Sort((a, b) => a.GetInstanceID().CompareTo(b.GetInstanceID()));
-        int mergedCoBondOccRemoved = RemoveGuideGroupCoBondOccupiedSamePair(guideBond, occ);
+        // Ex-bond guide (guideBond null) still needs the cleaved edge for σ+π merge on that pair (e.g. CO₂ π break → linear C).
+        CovalentBond pairBondForOccMergeAndGuideAxis = guideBond ?? redistributionOperationBond;
+        int mergedCoBondOccRemoved = RemoveGuideGroupCoBondOccupiedSamePair(pairBondForOccMergeAndGuideAxis, occ);
+        // Stub guide on π cleavage: first merge uses cleaved bond pair; other multiply-bonded pairs (e.g. remaining C=O) still
+        // have σ+π both in occ — merge each π edge so nOcc matches electron domains (linear 2, not trigonal 3).
+        if (source == RedistributionGuideSource.LonePairFromOperation
+            && guideBond == null
+            && redistributionOperationBond != null
+            && !redistributionOperationBond.IsSigmaBondLine())
+        {
+            foreach (var b in covalentBonds)
+            {
+                if (b == null || b.IsSigmaBondLine() || b.Orbital == null) continue;
+                if (b.AtomA != this && b.AtomB != this) continue;
+                mergedCoBondOccRemoved += RemoveGuideGroupCoBondOccupiedSamePair(b, occ);
+            }
+        }
         if (source == RedistributionGuideSource.PiBondInOperation && occ.Count == 2)
             occ.Sort(CompareGuideGroupOccPiTrigonalFor2);
         else
@@ -7960,7 +8281,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         // First VSEPR direction for AlignFirstDirectionTo: bond guides use internuclear axis only (σ/π domain toward partner). Ex-bond lone/empty: measured pivot→orbital (then pivot→lobe tip) so post–bond-break lobe quaternion sign does not invert the frame.
-        Vector3 guideTip = GuideGroupFirstVertexDirectionNucleusLocal(guide, guideBond);
+        Vector3 guideTip = GuideGroupFirstVertexDirectionNucleusLocal(guide, pairBondForOccMergeAndGuideAxis);
 
         if (guideTip.sqrMagnitude < 1e-10f)
         {
@@ -11595,11 +11916,19 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             if (a2d != null || a3d != null) atomColliders.Add((a2d, a3d));
             orbitals.AddRange(a.GetComponentsInChildren<ElectronOrbitalFunction>());
             foreach (var b in a.CovalentBonds)
-                if (b?.Orbital != null && !orbitals.Contains(b.Orbital))
-                    orbitals.Add(b.Orbital);
+            {
+                if (b == null) continue;
+                var o = b.Orbital;
+                if (o == null) continue;
+                if (!orbitals.Contains(o)) orbitals.Add(o);
+            }
         }
+        orbitals.RemoveAll(static o => o == null);
         foreach (var orb in orbitals)
+        {
+            if (orb == null) continue;
             allElectrons.AddRange(orb.GetComponentsInChildren<ElectronFunction>());
+        }
         foreach (var e in Object.FindObjectsByType<ElectronFunction>(FindObjectsSortMode.None))
         {
             if (e != null && !allElectrons.Contains(e))
@@ -11617,20 +11946,39 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 IgnoreCollisionPair(atomColliders[i], atomColliders[j]);
         foreach (var ac in atomColliders)
             foreach (var orb in orbitals)
+            {
+                if (orb == null) continue;
                 IgnoreCollision(ac, orb.GetComponent<Collider2D>(), orb.GetComponent<Collider>());
+            }
         foreach (var ac in atomColliders)
             foreach (var e in allElectrons)
+            {
+                if (e == null) continue;
                 IgnoreCollision(ac, e.GetComponent<Collider2D>(), e.GetComponent<Collider>());
+            }
         for (int i = 0; i < orbitals.Count; i++)
         {
+            if (orbitals[i] == null) continue;
             for (int j = i + 1; j < orbitals.Count; j++)
+            {
+                if (orbitals[j] == null) continue;
                 IgnoreCollision(orbitals[i], orbitals[j]);
+            }
             foreach (var e in allElectrons)
+            {
+                if (e == null) continue;
                 IgnoreCollision(orbitals[i], e);
+            }
         }
         for (int i = 0; i < allElectrons.Count; i++)
+        {
+            if (allElectrons[i] == null) continue;
             for (int j = i + 1; j < allElectrons.Count; j++)
+            {
+                if (allElectrons[j] == null) continue;
                 IgnoreCollision(allElectrons[i], allElectrons[j]);
+            }
+        }
     }
 
     /// <summary>
@@ -11667,43 +12015,75 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             if (a == null || !involved.Contains(a)) continue;
             invOrbitals.AddRange(a.GetComponentsInChildren<ElectronOrbitalFunction>());
             foreach (var b in a.CovalentBonds)
-                if (b?.Orbital != null && !invOrbitals.Contains(b.Orbital))
-                    invOrbitals.Add(b.Orbital);
+            {
+                if (b == null) continue;
+                var o = b.Orbital;
+                if (o == null) continue;
+                if (!invOrbitals.Contains(o)) invOrbitals.Add(o);
+            }
         }
+        invOrbitals.RemoveAll(static o => o == null);
         var invElectrons = new List<ElectronFunction>();
         foreach (var orb in invOrbitals)
+        {
+            if (orb == null) continue;
             invElectrons.AddRange(orb.GetComponentsInChildren<ElectronFunction>());
+        }
 
         foreach (var iac in invAtomColliders)
             foreach (var ac in atomColliders)
                 IgnoreCollisionPair(iac, ac);
         foreach (var io in invOrbitals)
             foreach (var o in orbitals)
+            {
+                if (io == null || o == null) continue;
                 IgnoreCollision(io, o);
+            }
         foreach (var ie in invElectrons)
             foreach (var e in allElectrons)
+            {
+                if (ie == null || e == null) continue;
                 IgnoreCollision(ie, e);
+            }
 
         foreach (var iac in invAtomColliders)
             foreach (var orb in orbitals)
+            {
+                if (orb == null) continue;
                 IgnoreCollision(iac, orb.GetComponent<Collider2D>(), orb.GetComponent<Collider>());
+            }
         foreach (var ac in atomColliders)
             foreach (var io in invOrbitals)
+            {
+                if (io == null) continue;
                 IgnoreCollision(ac, io.GetComponent<Collider2D>(), io.GetComponent<Collider>());
+            }
 
         foreach (var iac in invAtomColliders)
             foreach (var e in allElectrons)
+            {
+                if (e == null) continue;
                 IgnoreCollision(iac, e.GetComponent<Collider2D>(), e.GetComponent<Collider>());
+            }
         foreach (var ac in atomColliders)
             foreach (var ie in invElectrons)
+            {
+                if (ie == null) continue;
                 IgnoreCollision(ac, ie.GetComponent<Collider2D>(), ie.GetComponent<Collider>());
+            }
 
         foreach (var io in invOrbitals)
             foreach (var e in allElectrons)
+            {
+                if (io == null || e == null) continue;
                 IgnoreCollision(io, e);
+            }
         foreach (var o in orbitals)
             foreach (var ie in invElectrons)
+            {
+                if (o == null || ie == null) continue;
                 IgnoreCollision(o, ie);
+            }
     }
 
     static void IgnoreCollisionPair((Collider2D c2d, Collider c3d) a, (Collider2D c2d, Collider c3d) b)
@@ -11720,6 +12100,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     static void IgnoreCollision(ElectronOrbitalFunction a, ElectronOrbitalFunction b)
     {
+        if (a == null || b == null) return;
         var a2D = a.GetComponent<Collider2D>();
         var a3D = a.GetComponent<Collider>();
         var b2D = b.GetComponent<Collider2D>();
@@ -11730,6 +12111,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     static void IgnoreCollision(ElectronOrbitalFunction orb, ElectronFunction e)
     {
+        if (orb == null || e == null) return;
         var o2D = orb.GetComponent<Collider2D>();
         var o3D = orb.GetComponent<Collider>();
         var e2D = e.GetComponent<Collider2D>();

@@ -1024,8 +1024,9 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         void FinishBreakBondTail()
         {
-            atomA?.RefreshElectronSyncOnBondedOrbitals();
-            atomB?.RefreshElectronSyncOnBondedOrbitals();
+            // UnityEngine.Object: ?. uses reference null only — destroyed AtomFunction still invokes and can touch stale orbitals.
+            if (atomA != null) atomA.RefreshElectronSyncOnBondedOrbitals();
+            if (atomB != null) atomB.RefreshElectronSyncOnBondedOrbitals();
             var atomsForSigmaLine = new List<AtomFunction>();
             if (atomA != null) atomsForSigmaLine.Add(atomA);
             if (atomB != null) atomsForSigmaLine.Add(atomB);
@@ -1060,7 +1061,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     sigmaBeforeA,
                     sigmaBeforeB,
                     sigmaCleavageBetweenPartners,
-                    FinishBreakBondTail));
+                    FinishBreakBondTail,
+                    this));
                 return;
             }
 
@@ -1105,5 +1107,47 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             if (o.transform.parent != nucleus.transform) continue;
             list[i] = (o, o.transform.localPosition, o.transform.localRotation);
         }
+    }
+
+    /// <summary>
+    /// Bond-break lerp: freeze non-guide domains to current locals so joint motion does not fight the partner (σ or π cylinder break, same idea as “π break” for redistribution). Cleaved ex-bond <paramref name="guide"/> keeps Peek targets.
+    /// When <paramref name="nucleusWhoseEmptyNonbondOrbitalsKeepPeekTargets"/> is set, nucleus-parented 0e non-bond rows also keep Peek targets so an empty p can lerp to ⊥ VSEPR (π-cylinder break); otherwise they would stay frozen and appear motionless.
+    /// </summary>
+    public static void FreezeRedistTargetsExceptGuideToCurrentLocals(
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> list,
+        ElectronOrbitalFunction guide,
+        AtomFunction nucleusWhoseEmptyNonbondOrbitalsKeepPeekTargets = null)
+    {
+        if (list == null || list.Count == 0 || guide == null) return;
+        for (int i = 0; i < list.Count; i++)
+        {
+            var (o, _, _) = list[i];
+            // UnityEngine.Object: test o before o == guide so destroyed rows never touch transform.
+            if (o == null) continue;
+            if (o == guide) continue;
+            if (nucleusWhoseEmptyNonbondOrbitalsKeepPeekTargets != null
+                && o.Bond == null
+                && o.ElectronCount == 0
+                && o.transform.parent == nucleusWhoseEmptyNonbondOrbitalsKeepPeekTargets.transform)
+                continue;
+            list[i] = (o, o.transform.localPosition, o.transform.localRotation);
+        }
+    }
+
+    /// <summary>
+    /// True if any target row is bond-parented on a non-σ (<see cref="IsSigmaBondLine"/>) line. When the user breaks the σ bond,
+    /// Peek can still list the remaining π bond orbital; joint lerp then rotates σ+π+lobes together (~165° on CO₂-style centers). Used to apply the same freeze-except-guide as π cleavage.
+    /// </summary>
+    public static bool TargetsListContainsPiBondLineRow(
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> list)
+    {
+        if (list == null || list.Count == 0) return false;
+        for (int i = 0; i < list.Count; i++)
+        {
+            var o = list[i].orb;
+            if (o == null) continue;
+            if (o.Bond is CovalentBond cb && !cb.IsSigmaBondLine()) return true;
+        }
+        return false;
     }
 }
