@@ -3,7 +3,7 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Rendering;
 
-public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IPointerUpHandler
+public class ElectronFunction : MonoBehaviour, IPointerDownHandler
 {
     [SerializeField] float orbitalWidth = 0.5f; // Fallback; overridden by SetOrbitalWidth from parent orbital
     [SerializeField] float electron3DSphereRadius = 0.16f;
@@ -23,15 +23,20 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
         orbitalWidth = width;
         UpdatePosition();
     }
-    bool isBeingHeld;
-    Vector3 originalLocalPosition;
-    Vector3 dragOffset;
+    bool pointerFollowCarry;
 
     public void SetSlotIndex(int index) => slotIndex = index;
 
     public int SlotIndex => slotIndex;
 
-    public bool IsElectronPointerDragActive => isBeingHeld;
+    public bool IsElectronPointerDragActive => pointerFollowCarry;
+
+    /// <summary>Lets <see cref="ElectronCarryInput"/> move this electron with the pointer and disables physics during carry.</summary>
+    public void SetPointerFollowCarry(bool active)
+    {
+        pointerFollowCarry = active;
+        SetPhysicsEnabled(!active);
+    }
 
     /// <summary>Re-apply 2D tint/sorting after orbital changes (e.g. electron count sync).</summary>
     public void Sync2DAppearanceWithOrbital()
@@ -239,77 +244,16 @@ public class ElectronFunction : MonoBehaviour, IPointerDownHandler, IDragHandler
             return;
         }
 
-        var orbital = GetComponentInParent<ElectronOrbitalFunction>();
-        if (orbital != null && orbital.Bond != null) return;
-
-        isBeingHeld = true;
-        originalLocalPosition = transform.localPosition;
-        var cam = Camera.main;
-        var wp = MoleculeWorkPlane.Instance;
-        if (cam != null && wp != null && wp.TryGetWorldPoint(cam, eventData.position, out var hitDown))
-            dragOffset = transform.position - hitDown;
-        else
-            dragOffset = transform.position - PlanarPointerInteraction.ScreenToWorldPoint(eventData.position);
-        orbital?.SetPointerBlocked(true);
-        orbital?.SetPhysicsEnabled(false);
-        SetPhysicsEnabled(false);
+        // Electrons are moved only via double-tap orbital peel or toolbar spawn + pointer carry (see ElectronCarryInput).
     }
 
-    public void OnDrag(PointerEventData eventData)
+    void OnDestroy()
     {
-        if (!isBeingHeld) return;
-        var cam = Camera.main;
-        if (cam != null && MoleculeWorkPlane.Instance != null &&
-            MoleculeWorkPlane.Instance.TryGetWorldPoint(cam, eventData.position, out var hit))
-        {
-            Vector3 tip = hit + dragOffset;
-            tip = PlanarPointerInteraction.SnapWorldToWorkPlaneIfPresent(tip);
-            transform.position = tip;
-            dragOffset = transform.position - hit;
-        }
-        else
-            transform.position = PlanarPointerInteraction.ScreenToWorldPoint(eventData.position) + dragOffset;
+        ElectronCarryInput.NotifyCarriedDestroyedIfHost(this);
     }
 
-    public void OnPointerUp(PointerEventData eventData)
-    {
-        isBeingHeld = false;
-        SetPhysicsEnabled(true);
-        var disposal = Object.FindFirstObjectByType<DisposalZone>();
-        bool overTrash = disposal != null && disposal.ContainsScreenPoint(eventData.position);
-
-        var orbital = GetComponentInParent<ElectronOrbitalFunction>();
-        if (orbital != null)
-        {
-            orbital.SetPointerBlocked(false);
-            orbital.SetPhysicsEnabled(true);
-            if (overTrash)
-            {
-                orbital.RemoveElectron(this);
-                Destroy(gameObject);
-                return;
-            }
-            if (!orbital.ContainsPoint(transform.position))
-            {
-                orbital.RemoveElectron(this);
-                TryAcceptIntoOrbital();
-            }
-            else
-            {
-                transform.localPosition = originalLocalPosition;
-            }
-            return;
-        }
-
-        if (overTrash)
-        {
-            Destroy(gameObject);
-            return;
-        }
-        TryAcceptIntoOrbital();
-    }
-
-    void TryAcceptIntoOrbital()
+    /// <summary>Try to merge this free electron into an overlapping orbital (world or screen slop). Called when carry ends.</summary>
+    public void TryAcceptIntoOrbital()
     {
         var cam = Camera.main;
         var orbitals = Object.FindObjectsByType<ElectronOrbitalFunction>(FindObjectsSortMode.None);

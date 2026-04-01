@@ -340,9 +340,12 @@ public class MoleculeBuilder : MonoBehaviour
         var ep = atomFn.OrbitalPrefab.ElectronPrefab;
         if (ep == null) return;
 
-        Vector3 pos = GetViewportCenter() + new Vector3(0.18f, 0.1f, 0f);
-        Instantiate(ep, pos, Quaternion.identity);
+        Vector2 screenElectron = ElectronCarryInput.PrimaryPointerScreen();
+        Vector3 pos = PlanarPointerInteraction.SnapWorldToWorkPlaneIfPresent(
+            PlanarPointerInteraction.ScreenToWorldPoint(screenElectron));
+        var e = Instantiate(ep, pos, Quaternion.identity);
         AtomFunction.SetupGlobalIgnoreCollisions();
+        ElectronCarryInput.Instance.StartCarrying(e);
     }
 
     void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, bool redistributeEndpoints = true, AtomFunction freezeSigmaNeighborSubtreeRoot = null)

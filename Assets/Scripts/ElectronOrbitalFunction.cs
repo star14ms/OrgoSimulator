@@ -292,6 +292,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     AtomFunction bondedAtom;
     CovalentBond bond;
     bool isBeingHeld;
+    /// <summary>True only after a non-blocked <see cref="OnPointerDown"/> for this orbital; false when carry-release blocked the down — prevents orphan <see cref="OnPointerUp"/> from peeling.</summary>
+    bool orbitalPressHasPairedPointerDown;
     Vector3 dragOffset;
     Vector2 pointerDownPosition;
 
@@ -392,28 +394,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (!TryProjectOrbitalToScreenRect(cam, a, expandPixels, out var ra)) return false;
         if (!TryProjectOrbitalToScreenRect(cam, b, expandPixels, out var rb)) return false;
         return ra.Overlaps(rb);
-    }
-
-    /// <summary>
-    /// True when the orbital’s screen-space AABB overlaps the atom’s, using the same world acceptance radius as
-    /// <see cref="TryBreakBond"/> (BondRadius×1.2) and the same padding as <see cref="OrbitalViewOverlaps"/>.
-    /// Lets perspective players break a bond when the lobe visibly covers the atom, even without true 3D overlap.
-    /// </summary>
-    public static bool OrbitalViewOverlapsAtom(Camera cam, ElectronOrbitalFunction orbital, AtomFunction atom, float expandPixels = ViewOverlapScreenPaddingPx)
-    {
-        if (cam == null || orbital == null || atom == null) return false;
-        if (!TryProjectOrbitalToScreenRect(cam, orbital, expandPixels, out var ro)) return false;
-        if (!TryProjectAtomAcceptanceBoundsToScreenRect(cam, atom, expandPixels, out var ra)) return false;
-        return ro.Overlaps(ra);
-    }
-
-    static bool TryProjectAtomAcceptanceBoundsToScreenRect(Camera cam, AtomFunction atom, float padPixels, out Rect rect)
-    {
-        rect = default;
-        if (cam == null || atom == null) return false;
-        float r = atom.BondRadius * 1.2f;
-        var b = new Bounds(atom.transform.position, Vector3.one * (r * 2f));
-        return TryProjectWorldBoundsToScreenRect(cam, b, padPixels, out rect);
     }
 
     static bool TryProjectOrbitalToScreenRect(Camera cam, ElectronOrbitalFunction o, float padPixels, out Rect rect)
@@ -869,19 +849,32 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         ConfigureUrpSurfaceTransparent(mat);
         mr.sharedMaterial = mat;
         mainMeshRenderer = mr;
+    }
 
-        var cap = GetComponent<CapsuleCollider>();
-        if (cap != null)
-        {
-            cap.direction = 1;
-            cap.radius = 0.22f;
-            cap.height = 0.62f;
-            cap.center = Vector3.zero;
-        }
+    /// <summary>Short click (no drag): remove one electron from this lone orbital and attach pointer-follow carry.</summary>
+    bool TryPeelOneElectronForCarry(Vector2 screenPosition)
+    {
+        if (electronPrefab == null || electronCount < 1) return false;
+        var electrons = GetComponentsInChildren<ElectronFunction>();
+        if (electrons == null || electrons.Length == 0) return false;
+        var e = electrons[electrons.Length - 1];
+        RemoveElectron(e);
+        e.transform.position = PlanarPointerInteraction.SnapWorldToWorkPlaneIfPresent(
+            PlanarPointerInteraction.ScreenToWorldPoint(screenPosition));
+        ElectronCarryInput.Instance.StartCarrying(e);
+        AtomFunction.SetupGlobalIgnoreCollisions();
+        return true;
     }
 
     public void OnPointerDown(PointerEventData eventData)
     {
+        if (ElectronCarryInput.BlockOrbitalPointerForCarryFinalize)
+        {
+            orbitalPressHasPairedPointerDown = false;
+            return;
+        }
+
+        orbitalPressHasPairedPointerDown = true;
         isBeingHeld = true;
         pointerDownPosition = eventData.position;
         originalLocalPosition = transform.localPosition;
@@ -931,6 +924,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
     public void OnPointerUp(PointerEventData eventData)
     {
+        bool hadPairedDown = orbitalPressHasPairedPointerDown;
+        orbitalPressHasPairedPointerDown = false;
+
         isBeingHeld = false;
         Vector3 tip = transform.position;
         if (stretchVisual != null) { Destroy(stretchVisual); stretchVisual = null; }
@@ -940,9 +936,25 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         RefreshOrbitalBodyVisualAfterDrag();
         SetPhysicsEnabled(true);
 
+        if (!hadPairedDown)
+            return;
+
+        bool shortClickNoDrag = (eventData.position - pointerDownPosition).sqrMagnitude <
+                                ShortClickDragThresholdPx * ShortClickDragThresholdPx;
+
+        if (shortClickNoDrag && bond == null && electronCount >= 1 &&
+            TryPeelOneElectronForCarry(eventData.position))
+        {
+            transform.localPosition = originalLocalPosition;
+            transform.localScale = originalLocalScale;
+            transform.localRotation = originalLocalRotation;
+            Reposition3DElectronsAfterOrbitalDrag();
+            return;
+        }
+
         var editMode = UnityEngine.Object.FindFirstObjectByType<EditModeManager>();
         if (editMode != null && editMode.EditModeActive && bond == null && electronCount == 1
-            && (eventData.position - pointerDownPosition).sqrMagnitude < ShortClickDragThresholdPx * ShortClickDragThresholdPx)
+            && shortClickNoDrag)
         {
             var atom = bondedAtom ?? transform.parent?.GetComponent<AtomFunction>();
             if (atom != null)
@@ -1199,6 +1211,27 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         other.transform.localRotation = originalLocalRotation;
     }
 
+    /// <summary>
+    /// Bond-break by drag counts only when dropping on a partner that can house another nucleus orbital after
+    /// cleavage, and the pointer tip is near that nucleus in 3D or overlaps a lone lobe (same idea as bond formation).
+    /// Screen-space overlap with a padded nucleus AABB alone is too loose — drops in “empty” space still matched a partner.
+    /// </summary>
+    bool BondBreakDropTargetsPartnerAtom(AtomFunction atom, Vector3 tip, float nucleusSlopDistance)
+    {
+        if (atom == null || !atom.CanAcceptOrbital()) return false;
+        if (Vector3.Distance(tip, atom.transform.position) <= nucleusSlopDistance)
+            return true;
+        var cam = Camera.main;
+        foreach (var orb in atom.GetComponentsInChildren<ElectronOrbitalFunction>(true))
+        {
+            if (orb == null || orb.Bond != null) continue;
+            if (orb.transform.parent != atom.transform) continue;
+            if (orb.ContainsPoint(tip)) return true;
+            if (cam != null && OrbitalViewOverlaps(cam, this, orb)) return true;
+        }
+        return false;
+    }
+
     void TryBreakBond(Vector3 tip)
     {
         if (bond == null) return;
@@ -1210,12 +1243,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         float da = Vector3.Distance(tip, a.transform.position);
         float db = Vector3.Distance(tip, b.transform.position);
         var cam = Camera.main;
-        bool hit3dA = da <= rA;
-        bool hit3dB = db <= rB;
-        bool hitViewA = cam != null && OrbitalViewOverlapsAtom(cam, this, a);
-        bool hitViewB = cam != null && OrbitalViewOverlapsAtom(cam, this, b);
-        bool hitA = hit3dA || hitViewA;
-        bool hitB = hit3dB || hitViewB;
+        bool hitA = BondBreakDropTargetsPartnerAtom(a, tip, rA);
+        bool hitB = BondBreakDropTargetsPartnerAtom(b, tip, rB);
 
         AtomFunction returnTo = null;
         if (hitA && hitB)
@@ -3393,21 +3422,51 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (a3D != null && b3D != null) Physics.IgnoreCollision(a3D, b3D);
     }
 
-    [SerializeField] Vector2 orbitalColliderSize = new Vector2(1f, 0.15f); // Thin bar so it doesn't overlap electrons at y=±0.25
+    [SerializeField] Vector2 orbitalColliderSize = new Vector2(1f, 0.15f); // Fallback when no sprite/mesh
 
     void EnsureCollider()
     {
-        var col = GetComponent<Collider>();
-        var col2D = GetComponent<Collider2D>();
-        if (col == null && col2D == null)
+        foreach (var c in GetComponents<Collider>())
+            if (c != null) Destroy(c);
+        foreach (var c2 in GetComponents<Collider2D>())
+            if (c2 != null) Destroy(c2);
+
+        if (Use3DOrbitalPresentation())
         {
-            col = gameObject.AddComponent<BoxCollider>();
-            col.isTrigger = true;
+            var mf = GetComponent<MeshFilter>();
+            if (mf != null && mf.sharedMesh != null)
+            {
+                var mb = mf.sharedMesh.bounds;
+                var sph = gameObject.AddComponent<SphereCollider>();
+                sph.isTrigger = true;
+                sph.center = mb.center;
+                sph.radius = Mathf.Max(mb.extents.x, mb.extents.y, mb.extents.z);
+                return;
+            }
+
+            var fb3 = gameObject.AddComponent<BoxCollider>();
+            fb3.isTrigger = true;
+            fb3.size = new Vector3(orbitalColliderSize.x, orbitalColliderSize.y, 0.1f);
+            return;
         }
-        if (col is BoxCollider box)
-            box.size = new Vector3(orbitalColliderSize.x, orbitalColliderSize.y, 0.1f);
-        if (col2D is BoxCollider2D box2D)
-            box2D.size = orbitalColliderSize;
+
+        var sr = GetComponent<SpriteRenderer>();
+        if (sr != null && sr.sprite != null)
+        {
+            var sb = sr.sprite.bounds;
+            Vector3 sc = transform.localScale;
+            var box2d = gameObject.AddComponent<BoxCollider2D>();
+            box2d.isTrigger = true;
+            float sx = sb.size.x * Mathf.Abs(sc.x);
+            float sy = sb.size.y * Mathf.Abs(sc.y);
+            box2d.size = new Vector2(Mathf.Max(sx, 0.02f), Mathf.Max(sy, 0.02f));
+            box2d.offset = new Vector2(sb.center.x * sc.x, sb.center.y * sc.y);
+            return;
+        }
+
+        var fb2 = gameObject.AddComponent<BoxCollider2D>();
+        fb2.isTrigger = true;
+        fb2.size = orbitalColliderSize;
     }
 
     void LateUpdate()
