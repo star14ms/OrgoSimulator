@@ -72,6 +72,23 @@ public static class VseprLayout
         }
     }
 
+    /// <summary>
+    /// Trigonal planar (n=3): rotate the canonical equilateral triangle in its plane by <paramref name="thetaDeg"/>
+    /// about the plane normal (preserves 120°). Then <see cref="AlignFirstDirectionTo"/> maps vertex 0 to the guide.
+    /// </summary>
+    public static Vector3[] TrigonalIdealRotatedInPlane(float thetaDeg)
+    {
+        Vector3[] baseIdeal = GetIdealLocalDirections(3);
+        Vector3 n0 = Vector3.Cross(baseIdeal[0], baseIdeal[1]);
+        if (n0.sqrMagnitude < 1e-14f) return baseIdeal;
+        n0.Normalize();
+        Quaternion R = Quaternion.AngleAxis(thetaDeg, n0);
+        var outD = new Vector3[3];
+        for (int i = 0; i < 3; i++)
+            outD[i] = (R * baseIdeal[i]).normalized;
+        return outD;
+    }
+
     /// <summary>Rotate ideal frame so the first ideal direction matches <paramref name="target"/>.</summary>
     public static Vector3[] AlignFirstDirectionTo(Vector3[] idealDirs, Vector3 target)
     {

@@ -2170,8 +2170,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     }
 
     /// <summary>
-    /// π step 2: call <see cref="AtomFunction.GetRedistributeTargets"/> in deterministic atom order (Z then instance id) for reproducible
-    /// joint / animation sequencing; each endpoint still runs its own 2×2 tip→target refine (no cross-atom perm index coupling). σ bonds use legacy source-then-target order.
+    /// π step 2: call <see cref="AtomFunction.GetRedistributeTargets"/> using <see cref="AtomFunction.OrderPairAtomsForRedistributionGuideTier"/>
+    /// (larger guide tier first; tie → larger InstanceID). Maps back to source=A / target=B lists.
+    /// Passes <paramref name="piSourceOrbitalForVseprPredict"/> / <paramref name="piTargetOrbitalForVseprPredict"/> per atom so predictive VSEPR can drop the merging lobe from lone-domain inventory when <see cref="CovalentBond.OrbitalBeingFadedForCharge"/> misses it.
     /// </summary>
     static void GetRedistributeTargetsPiStepPairOrdered(
         AtomFunction sourceAtom,
@@ -2181,25 +2182,31 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         int sigmaBeforeSource,
         int sigmaBeforeTarget,
         CovalentBond bond,
+        ElectronOrbitalFunction piSourceOrbitalForVseprPredict,
+        ElectronOrbitalFunction piTargetOrbitalForVseprPredict,
         out List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistA,
         out List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistB)
     {
-        if (bond == null || bond.IsSigmaBondLine())
-        {
-            redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom, sigmaNeighborCountBefore: sigmaBeforeSource, redistributionOperationBond: bond);
-            redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom, sigmaNeighborCountBefore: sigmaBeforeTarget, redistributionOperationBond: bond);
-            return;
-        }
-        AtomFunction first = sourceAtom.AtomicNumber != targetAtom.AtomicNumber
-            ? (sourceAtom.AtomicNumber < targetAtom.AtomicNumber ? sourceAtom : targetAtom)
-            : (sourceAtom.GetInstanceID() < targetAtom.GetInstanceID() ? sourceAtom : targetAtom);
-        AtomFunction second = first == sourceAtom ? targetAtom : sourceAtom;
+        AtomFunction.OrderPairAtomsForRedistributionGuideTier(
+            sourceAtom, targetAtom, bond, null, null, out AtomFunction first, out AtomFunction second);
         int piFirst = first == sourceAtom ? piBeforeSource : piBeforeTarget;
         int piSecond = first == sourceAtom ? piBeforeTarget : piBeforeSource;
         int sigFirst = first == sourceAtom ? sigmaBeforeSource : sigmaBeforeTarget;
         int sigSecond = first == sourceAtom ? sigmaBeforeTarget : sigmaBeforeSource;
-        var rFirst = first.GetRedistributeTargets(piFirst, second, sigmaNeighborCountBefore: sigFirst, redistributionOperationBond: bond);
-        var rSecond = second.GetRedistributeTargets(piSecond, first, sigmaNeighborCountBefore: sigSecond, redistributionOperationBond: bond);
+        var vseprDisappearFirst = first == sourceAtom ? piSourceOrbitalForVseprPredict : piTargetOrbitalForVseprPredict;
+        var vseprDisappearSecond = second == sourceAtom ? piSourceOrbitalForVseprPredict : piTargetOrbitalForVseprPredict;
+        var rFirst = first.GetRedistributeTargets(
+            piFirst,
+            second,
+            sigmaNeighborCountBefore: sigFirst,
+            redistributionOperationBond: bond,
+            vseprDisappearingLoneForPredictiveCount: vseprDisappearFirst);
+        var rSecond = second.GetRedistributeTargets(
+            piSecond,
+            first,
+            sigmaNeighborCountBefore: sigSecond,
+            redistributionOperationBond: bond,
+            vseprDisappearingLoneForPredictiveCount: vseprDisappearSecond);
         if (first == sourceAtom)
         {
             redistA = rFirst;
@@ -2227,6 +2234,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             sigmaBeforeSource,
             sigmaBeforeTarget,
             bond,
+            sourceOrbital,
+            targetOrbital,
             out var redistA,
             out var redistB);
 
@@ -2447,10 +2456,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             bool piDidJointLocal = OrbitalAngleUtility.UseFull3DOrbitalGeometry && !skipPiStep2;
             if (bond != null && !bond.IsSigmaBondLine() && piDidJointLocal)
             {
-                AtomFunction firstApply = sourceAtom.AtomicNumber != targetAtom.AtomicNumber
-                    ? (sourceAtom.AtomicNumber < targetAtom.AtomicNumber ? sourceAtom : targetAtom)
-                    : (sourceAtom.GetInstanceID() < targetAtom.GetInstanceID() ? sourceAtom : targetAtom);
-                AtomFunction secondApply = firstApply == sourceAtom ? targetAtom : sourceAtom;
+                AtomFunction.OrderPairAtomsForRedistributionGuideTier(
+                    sourceAtom, targetAtom, bond, null, null, out AtomFunction firstApply, out AtomFunction secondApply);
                 var redistFirstApply = firstApply == sourceAtom ? redistA : redistB;
                 var redistSecondApply = firstApply == sourceAtom ? redistB : redistA;
                 firstApply.ApplyRedistributeTargets(redistFirstApply, skipJointRigidFragmentMotion: piDidJointLocal);
@@ -2504,7 +2511,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 bond.SnapOrbitalToBondPosition();
                 if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && bond != null && !bond.IsSigmaBondLine())
                 {
-                    AtomFunction.RefreshSigmaBondOrbitalHybridAlignmentForConnectedMolecule(sourceAtom);
+                    AtomFunction.RefreshSigmaBondOrbitalHybridAlignmentForConnectedMoleculeAfterPiStep(bond, sourceAtom);
                     bond.UpdateBondTransformToCurrentAtoms();
                     bond.SyncPiOrbitalRedistributionDeltaFromCurrentWorldRotation();
                     bond.TwistPiOrbitalRedistributionDeltaAwayFromColinearSigmaPartnerIfNeeded();
@@ -2734,10 +2741,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             bool piDidJointFragmentLerp = OrbitalAngleUtility.UseFull3DOrbitalGeometry && !skipPiStep2;
             if (bond != null && !bond.IsSigmaBondLine() && piDidJointFragmentLerp)
             {
-                AtomFunction firstApply = sourceAtom.AtomicNumber != targetAtom.AtomicNumber
-                    ? (sourceAtom.AtomicNumber < targetAtom.AtomicNumber ? sourceAtom : targetAtom)
-                    : (sourceAtom.GetInstanceID() < targetAtom.GetInstanceID() ? sourceAtom : targetAtom);
-                AtomFunction secondApply = firstApply == sourceAtom ? targetAtom : sourceAtom;
+                AtomFunction.OrderPairAtomsForRedistributionGuideTier(
+                    sourceAtom, targetAtom, bond, null, null, out AtomFunction firstApply, out AtomFunction secondApply);
                 var redistFirstApply = firstApply == sourceAtom ? redistA : redistB;
                 var redistSecondApply = firstApply == sourceAtom ? redistB : redistA;
                 firstApply.ApplyRedistributeTargets(redistFirstApply, skipJointRigidFragmentMotion: piDidJointFragmentLerp);
@@ -2798,7 +2803,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 // Far atoms (not π endpoints) never got hybrid refresh; σ on authoritative centers can move — refresh whole molecule, then re-separate π from σ on this bond.
                 if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && bond != null && !bond.IsSigmaBondLine())
                 {
-                    AtomFunction.RefreshSigmaBondOrbitalHybridAlignmentForConnectedMolecule(sourceAtom);
+                    AtomFunction.RefreshSigmaBondOrbitalHybridAlignmentForConnectedMoleculeAfterPiStep(bond, sourceAtom);
                     bond.UpdateBondTransformToCurrentAtoms();
                     bond.SyncPiOrbitalRedistributionDeltaFromCurrentWorldRotation();
                     bond.TwistPiOrbitalRedistributionDeltaAwayFromColinearSigmaPartnerIfNeeded();

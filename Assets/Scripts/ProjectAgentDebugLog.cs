@@ -112,10 +112,10 @@ public static class ProjectAgentDebugLog
     }
 
     /// <summary>Single-session agent ingest file under <c>.cursor/</c>; update filename when the IDE debug session id changes.</summary>
-    public const string CursorDebugModeIngestNdjsonFileName = "debug-282ed4.log";
+    public const string CursorDebugModeIngestNdjsonFileName = "debug-d66405.log";
 
     /// <summary>Session id embedded in <see cref="CursorDebugModeIngestNdjsonFileName"/> lines for Cursor Debug Mode.</summary>
-    public const string CursorDebugModeIngestSessionId = "282ed4";
+    public const string CursorDebugModeIngestSessionId = "d66405";
 
     /// <summary>When true (default), <see cref="AppendCursorWorkspaceDebugNdjson"/> appends NDJSON to <see cref="CursorDebugModeIngestNdjsonFileName"/>. Default on for triage; set false for quiet runs.</summary>
     public static bool WriteCursorDebugModeIngestNdjson = true;
