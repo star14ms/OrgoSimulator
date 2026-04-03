@@ -4,7 +4,6 @@ using UnityEngine.Rendering;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Text;
 using TMPro;
@@ -34,25 +33,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>Log π-trigonal guide-group refine, hemisphere flip, and tip-vs-target angles (e.g. O-C-O → O=C). Default on for triage; set false for quiet runs.</summary>
     public static bool DebugLogPiTrigonalOcoConformation = true;
 
-    /// <summary>NDJSON to <c>.cursor/debug-214323.log</c> for second π on terminal O (O=C=O). Default on for triage; set false for quiet runs.</summary>
-    public static bool DebugLogOcoSecondPiNdjson = true;
-
     /// <summary>π step 2: oxygen nucleus shell — tips not in redist rows vs operation π (O=C=C off-op lone joint). Default on for triage; set false for quiet runs.</summary>
     public static bool DebugLogOcoOffOpNucleusLoneAngles = true;
-
-    /// <summary>Logs azimuth template refinement for permutation cost in 3D. Default on for triage; set false for quiet runs.</summary>
-    public static bool DebugLogTemplateTwistPermCost = true;
-
-    /// <summary>Append one NDJSON line per permutation cost snapshot to .cursor/debug-d66405.log for A/B success vs failure runs. Default on for triage; set false for quiet runs.</summary>
-    public static bool DebugLogPermCostInvariantNdjson = true;
-
-    /// <summary>When true, always apply the grid-best azimuth to template dirs (even if improvement is below the usual 0.05 threshold) so rigid copies converge to the same minimum.</summary>
-    public static bool DebugPermCostAlwaysApplyAzimuthMinimum = false;
-
-    const string PermCostInvariantNdjsonPath = "/Users/minseo/Documents/Github/_star14ms/OrgoSimulator/.cursor/debug-d66405.log";
-
-    /// <summary>Session id for permutation-cost invariant NDJSON lines (debug ingest).</summary>
-    public static string DebugPermCostNdjsonSessionId = "d66405";
 
     /// <summary>π snap + hybrid: NDJSON world tip vs mesh +X and screen probe. Default on for triage; set false for quiet runs.</summary>
     public static bool DebugLogOrbitalVisualTipProbe = true;
@@ -1189,29 +1171,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             LogVsepr3D($"TryMatch FindBestOrbitalToTargetDirsPermutation null: atom={name} Z={atomicNumber} loneMatch={loneMatch.Count}");
             mapping = null;
             return false;
-        }
-        if (permTm != null && loneMatch.Count >= 2 && free.Count == loneMatch.Count)
-        {
-            int aid = GetInstanceID();
-            ComputePermutationAssignmentCostBreakdown(loneMatch, free, bondRadius, null, permTm, out float cM, out float qM, out float tM);
-            // #region agent log
-            AppendPermCostInvariantNdjson(
-                "permCostTryMatch",
-                "AtomFunction.TryMatchLoneOrbitalsToFreeIdealDirections",
-                "after_FindBest loneMatch",
-                aid,
-                "tryMatch",
-                cM,
-                qM,
-                tM,
-                permTm,
-                FormatPermCostDirsRounded(free),
-                FormatPermCostTipsForOrbs(loneMatch, null),
-                0f,
-                FormatPermCostDirsRounded(new List<Vector3> { refLocal.normalized }));
-            // #endregion
-            if (DebugLogPermCostInvariantNdjson)
-                Debug.Log("[perm-cost] TryMatch atomId=" + aid + " totalDeg=" + tM.ToString("F2", CultureInfo.InvariantCulture) + " coneOrPlanarDeg=" + cM.ToString("F2", CultureInfo.InvariantCulture) + " quatDeg=" + qM.ToString("F2", CultureInfo.InvariantCulture) + " n=" + loneMatch.Count);
         }
         mapping = new List<(Vector3, Vector3)>();
         for (int i = 0; i < loneMatch.Count; i++)
@@ -5831,41 +5790,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 override0eThis = perpAppliedThis;
             }
         }
-        string causeThis = piBreak ? "piOp" : (opIsSigmaLine && hasPiRowThis ? "sigmaOpPiTargets" : (opIsSigmaLine ? "sigmaOnly" : "none"));
-        bool sigma0eThis = opIsSigmaLine && !piBreak && guideThis != null && guideThis.ElectronCount == 0;
-        // #region agent log
-        if (guideThis != null && redistributionOperationBond != null && (freezeThis || guideThis.ElectronCount == 0))
-        {
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "H5",
-                "AtomFunction.CoLerpBondBreakRedistribution",
-                "empty0e_override_this",
-                "{\"atomId\":" + GetInstanceID()
-                + ",\"targetsN\":" + targetsThis.Count
-                + ",\"guideId\":" + guideThis.GetInstanceID()
-                + ",\"guideEC\":" + guideThis.ElectronCount
-                + ",\"freezeThis\":" + (freezeThis ? "true" : "false")
-                + ",\"hasPiRowThis\":" + (hasPiRowThis ? "true" : "false")
-                + ",\"override0e\":" + (override0eThis ? "true" : "false")
-                + ",\"sigmaCleavage0eTryPerp\":" + (sigma0eThis ? "true" : "false")
-                + ",\"perpApplied\":" + (perpAppliedThis ? "true" : "false")
-                + ",\"cause\":\"" + causeThis + "\"}",
-                "perp-empty");
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "H3",
-                "AtomFunction.CoLerpBondBreakRedistribution",
-                "pi_break_freeze_except_guide_this",
-                "{\"atomId\":" + GetInstanceID()
-                + ",\"targetsN\":" + targetsThis.Count
-                + ",\"guideId\":" + guideThis.GetInstanceID()
-                + ",\"guideEC\":" + guideThis.ElectronCount
-                + ",\"override0e\":" + (override0eThis ? "true" : "false")
-                + ",\"cause\":\"" + causeThis + "\"}",
-                "post-fix");
-            Debug.Log("[pi-break-stub] this atomId=" + GetInstanceID() + " targetsN=" + targetsThis.Count + " guideEC=" + guideThis.ElectronCount + " override0e=" + override0eThis + " perpApplied=" + perpAppliedThis + " freeze=" + freezeThis + " cause=" + causeThis);
-        }
-        // #endregion
-
         bool perpAppliedPartner = false;
         bool override0ePartner = false;
         if (guidePartner != null && guidePartner.ElectronCount == 0 && redistributionOperationBond != null)
@@ -5879,83 +5803,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 override0ePartner = perpAppliedPartner;
             }
         }
-        string causePartner = piBreak ? "piOp" : (opIsSigmaLine && hasPiRowPartner ? "sigmaOpPiTargets" : (opIsSigmaLine ? "sigmaOnly" : "none"));
-        bool sigma0ePartner = opIsSigmaLine && !piBreak && guidePartner != null && guidePartner.ElectronCount == 0;
-        // #region agent log
-        if (guidePartner != null && redistributionOperationBond != null && (freezePartner || guidePartner.ElectronCount == 0))
-        {
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "H5",
-                "AtomFunction.CoLerpBondBreakRedistribution",
-                "empty0e_override_partner",
-                "{\"atomId\":" + partnerAtom.GetInstanceID()
-                + ",\"targetsN\":" + targetsPartner.Count
-                + ",\"guideId\":" + guidePartner.GetInstanceID()
-                + ",\"guideEC\":" + guidePartner.ElectronCount
-                + ",\"freezePartner\":" + (freezePartner ? "true" : "false")
-                + ",\"hasPiRowPartner\":" + (hasPiRowPartner ? "true" : "false")
-                + ",\"override0e\":" + (override0ePartner ? "true" : "false")
-                + ",\"sigmaCleavage0eTryPerp\":" + (sigma0ePartner ? "true" : "false")
-                + ",\"perpApplied\":" + (perpAppliedPartner ? "true" : "false")
-                + ",\"cause\":\"" + causePartner + "\"}",
-                "perp-empty");
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "H3",
-                "AtomFunction.CoLerpBondBreakRedistribution",
-                "pi_break_freeze_except_guide_partner",
-                "{\"atomId\":" + partnerAtom.GetInstanceID()
-                + ",\"targetsN\":" + targetsPartner.Count
-                + ",\"guideId\":" + guidePartner.GetInstanceID()
-                + ",\"guideEC\":" + guidePartner.ElectronCount
-                + ",\"override0e\":" + (override0ePartner ? "true" : "false")
-                + ",\"cause\":\"" + causePartner + "\"}",
-                "post-fix");
-            Debug.Log("[pi-break-stub] partner atomId=" + partnerAtom.GetInstanceID() + " targetsN=" + targetsPartner.Count + " guideEC=" + guidePartner.ElectronCount + " override0e=" + override0ePartner + " perpApplied=" + perpAppliedPartner + " freeze=" + freezePartner + " cause=" + causePartner);
-        }
-        // #endregion
-
-        // #region agent log
-        if (atomicNumber == 6 || partnerAtom.atomicNumber == 6)
-        {
-            float OcoAngleWorldDeg(AtomFunction c)
-            {
-                if (c == null || c.atomicNumber != 6) return -1f;
-                var sig = new List<AtomFunction>();
-                foreach (var b in c.CovalentBonds)
-                {
-                    if (b == null || !b.IsSigmaBondLine()) continue;
-                    var o = b.AtomA == c ? b.AtomB : b.AtomA;
-                    if (o != null) sig.Add(o);
-                }
-                if (sig.Count < 2) return -1f;
-                Vector3 a = (sig[0].transform.position - c.transform.position).normalized;
-                Vector3 d = (sig[1].transform.position - c.transform.position).normalized;
-                if (a.sqrMagnitude < 1e-10f || d.sqrMagnitude < 1e-10f) return -1f;
-                return Vector3.Angle(a, d);
-            }
-            float angThis = OcoAngleWorldDeg(this);
-            float angP = OcoAngleWorldDeg(partnerAtom);
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "H2",
-                "AtomFunction.CoLerpBondBreakRedistribution",
-                "peek_targets_sigma_framework_angle_deg",
-                "{\"thisAtomId\":" + GetInstanceID()
-                + ",\"thisZ\":" + atomicNumber
-                + ",\"partnerId\":" + partnerAtom.GetInstanceID()
-                + ",\"partnerZ\":" + partnerAtom.atomicNumber
-                + ",\"sigmaAngleThisDeg\":" + angThis.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)
-                + ",\"sigmaAnglePartnerDeg\":" + angP.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)
-                + ",\"opBondParamNull\":" + (redistributionOperationBond == null ? "true" : "false")
-                + ",\"opBondId\":" + (redistributionOperationBond != null ? redistributionOperationBond.GetInstanceID().ToString() : "0")
-                + ",\"opIsSigmaLine\":" + (redistributionOperationBond == null ? "null" : (redistributionOperationBond.IsSigmaBondLine() ? "true" : "false"))
-                + ",\"piBreak\":" + (redistributionOperationBond != null && !redistributionOperationBond.IsSigmaBondLine() ? "true" : "false")
-                + ",\"hasPiRowThis\":" + (hasPiRowThis ? "true" : "false")
-                + ",\"hasPiRowPartner\":" + (hasPiRowPartner ? "true" : "false")
-                + ",\"freezeThis\":" + (freezeThis ? "true" : "false")
-                + ",\"freezePartner\":" + (freezePartner ? "true" : "false") + "}");
-        }
-        // #endregion
-
         var startsThis = new List<(Vector3 p, Quaternion r)>(targetsThis.Count);
         foreach (var e in targetsThis)
         {
@@ -7148,9 +6995,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     void LogPiTrigonalOcoLine(string detailNoTag)
     {
-        string msg = "[pi-trigonal-oco] " + detailNoTag;
-        Debug.Log(msg);
-        ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson("pi-trigonal-oco", "AtomFunction", msg, "{}");
+        Debug.Log("[pi-trigonal-oco] " + detailNoTag);
     }
 
     /// <summary>
@@ -7510,12 +7355,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return dirCost + Quaternion.Angle(orb.transform.localRotation, slotLocalRot);
     }
 
-    static string JsonEscapeForNdjson(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return "";
-        return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
-    }
-
     static string FormatPermCostDirsRounded(List<Vector3> dirs)
     {
         if (dirs == null || dirs.Count == 0) return "";
@@ -7548,60 +7387,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
         return sb.ToString();
     }
-
-    // #region agent log
-    static void AppendPermCostInvariantNdjson(
-        string hypothesisId,
-        string location,
-        string message,
-        int atomInstanceId,
-        string phase,
-        float coneOrPlanarDeg,
-        float quatDeg,
-        float totalDeg,
-        int[] perm,
-        string targetDirsRounded,
-        string tipDirsRounded,
-        float thetaDeg,
-        string twistAxisRounded)
-    {
-        if (!DebugLogPermCostInvariantNdjson) return;
-        try
-        {
-            string permJson = "null";
-            if (perm != null && perm.Length > 0)
-            {
-                var pb = new StringBuilder();
-                for (int i = 0; i < perm.Length; i++)
-                {
-                    if (i > 0) pb.Append(',');
-                    pb.Append(perm[i].ToString(CultureInfo.InvariantCulture));
-                }
-                permJson = "[" + pb + "]";
-            }
-            long ts = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            string sid = DebugPermCostNdjsonSessionId ?? "";
-            var sb = new StringBuilder(512);
-            sb.Append("{\"sessionId\":\"").Append(JsonEscapeForNdjson(sid)).Append("\",\"hypothesisId\":\"").Append(JsonEscapeForNdjson(hypothesisId))
-                .Append("\",\"location\":\"").Append(JsonEscapeForNdjson(location)).Append("\",\"message\":\"").Append(JsonEscapeForNdjson(message))
-                .Append("\",\"timestamp\":").Append(ts.ToString(CultureInfo.InvariantCulture))
-                .Append(",\"data\":{\"atomInstanceId\":").Append(atomInstanceId).Append(",\"phase\":\"").Append(JsonEscapeForNdjson(phase))
-                .Append("\",\"coneOrPlanarDeg\":").Append(coneOrPlanarDeg.ToString("F4", CultureInfo.InvariantCulture))
-                .Append(",\"quatDeg\":").Append(quatDeg.ToString("F4", CultureInfo.InvariantCulture))
-                .Append(",\"totalDeg\":").Append(totalDeg.ToString("F4", CultureInfo.InvariantCulture))
-                .Append(",\"perm\":").Append(permJson)
-                .Append(",\"targetDirsNuc\":\"").Append(JsonEscapeForNdjson(targetDirsRounded)).Append("\",\"tipDirsNuc\":\"").Append(JsonEscapeForNdjson(tipDirsRounded))
-                .Append("\",\"thetaDeg\":").Append(thetaDeg.ToString("F4", CultureInfo.InvariantCulture))
-                .Append(",\"twistAxis\":\"").Append(JsonEscapeForNdjson(twistAxisRounded)).Append("\"}}");
-            File.AppendAllText(PermCostInvariantNdjsonPath, sb.ToString() + "\n");
-        }
-        catch
-        {
-            /* ingest file may be missing or locked */
-        }
-    }
-
-    // #endregion
 
     /// <summary>Cone (or planar wrap) sum and quaternion slot sum; <paramref name="totalDeg"/> = sum of both.</summary>
     static void ComputePermutationAssignmentCostBreakdown(
@@ -7686,36 +7471,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         Vector3 a = twistAxisNucleusLocal.normalized;
         if (a.sqrMagnitude < 1e-10f) return;
 
-        var baseDirs = new List<Vector3>(targetDirs.Count);
-        foreach (var d in targetDirs) baseDirs.Add(d.normalized);
-
-        var work = new List<Vector3>(targetDirs.Count);
-        int[] permBaseline = FindBestOrbitalToTargetDirsPermutation(orbs, baseDirs, bondRadius, this);
-        if (permBaseline == null) return;
-        ComputePermutationAssignmentCostBreakdown(orbs, baseDirs, bondRadius, this, permBaseline, out float cone0, out float quat0, out float baseline);
-        string axisStr = FormatPermCostDirsRounded(new List<Vector3> { a });
-        // #region agent log
-        AppendPermCostInvariantNdjson(
-            "permCostMinimize",
-            "AtomFunction.MinimizeTargetDirsAzimuthForPermutationCostInPlace",
-            "baseline_before_azimuth_grid",
-            GetInstanceID(),
-            "baseline",
-            cone0,
-            quat0,
-            baseline,
-            permBaseline,
-            FormatPermCostDirsRounded(baseDirs),
-            FormatPermCostTipsForOrbs(orbs, this),
-            0f,
-            axisStr);
-        // #endregion
-
-        // DISABLED (user request): θ grid twist of template targetDirs — misleading off-template rotation; baseline dirs unchanged.
+        // Azimuth grid disabled: keep caller's template targetDirs unchanged.
         _ = gridSteps;
         _ = minMeaningfulImprove;
-        _ = work;
-        return;
     }
 
     /// <returns>perm where orb <c>i</c> is assigned target direction <c>targetDirs[perm[i]]</c>.</returns>
@@ -8172,22 +7930,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             guideOrbital = bondBreakGuideLoneOrbitalForTargets;
             guideBond = null;
             guideSource = RedistributionGuideSource.LonePairFromOperation;
-            // #region agent log
-            if (atomicNumber == 6)
-            {
-                int opId = redistributionOperationBond.GetInstanceID();
-                ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                    "H1fix",
-                    "AtomFunction.TryResolveRedistributionGuideGroupForLayout",
-                    "pi_cleavage_ex_bond_guide",
-                    "{\"atomId\":" + GetInstanceID()
-                    + ",\"opBondId\":" + opId
-                    + ",\"breakGuideId\":" + bondBreakGuideLoneOrbitalForTargets.GetInstanceID()
-                    + ",\"breakGuideE\":" + bondBreakGuideLoneOrbitalForTargets.ElectronCount
-                    + ",\"sigmaN\":" + GetDistinctSigmaNeighborCount()
-                    + ",\"piN\":" + GetPiBondCount() + "}");
-            }
-            // #endregion
             return true;
         }
 
@@ -8262,23 +8004,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             guideBond = sigNotOp[0];
             guideOrbital = guideBond.Orbital;
             guideSource = RedistributionGuideSource.SigmaBondNotInOperation;
-            // #region agent log
-            if (redistributionOperationBond != null
-                && redistributionOperationBond.IsSigmaBondLine()
-                && (redistributionOperationBond.AtomA == this || redistributionOperationBond.AtomB == this))
-            {
-                ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                    "H8",
-                    "AtomFunction.TryResolveRedistributionGuideGroupForLayout",
-                    "sigma_guide_selected_not_operation",
-                    "{\"atomId\":" + GetInstanceID()
-                    + ",\"selectedGuideBondId\":" + guideBond.GetInstanceID()
-                    + ",\"opBondId\":" + redistributionOperationBond.GetInstanceID()
-                    + ",\"sigNotOpCount\":" + sigNotOp.Count
-                    + ",\"sigNotOpFirstId\":" + sigNotOp[0].GetInstanceID()
-                    + ",\"source\":\"SigmaBondNotInOperation\"}");
-            }
-            // #endregion
             return true;
         }
 
@@ -8291,16 +8016,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             guideBond = redistributionOperationBond;
             guideOrbital = guideBond.Orbital;
             guideSource = RedistributionGuideSource.SigmaBondInOperation;
-            // #region agent log
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "H8",
-                "AtomFunction.TryResolveRedistributionGuideGroupForLayout",
-                "sigma_guide_selected_operation",
-                "{\"atomId\":" + GetInstanceID()
-                + ",\"selectedGuideBondId\":" + guideBond.GetInstanceID()
-                + ",\"opBondId\":" + redistributionOperationBond.GetInstanceID()
-                + ",\"source\":\"SigmaBondInOperation\"}");
-            // #endregion
             return true;
         }
 
@@ -8798,61 +8513,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         else
             occ.Sort((a, b) => a.GetInstanceID().CompareTo(b.GetInstanceID()));
 
-        // Far terminal O in a π step: σ guide is Tier 3 (not on the π op pair) while π count on this atom can still be 0.
-        // Three occupied nucleus lone lobes were counted as three VSEPR substituents → nVseprGroups=4 and tetrahedral tripod;
-        // electron geometry is trigonal planar (σ + two lone domains). Reuse the same 3→2 collapse as
-        // CollapseNucleusLoneDomainsForTerminalSp2OxoHybridIfNeeded so guide-group layout matches hybrid TryMatch / tri120.
-        if (source == RedistributionGuideSource.SigmaBondNotInOperation
-            && redistributionOperationBond != null
-            && !redistributionOperationBond.IsSigmaBondLine()
-            && occ.Count == 3)
-        {
-            bool allLone = true;
-            for (int oi = 0; oi < occ.Count; oi++)
-            {
-                var ox = occ[oi];
-                if (ox == null || ox.Bond != null || ox.ElectronCount <= 0) { allLone = false; break; }
-            }
-            if (allLone)
-            {
-                Vector3 sigmaAxisForCollapse = GuideGroupFirstVertexDirectionNucleusLocal(guide, pairBondForOccMergeAndGuideAxis);
-                if (sigmaAxisForCollapse.sqrMagnitude < 1e-10f)
-                {
-                    var gtipC = OrbitalTipLocalDirection(guide);
-                    sigmaAxisForCollapse = gtipC.sqrMagnitude > 1e-10f ? gtipC.normalized : Vector3.right;
-                }
-                else
-                    sigmaAxisForCollapse.Normalize();
-                var collapsedOcc = CollapseNucleusLoneDomainsForTerminalSp2OxoHybridIfNeeded(
-                    occ,
-                    new List<Vector3> { sigmaAxisForCollapse },
-                    redistributionOperationBond);
-                if (collapsedOcc != null && collapsedOcc.Count == 2)
-                    occ = collapsedOcc;
-            }
-        }
-
         int nOcc = occ.Count;
-        // #region agent log
-        if (redistributionOperationBond != null
-            && redistributionOperationBond.IsSigmaBondLine()
-            && (source == RedistributionGuideSource.SigmaBondInOperation || source == RedistributionGuideSource.SigmaBondNotInOperation))
-        {
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "H9",
-                "AtomFunction.TryBuildRedistributeTargets3DGuideGroupPrefix",
-                "sigma_guide_group_occ_summary",
-                "{\"atomId\":" + GetInstanceID()
-                + ",\"source\":\"" + source + "\""
-                + ",\"nOcc\":" + nOcc
-                + ",\"nEmp\":" + emp.Count
-                + ",\"nVseprGroups\":" + (1 + nOcc)
-                + ",\"guideBondId\":" + (guideBond != null ? guideBond.GetInstanceID().ToString() : "0")
-                + ",\"opBondId\":" + redistributionOperationBond.GetInstanceID()
-                + ",\"guideEqualsOp\":" + ((guideBond != null && guideBond == redistributionOperationBond) ? "true" : "false")
-                + ",\"mergedCoBondOccRemoved\":" + mergedCoBondOccRemoved + "}");
-        }
-        // #endregion
         if (nOcc > 6)
         {
             LogGuideGroupTrace("TryBuild FAIL reason=nOcc_gt_6 nOcc=" + nOcc + " source=" + source);
@@ -8956,49 +8617,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             LogGuideGroupTrace("TryBuild FAIL reason=nVsepr_lt_2 nVseprGroups=" + nVseprGroups + " nOcc=" + nOcc + " source=" + source);
             return false;
         }
-
-        // #region agent log
-        if (DebugLogOcoSecondPiNdjson && source == RedistributionGuideSource.PiBondInOperation && nVseprGroups == 3)
-        {
-            int opId = redistributionOperationBond != null ? redistributionOperationBond.GetInstanceID() : 0;
-            int fadeId = redistributionOperationBond != null && redistributionOperationBond.OrbitalBeingFadedForCharge != null
-                ? redistributionOperationBond.OrbitalBeingFadedForCharge.GetInstanceID()
-                : 0;
-            int gId = guide != null ? guide.GetInstanceID() : 0;
-            var sb = new System.Text.StringBuilder(320);
-            sb.Append("{\"mergedCoBondOccRemoved\":").Append(mergedCoBondOccRemoved);
-            sb.Append(",\"opBondId\":").Append(opId);
-            sb.Append(",\"fadeOutOrbId\":").Append(fadeId);
-            sb.Append(",\"guideOrbId\":").Append(gId);
-            sb.Append(",\"atomId\":").Append(GetInstanceID());
-            sb.Append(",\"Z\":").Append(atomicNumber);
-            sb.Append(",\"nOcc\":").Append(nOcc);
-            sb.Append(",\"occ\":[");
-            for (int oi = 0; oi < occ.Count; oi++)
-            {
-                if (oi > 0) sb.Append(',');
-                var o = occ[oi];
-                if (o == null)
-                {
-                    sb.Append("null");
-                    continue;
-                }
-                bool isSig = o.Bond is CovalentBond cob && cob.IsSigmaBondLine();
-                bool isPiEdge = o.Bond is CovalentBond cob2 && !cob2.IsSigmaBondLine();
-                sb.Append("{\"id\":").Append(o.GetInstanceID());
-                sb.Append(",\"e\":").Append(o.ElectronCount);
-                sb.Append(",\"sigma\":").Append(isSig ? "true" : "false");
-                sb.Append(",\"piEdge\":").Append(isPiEdge ? "true" : "false");
-                sb.Append('}');
-            }
-            sb.Append("]}");
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "A_B_E",
-                "AtomFunction.TryBuildRedistributeTargets3DGuideGroupPrefix",
-                "pi_in_op_trigonal_occ_inventory",
-                sb.ToString());
-        }
-        // #endregion
 
         var moversOrdered2 = new List<ElectronOrbitalFunction>(occ);
         Vector3[] alignedIdeal;
@@ -9263,27 +8881,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 LogGetRedistributeTargets3DLine("guideGroup_permutationFallback", "source=" + source + " reason=perm_null");
                 perm2 = Enumerable.Range(0, moversOrdered2.Count).ToArray();
             }
-        }
-
-        if (perm2 != null && moversOrdered2.Count >= 2 && moversOrdered2.Count == permutationTargetDirs2.Count)
-        {
-            ComputePermutationAssignmentCostBreakdown(moversOrdered2, permutationTargetDirs2, bondRadius, this, perm2, out float coneG, out float quatG, out float totalG);
-            // #region agent log
-            AppendPermCostInvariantNdjson(
-                "permCostGuideGroup",
-                "AtomFunction.TryBuildRedistributeTargets3DGuideGroupPrefix",
-                "perm2_usedInternuclear=" + (usedInternuclearAxisPerm ? "1" : "0") + " source=" + source,
-                GetInstanceID(),
-                "guideGroup_perm2",
-                coneG,
-                quatG,
-                totalG,
-                perm2,
-                FormatPermCostDirsRounded(permutationTargetDirs2),
-                FormatPermCostTipsForOrbs(moversOrdered2, this),
-                0f,
-                FormatPermCostDirsRounded(new List<Vector3> { guideTip.normalized }));
-            // #endregion
         }
 
         if (DebugLogPiTrigonalOcoConformation
@@ -9574,7 +9171,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                         + sigmaAxisPart);
                     if (atomicNumber == 8 && o.Bond == null && o.transform.parent == transform)
                     {
-                        LogPiTrigonalOcoLine("hemiEval hypothesisId=H1 loneMover orbId=" + o.GetInstanceID()
+                        LogPiTrigonalOcoLine("hemiEval loneMover orbId=" + o.GetInstanceID()
                             + " hemiApplied=" + (hemiApplied ? "true" : "false")
                             + " preTipToIdealDeg=" + angPre.ToString("F2", CultureInfo.InvariantCulture)
                             + " preOppToIdealDeg=" + angPreOpp.ToString("F2", CultureInfo.InvariantCulture)
@@ -9668,26 +9265,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             + OrbitalTipLocalDirection(guide).z.ToString("F4", System.Globalization.CultureInfo.InvariantCulture) + "}"
             + " guideVertex0InTargets=True guideExcludedFromJointRigid=True guideBondId=" + (guideBond != null ? guideBond.GetInstanceID().ToString() : "null")
             + " opBondId=" + (redistributionOperationBond != null ? redistributionOperationBond.GetInstanceID().ToString() : "null"));
-        // #region agent log
-        if (DebugLogOcoSecondPiNdjson && atomicNumber == 8)
-        {
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "H1",
-                "AtomFunction.TryBuildRedistributeTargets3DGuideGroupPrefix",
-                "[oco-remote-freeze] guide_group_exit",
-                "{\"atomId\":" + GetInstanceID()
-                + ",\"source\":\"" + source + "\""
-                + ",\"freezeCluster\":" + (freezeMultiplyBondGuideCluster ? "true" : "false")
-                + ",\"guideClusterN\":" + guideFrozenOrbitals.Count
-                + ",\"nonOpPinN\":" + nonOpMultiplyPinned.Count
-                + ",\"occMovers\":" + moversOrdered2.Count
-                + ",\"emp\":" + emp.Count
-                + ",\"outSlots\":" + outSlots.Count
-                + ",\"jointRigidN\":" + (orbitalsExcludedFromJointRigidInApplyRedistributeTargets != null ? orbitalsExcludedFromJointRigidInApplyRedistributeTargets.Count.ToString() : "0")
-                + ",\"opBondId\":" + (redistributionOperationBond != null ? redistributionOperationBond.GetInstanceID().ToString() : "0")
-                + ",\"guideBondId\":" + (guideBond != null ? guideBond.GetInstanceID().ToString() : "0") + "}");
-        }
-        // #endregion
         return true;
     }
 
@@ -9883,21 +9460,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 bondBreakIsSigmaCleavageBetweenFormerPartners,
                 redistributionOperationBond,
                 vseprDisappearingLoneForPredictiveCount);
-        // #region agent log
-        if (DebugLogOcoSecondPiNdjson && (AtomicNumber == 6 || AtomicNumber == 8))
-        {
-            int frozenN = orbitalsExcludedFromJointRigidInApplyRedistributeTargets?.Count ?? 0;
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "H6-build",
-                "AtomFunction.GetRedistributeTargets3D",
-                "joint_rigid_exclusions_after_build",
-                "{\"atomId\":" + GetInstanceID()
-                + ",\"Z\":" + AtomicNumber
-                + ",\"targetN\":" + (targets3d != null ? targets3d.Count : 0).ToString(CultureInfo.InvariantCulture)
-                + ",\"jointRigidFrozenN\":" + frozenN.ToString(CultureInfo.InvariantCulture)
-                + ",\"repulsionOnly\":" + (UseRepulsionLayoutOnlyInGetRedistributeTargets3D ? "true" : "false") + "}");
-        }
-        // #endregion
         return targets3d;
     }
 
@@ -9943,27 +9505,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             "maxSlots=" + maxSlots + " useBreakRefs=" + useBreakRefs + " σCleavageRefVsepr=" + useSigmaCleavageRefForVsepr + " σN=" + GetDistinctSigmaNeighborCount() + " π=" + GetPiBondCount() +
             " mergeTolDeg=" + mergeToleranceDeg.ToString("F2") + " σTipVsAxisMax=" + SigmaTipsVsBondAxesMaxAngleDeg().ToString("F2") + "° guideOrb=" +
             (bondBreakGuideLoneOrbitalForTargets != null) + " refW=" + refBondWorldDirectionForBreakTargets.HasValue);
-
-        // #region agent log
-        if (DebugLogOcoSecondPiNdjson && redistributionOperationBond != null && !useBreakRefs)
-        {
-            var sbC = new System.Text.StringBuilder(192);
-            sbC.Append("{\"atomId\":").Append(GetInstanceID());
-            sbC.Append(",\"Z\":").Append(atomicNumber);
-            sbC.Append(",\"piBefore\":").Append(piBefore);
-            sbC.Append(",\"piNow\":").Append(GetPiBondCount());
-            sbC.Append(",\"partnerId\":").Append(newBondPartner != null ? newBondPartner.GetInstanceID() : 0);
-            sbC.Append(",\"sigmaNBefore\":").Append(sigmaNeighborCountBefore);
-            sbC.Append(",\"sigmaNNow\":").Append(GetDistinctSigmaNeighborCount());
-            sbC.Append(",\"opBondId\":").Append(redistributionOperationBond.GetInstanceID());
-            sbC.Append('}');
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "C",
-                "AtomFunction.GetRedistributeTargets3DVseprTryMatch",
-                "enter_with_op_bond",
-                sbC.ToString());
-        }
-        // #endregion
 
         if (TryBuildRedistributeTargets3DGuideGroupPrefix(redistributionOperationBond, bondBreakGuideLoneOrbitalForTargets, out var guideGrpTargetsVsepr, out bool cancelRedistEmptyMoversVsepr)
             && guideGrpTargetsVsepr != null)
@@ -10254,32 +9795,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 }
                 currentTips.Add(cur);
                 desiredTips.Add(des);
-                // #region agent log
-                if (DebugLogOcoSecondPiNdjson && targets.Count <= 6)
-                {
-                    float ang = Vector3.Angle(cur, des);
-                    var sb = new System.Text.StringBuilder(320);
-                    sb.Append("{\"row\":").Append(i);
-                    sb.Append(",\"pivotId\":").Append(GetInstanceID());
-                    sb.Append(",\"orbId\":").Append(orb.GetInstanceID());
-                    sb.Append(",\"bondId\":").Append(orb.Bond.GetInstanceID());
-                    sb.Append(",\"bondParent\":true");
-                    sb.Append(",\"sigmaLine\":").Append(sigmaLine ? "true" : "false");
-                    sb.Append(",\"angCurToDesDeg\":").Append(ang.ToString("F2", CultureInfo.InvariantCulture));
-                    if (sigmaLine)
-                    {
-                        sb.Append(",\"sigmaJointOppHem\":").Append(sigmaJointUsedOppHemisphere ? "true" : "false");
-                        float angOppPost = Vector3.Angle(-cur, des);
-                        sb.Append(",\"angOppCurToDesDeg\":").Append(angOppPost.ToString("F2", CultureInfo.InvariantCulture));
-                    }
-                    sb.Append('}');
-                    ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                        "R5",
-                        "AtomFunction.ComputeJointRedistributeRotationWorldFromTargetsAndStarts",
-                        "joint_row_input",
-                        sb.ToString());
-                }
-                // #endregion
             }
             else if (orb.transform.parent == transform)
             {
@@ -10291,44 +9806,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 des.Normalize();
                 currentTips.Add(cur);
                 desiredTips.Add(des);
-                // #region agent log
-                if (DebugLogOcoSecondPiNdjson && targets.Count <= 6)
-                {
-                    float ang = Vector3.Angle(cur, des);
-                    var sb = new System.Text.StringBuilder(260);
-                    sb.Append("{\"row\":").Append(i);
-                    sb.Append(",\"pivotId\":").Append(GetInstanceID());
-                    sb.Append(",\"orbId\":").Append(orb.GetInstanceID());
-                    sb.Append(",\"bondId\":0");
-                    sb.Append(",\"bondParent\":false");
-                    sb.Append(",\"sigmaLine\":false");
-                    sb.Append(",\"angCurToDesDeg\":").Append(ang.ToString("F2", CultureInfo.InvariantCulture));
-                    sb.Append('}');
-                    ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                        "R5",
-                        "AtomFunction.ComputeJointRedistributeRotationWorldFromTargetsAndStarts",
-                        "joint_row_input",
-                        sb.ToString());
-                }
-                // #endregion
             }
         }
         Quaternion q = ComputeJointRedistributeRotationWorld(currentTips, desiredTips);
-        // #region agent log
-        if (DebugLogOcoSecondPiNdjson && targets.Count <= 6)
-        {
-            var sb = new System.Text.StringBuilder(180);
-            sb.Append("{\"pivotId\":").Append(GetInstanceID());
-            sb.Append(",\"rowsUsed\":").Append(currentTips.Count);
-            sb.Append(",\"jointDeg\":").Append(Quaternion.Angle(Quaternion.identity, q).ToString("F2", CultureInfo.InvariantCulture));
-            sb.Append('}');
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "R5",
-                "AtomFunction.ComputeJointRedistributeRotationWorldFromTargetsAndStarts",
-                "joint_solution",
-                sb.ToString());
-        }
-        // #endregion
         return q;
     }
 
@@ -10774,7 +10254,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         list.Sort((x, y) => x.GetInstanceID().CompareTo(y.GetInstanceID()));
         foreach (var a in list)
             a.EmitMoleculeElectronConfigOneAtomNdjson(phase, bondEventId, opBond, bondKind, runId);
-        // #region agent log
         if (DebugLogOxygenOcoLewisDetail)
         {
             foreach (var a in list)
@@ -10785,7 +10264,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             foreach (var a in list)
                 a.EmitOxygenMolEcnOrbitalPairwiseAnglesNdjson(phase, bondEventId, opBond, bondKind, runId);
         }
-        // #endregion
         EmitMoleculeEcnSnapshotSummaryNdjson(list, phase, bondEventId, opBond, bondKind, runId);
     }
 
@@ -11014,14 +10492,12 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             " sigmaToC=", nSigmaToC.ToString(inv),
             " piToC=", nPiToC.ToString(inv),
             " lewisOco=", lewisOcoNeutralTerminal ? "ok" : "no");
-        // #region agent log
         ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
             "H-oco-O-lewis",
             "AtomFunction.EmitOxygenOcoTerminalNdjson",
             msg,
             sb.ToString(),
             runId);
-        // #endregion
     }
 
     void EmitOxygenMolEcnOrbitalPairwiseAnglesNdjson(string phase, int bondEventId, CovalentBond opBond, string bondKind, string runId)
@@ -11126,14 +10602,12 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             " pairMaxDeg=", pMax.ToString("F2", inv),
             " maxDev109p5=", maxDev109.ToString("F2", inv),
             " maxDev120=", maxDev120.ToString("F2", inv));
-        // #region agent log
         ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
             "H-O-angle-snap",
             "AtomFunction.EmitOxygenMolEcnOrbitalPairwiseAnglesNdjson",
             msg,
             sb.ToString(),
             runId);
-        // #endregion
     }
 
     /// <summary>
@@ -11249,68 +10723,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 }
             }
         }
-        var angVsRedistTargetByOrbId = new Dictionary<int, float>();
-        if (redistRows != null)
-        {
-            for (int ri = 0; ri < redistRows.Count; ri++)
-            {
-                var (oR, _, rotT) = redistRows[ri];
-                if (oR == null || oR.transform.parent != transform) continue;
-                Vector3 tipNow = OrbitalTipDirectionInNucleusLocal(oR);
-                if (tipNow.sqrMagnitude < 1e-14f) continue;
-                tipNow.Normalize();
-                Vector3 tipTgt = OrbitalSlotPlusXInNucleusLocal(oR, rotT);
-                if (tipTgt.sqrMagnitude < 1e-14f) continue;
-                tipTgt.Normalize();
-                angVsRedistTargetByOrbId[oR.GetInstanceID()] = Vector3.Angle(tipNow, tipTgt);
-            }
-        }
         float jointDeg = Quaternion.Angle(Quaternion.identity, deltaJointFull);
-        var sbData = new System.Text.StringBuilder(400);
-        sbData.Append("{\"hypothesisId\":\"").Append(hypothesisId).Append('"');
-        sbData.Append(",\"phase\":\"").Append(phase).Append('"');
-        sbData.Append(",\"pivotId\":").Append(GetInstanceID());
-        sbData.Append(",\"frame\":").Append(Time.frameCount);
-        sbData.Append(",\"opBondId\":").Append(opId);
-        sbData.Append(",\"smoothS\":").Append(smoothS.ToString("F3", inv));
-        sbData.Append(",\"jointDeg\":").Append(jointDeg.ToString("F2", inv));
-        sbData.Append(",\"siblingSnapN\":").Append(siblingSnapshotCount);
-        sbData.Append(",\"pairMinDeg\":").Append(pairMin.ToString("F2", inv));
-        sbData.Append(",\"pairMaxDeg\":").Append(pairMax.ToString("F2", inv));
-        sbData.Append(",\"maxDevFrom120Deg\":").Append(maxDev120.ToString("F2", inv));
-        sbData.Append(",\"offOpLoneToRedistMinDeg\":").Append(offOpLoneToRedistMinDeg.ToString("F2", inv));
-        sbData.Append(",\"opPiOrbId\":").Append(opPiOrbIdForTriad);
-        if (haveOpPiTipNucleus && nLoneTipsForTriad >= 2)
-        {
-            sbData.Append(",\"triadMinDeg\":").Append(triadMinDeg.ToString("F2", inv));
-            sbData.Append(",\"triadMaxDeg\":").Append(triadMaxDeg.ToString("F2", inv));
-            sbData.Append(",\"triadMaxDevFrom120Deg\":").Append(triadMaxDevFrom120Deg.ToString("F2", inv));
-        }
-        else
-        {
-            sbData.Append(",\"triadMinDeg\":null,\"triadMaxDeg\":null,\"triadMaxDevFrom120Deg\":null");
-        }
-        sbData.Append(",\"tips\":[");
-        for (int i = 0; i < entries.Count; i++)
-        {
-            if (i > 0) sbData.Append(',');
-            var e = entries[i];
-            sbData.Append("{\"id\":").Append(e.id);
-            sbData.Append(",\"inRedist\":").Append(e.inRedist ? "true" : "false");
-            sbData.Append(",\"offOp\":").Append(e.offOp ? "true" : "false");
-            sbData.Append(",\"lone\":").Append(e.isLone ? "true" : "false");
-            sbData.Append(",\"sigma\":").Append(e.isSigma ? "true" : "false");
-            sbData.Append(",\"bondId\":").Append(e.bondId);
-            sbData.Append(",\"tx\":").Append(e.tipN.x.ToString("F4", inv));
-            sbData.Append(",\"ty\":").Append(e.tipN.y.ToString("F4", inv));
-            sbData.Append(",\"tz\":").Append(e.tipN.z.ToString("F4", inv));
-            if (angVsRedistTargetByOrbId.TryGetValue(e.id, out float angV))
-                sbData.Append(",\"angVsRedistTargetDeg\":").Append(angV.ToString("F2", inv));
-            else
-                sbData.Append(",\"angVsRedistTargetDeg\":null");
-            sbData.Append('}');
-        }
-        sbData.Append("]}");
         string triadSuffix = "";
         if (haveOpPiTipNucleus && nLoneTipsForTriad >= 2)
             triadSuffix = " opPiOrbId=" + opPiOrbIdForTriad
@@ -11324,12 +10737,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             + " offOpLoneToRedistMinDeg=" + (offOpLoneToRedistMinDeg >= 0f ? offOpLoneToRedistMinDeg.ToString("F2", inv) : "na")
             + triadSuffix;
         Debug.Log(oneLine);
-        if (DebugLogOcoSecondPiNdjson)
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                hypothesisId,
-                "AtomFunction.LogOxygenOffRedistShellDiagnostics",
-                oneLine,
-                sbData.ToString());
     }
 
     public static string BuildJointFragSigmaPartnerIdSummary(
@@ -11538,31 +10945,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
             Quaternion deltaWorld = ComputeJointRedistributeRotationWorld(currentTips, desiredTips);
             jointDeltaRigidDiag = deltaWorld;
-            // #region agent log
-            int frozenNApply = orbitalsExcludedFromJointRigidInApplyRedistributeTargets?.Count ?? 0;
-            if (DebugLogOcoSecondPiNdjson
-                && (AtomicNumber == 6 || AtomicNumber == 8)
-                && (frozenNApply > 0 || jointSigmaExcl > 0))
-            {
-                float jAng = Quaternion.Angle(Quaternion.identity, deltaWorld);
-                float f01Par = -1f;
-                if (currentTips.Count >= 2)
-                    f01Par = Mathf.Abs(Vector3.Dot(currentTips[0].normalized, currentTips[1].normalized));
-                ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                    "H6",
-                    "AtomFunction.ApplyRedistributeTargets",
-                    "joint_tip_inventory_pi_redist",
-                    "{\"pivotId\":" + GetInstanceID()
-                    + ",\"Z\":" + AtomicNumber
-                    + ",\"tipN\":" + currentTips.Count
-                    + ",\"sigmaKept\":" + jointSigmaKept.ToString(CultureInfo.InvariantCulture)
-                    + ",\"sigmaExcl\":" + jointSigmaExcl.ToString(CultureInfo.InvariantCulture)
-                    + ",\"nucleusOrbs\":" + jointNucleusOrbs.ToString(CultureInfo.InvariantCulture)
-                    + ",\"jointRigidFrozenN\":" + frozenNApply.ToString(CultureInfo.InvariantCulture)
-                    + ",\"jointDeg\":" + jAng.ToString("F2", CultureInfo.InvariantCulture)
-                    + ",\"absDotTip01\":" + f01Par.ToString("F4", CultureInfo.InvariantCulture) + "}");
-            }
-            // #endregion
             if (DebugLogRedistribute3DTipGapTrace)
             {
                 string msg =
@@ -11646,44 +11028,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 orb.transform.localRotation = rot;
             }
         }
-
-        // #region agent log
-        // Runtime proof: terminal sp² O can have 3 occupied nucleus lone lobes but occ collapsed to 2 → third lobe never in targets → visual shell not coplanar 120°.
-        if (DebugLogOcoSecondPiNdjson && AtomicNumber == 8 && GetDistinctSigmaNeighborCount() == 1)
-        {
-            var inTargetIds = new HashSet<int>();
-            foreach (var t in targets)
-                if (t.orb != null) inTargetIds.Add(t.orb.GetInstanceID());
-            int loneOccNuc = 0;
-            var orphanIds = new List<int>(3);
-            foreach (var o in bondedOrbitals)
-            {
-                if (o == null || o.Bond != null || o.ElectronCount <= 0 || o.transform.parent != transform) continue;
-                loneOccNuc++;
-                if (!inTargetIds.Contains(o.GetInstanceID())) orphanIds.Add(o.GetInstanceID());
-            }
-            if (orphanIds.Count > 0)
-            {
-                var sb = new System.Text.StringBuilder(160);
-                sb.Append("{\"pivotId\":").Append(GetInstanceID());
-                sb.Append(",\"targetN\":").Append(targets.Count);
-                sb.Append(",\"loneOccOnNucleus\":").Append(loneOccNuc);
-                sb.Append(",\"orphanN\":").Append(orphanIds.Count);
-                sb.Append(",\"orphanIds\":[");
-                for (int oi = 0; oi < orphanIds.Count; oi++)
-                {
-                    if (oi > 0) sb.Append(',');
-                    sb.Append(orphanIds[oi]);
-                }
-                sb.Append("]}");
-                ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                    "H_orphanLone",
-                    "AtomFunction.ApplyRedistributeTargets",
-                    "terminal_O_nucleus_lone_not_in_redist_targets",
-                    sb.ToString());
-            }
-        }
-        // #endregion
 
         var seenBondsSigma = new HashSet<CovalentBond>();
         foreach (var (orb, pos, rot) in targets)
@@ -11864,20 +11208,20 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <summary>
-    /// Terminal =O (one σ neighbor): trigonal planar VSEPR is 2 lone pairs + bond domain. The shell can still list three occupied nucleus lobes (e.g. 2×2e + 1×1e before π count updates on the non–π-operation leg). Keep the pair with the widest mutual tip angle (~120° lone–lone), dropping the outlier that mis-escalates TryMatch to tetrahedral + azimuth twist.
-    /// <paramref name="redistributionOperationBondForPredictive"/> when non-null (π step hybrid refresh): allow collapse even when <see cref="GetPiBondCount"/> is still 0 on this atom (far O in first CO₂ π).
+    /// Carbonyl-type terminal oxygen (one σ neighbor, <see cref="GetPiBondCount"/> ≥ 1 on this atom): trigonal planar VSEPR is often modeled as σ + two lone domains; the shell may still list three occupied nucleus lobes — keep the pair with the widest mutual tip angle (~120° lone–lone) and drop the outlier.
+    /// Single-bonded terminal O (no π on this atom, e.g. far –O in O=C–O during a π step): <b>no</b> collapse — four electron domains (1 bonding + 3 lone pairs) stay as four VSEPR groups (tetrahedral electron geometry).
     /// </summary>
     List<ElectronOrbitalFunction> CollapseNucleusLoneDomainsForTerminalSp2OxoHybridIfNeeded(
         List<ElectronOrbitalFunction> loneOccupied,
         List<Vector3> bondAxesMerged,
         CovalentBond redistributionOperationBondForPredictive)
     {
+        _ = redistributionOperationBondForPredictive;
         if (loneOccupied == null || loneOccupied.Count != 3) return loneOccupied;
         if (AtomicNumber != 8) return loneOccupied;
         if (bondAxesMerged == null || bondAxesMerged.Count != 1) return loneOccupied;
         if (GetDistinctSigmaNeighborCount() != 1) return loneOccupied;
-        bool piStepHybridContext = redistributionOperationBondForPredictive != null && !redistributionOperationBondForPredictive.IsSigmaBondLine();
-        if (GetPiBondCount() < 1 && !piStepHybridContext) return loneOccupied;
+        if (GetPiBondCount() < 1) return loneOccupied;
 
         int bestI = 0, bestJ = 1;
         float bestSep = -1f;
@@ -12040,37 +11384,13 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || anyInMolecule == null) return;
         AtomFunction skip = null;
-        AtomFunction cCentForLog = null;
-        AtomFunction opOxygenForLog = null;
-        int bondsToLegacy = 0;
         if (opPi != null
             && !opPi.IsSigmaBondLine()
-            && TryFindLegacyCarbonylOxygenForCPiBond(opPi, out var cC, out var opO, out var legO)
+            && TryFindLegacyCarbonylOxygenForCPiBond(opPi, out var cC, out _, out var legO)
             && legO != null
-            && cC != null)
-        {
-            opOxygenForLog = opO;
-            bondsToLegacy = cC.GetBondsTo(legO);
-            if (bondsToLegacy > 1)
-            {
-                skip = legO;
-                cCentForLog = cC;
-            }
-        }
-        // #region agent log
-        if (DebugLogOcoSecondPiNdjson && opPi != null && !opPi.IsSigmaBondLine())
-        {
-            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(
-                "H3",
-                "AtomFunction.RefreshSigmaBondOrbitalHybridAlignmentForConnectedMoleculeAfterPiStep",
-                "afterPiStep connected-molecule hybrid refresh",
-                "{\"skipLegacyHybrid\":" + (skip != null ? "true" : "false")
-                + ",\"legId\":" + (skip != null ? skip.GetInstanceID().ToString() : "0")
-                + ",\"opOId\":" + (opOxygenForLog != null ? opOxygenForLog.GetInstanceID().ToString() : "0")
-                + ",\"cId\":" + (cCentForLog != null ? cCentForLog.GetInstanceID().ToString() : "0")
-                + ",\"bondsToLegacy\":" + bondsToLegacy.ToString() + "}");
-        }
-        // #endregion
+            && cC != null
+            && cC.GetBondsTo(legO) > 1)
+            skip = legO;
         RefreshSigmaBondOrbitalHybridAlignmentForConnectedMolecule(anyInMolecule, skip, opPi);
     }
 

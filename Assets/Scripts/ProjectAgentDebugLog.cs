@@ -111,11 +111,11 @@ public static class ProjectAgentDebugLog
         return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
     }
 
-    /// <summary>Single-session agent ingest file under <c>.cursor/</c>; update filename when the IDE debug session id changes.</summary>
-    public const string CursorDebugModeIngestNdjsonFileName = "debug-d66405.log";
+    /// <summary>Ingest file under <c>.cursor/</c> for <see cref="AppendCursorWorkspaceDebugNdjson"/>; distinct from <see cref="DefaultFileName"/>.</summary>
+    public const string CursorDebugModeIngestNdjsonFileName = "cursor-workspace-debug.ndjson";
 
-    /// <summary>Session id embedded in <see cref="CursorDebugModeIngestNdjsonFileName"/> lines for Cursor Debug Mode.</summary>
-    public const string CursorDebugModeIngestSessionId = "d66405";
+    /// <summary>Session id on each ingest line; override in tooling if you partition runs.</summary>
+    public const string CursorDebugModeIngestSessionId = "workspace";
 
     /// <summary>When true (default), <see cref="AppendCursorWorkspaceDebugNdjson"/> appends NDJSON to <see cref="CursorDebugModeIngestNdjsonFileName"/>. Default on for triage; set false for quiet runs.</summary>
     public static bool WriteCursorDebugModeIngestNdjson = true;
