@@ -4,6 +4,7 @@ using UnityEngine.Rendering;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
 using TMPro;
@@ -6862,10 +6863,18 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     static Vector3 OrbitalTipLocalDirection(ElectronOrbitalFunction orb) =>
         (orb.transform.localRotation * Vector3.right).normalized;
 
-    /// <summary>Lobe +X as a unit vector in <b>this nucleus</b> local space (non-bond: parent is nucleus; σ on bond: world tip → nucleus local).</summary>
+    /// <summary>
+    /// Unit direction in <b>this</b> reference nucleus’s local space from that nucleus’s pivot toward the orbital transform’s world position (“orbital center” used for placement).
+    /// The vector is <b>not</b> absolute: it depends on which atom’s <see cref="AtomFunction"/> you call this on — the reference nucleus is always <c>this.transform</c>.
+    /// For redistribution of a <b>bonding</b> orbital, use the pivot atom that is <b>undergoing redistribution</b> as <c>this</c> so directions stay in that atom’s VSEPR frame.
+    /// When pivot→orbital offset is degenerate, falls back to the canonical hybrid +X lobe axis (same as historical behavior).
+    /// </summary>
     Vector3 OrbitalTipDirectionInNucleusLocal(ElectronOrbitalFunction orb)
     {
         if (orb == null) return Vector3.right;
+        Vector3 deltaWorld = orb.transform.position - transform.position;
+        if (deltaWorld.sqrMagnitude > 1e-14f)
+            return transform.InverseTransformVector(deltaWorld).normalized;
         if (orb.transform.parent == transform)
             return OrbitalTipLocalDirection(orb).normalized;
         Vector3 tipW = orb.transform.TransformDirection(Vector3.right);
@@ -7001,6 +7010,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>
     /// π endpoints use the **same** handedness; per-nucleus <paramref name="guideAxisVertex0NucleusLocal"/> points along the bond
     /// but from opposite ends, so local <c>Dot(g, Cross(...))</c> alone can flip one endpoint’s perm vs the partner.
+    /// Two σ-line movers: pair internuclear axes vs tripod targets in the π ⊥ plane (unified bond world axis when available).
+    /// One σ-line + one other mover (e.g. lone on nucleus): same winding rule using σ axis vs the other mover’s tip — covers π trigonal OCO where <see cref="CompareGuideGroupOccPiTrigonalFor2"/> orders σ first.
+    /// Two non-σ movers (e.g. π O with two lone lobes): same winding using the two tip directions vs tripod targets; cone-cost fallback when crosses are degenerate.
     /// </summary>
     bool TryResolveTrigonalTwoSigmaMoverPermUsingInternuclearAxes(
         List<ElectronOrbitalFunction> movers,
@@ -7015,13 +7027,20 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (movers == null || targetDirsNucleusLocal == null || movers.Count != 2 || targetDirsNucleusLocal.Count != 2)
             return false;
         if (movers[0] == null || movers[1] == null) return false;
-        var b0 = movers[0].Bond as CovalentBond;
-        var b1 = movers[1].Bond as CovalentBond;
-        if (b0 == null || b1 == null || !b0.IsSigmaBondLine() || !b1.IsSigmaBondLine()) return false;
 
         Vector3 g = guideAxisVertex0NucleusLocal;
         if (g.sqrMagnitude < 1e-14f) return false;
         g.Normalize();
+
+        var b0 = movers[0].Bond as CovalentBond;
+        var b1 = movers[1].Bond as CovalentBond;
+        bool sig0 = b0 != null && b0.IsSigmaBondLine();
+        bool sig1 = b1 != null && b1.IsSigmaBondLine();
+        Vector3 t0 = targetDirsNucleusLocal[0].sqrMagnitude < 1e-14f ? Vector3.forward : targetDirsNucleusLocal[0].normalized;
+        Vector3 t1 = targetDirsNucleusLocal[1].sqrMagnitude < 1e-14f ? Vector3.forward : targetDirsNucleusLocal[1].normalized;
+
+        const float crossEps = 1e-5f;
+        const float perpEpsSq = 1e-12f;
 
         int PartnerInst(CovalentBond cb)
         {
@@ -7052,55 +7071,254 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             return true;
         }
 
+        Vector3 unifiedPiBondDirWorld = default;
+        bool haveUnifiedPiBondDirWorld = piOpBondForUnifiedCrossWorld != null
+            && TryUnifiedBondDirWorldForPiPerm(piOpBondForUnifiedCrossWorld, out unifiedPiBondDirWorld);
+
+        bool PreferIdentityAssignmentByConeAndSlotQuat(out bool preferIdentity)
+        {
+            preferIdentity = false;
+            float idTot = 0f;
+            float swTot = 0f;
+            for (int i = 0; i < 2; i++)
+            {
+                var o = movers[i];
+                if (o == null) return false;
+                Vector3 ot = OrbitalTipDirectionInNucleusLocal(o);
+                if (ot.sqrMagnitude < 1e-14f) return false;
+                ot.Normalize();
+                Vector3 tdId = i == 0 ? t0 : t1;
+                Vector3 tdSw = i == 0 ? t1 : t0;
+                if (tdId.sqrMagnitude < 1e-14f || tdSw.sqrMagnitude < 1e-14f) return false;
+                Vector3 tdIn = tdId.normalized;
+                Vector3 tdSwN = tdSw.normalized;
+                idTot += PiPermutationConeAngleTipToTargetDeg(o, ot, tdIn);
+                swTot += PiPermutationConeAngleTipToTargetDeg(o, ot, tdSwN);
+                if (o.Bond == null)
+                {
+                    idTot += QuaternionSlotCostOnly(o, tdIn, bondRadius);
+                    swTot += QuaternionSlotCostOnly(o, tdSwN, bondRadius);
+                }
+            }
+            preferIdentity = idTot <= swTot;
+            // #region agent log
+            try
+            {
+                long tsMs = (long)(System.DateTime.UtcNow - new System.DateTime(1970, 1, 1, 0, 0, 0, System.DateTimeKind.Utc)).TotalMilliseconds;
+                string root = Directory.GetParent(Application.dataPath)?.FullName;
+                if (!string.IsNullOrEmpty(root))
+                {
+                    string p = Path.Combine(root, ".cursor", "debug-d66405.log");
+                    string data = "{\"idTot\":" + idTot.ToString(CultureInfo.InvariantCulture)
+                        + ",\"swTot\":" + swTot.ToString(CultureInfo.InvariantCulture)
+                        + ",\"preferIdentity\":" + (preferIdentity ? "true" : "false")
+                        + ",\"sig0\":" + (sig0 ? "true" : "false")
+                        + ",\"sig1\":" + (sig1 ? "true" : "false") + "}";
+                    string line = "{\"sessionId\":\"d66405\",\"hypothesisId\":\"cone-quat-fallback\",\"location\":\"AtomFunction.PreferIdentityAssignmentByConeAndSlotQuat\",\"message\":\"totals\",\"data\":" + data + ",\"timestamp\":" + tsMs + "}\n";
+                    File.AppendAllText(p, line);
+                }
+            }
+            catch { /* ingest optional */ }
+            // #endregion
+            return true;
+        }
+
+        if (sig0 ^ sig1)
+        {
+            int iSig = sig0 ? 0 : 1;
+            int iOther = 1 - iSig;
+            CovalentBond bSig = sig0 ? b0 : b1;
+            Vector3 aSig = InternuclearSigmaAxisNucleusLocalForBond(bSig);
+            Vector3 tipO = OrbitalTipDirectionInNucleusLocal(movers[iOther]);
+            if (aSig.sqrMagnitude < 1e-14f || tipO.sqrMagnitude < 1e-14f) return false;
+            aSig.Normalize();
+            tipO.Normalize();
+
+            bool useWorldPlaneCross = false;
+            if (haveUnifiedPiBondDirWorld)
+            {
+                Vector3 aW = transform.TransformDirection(aSig);
+                Vector3 oW = transform.TransformDirection(tipO);
+                Vector3 t0w = transform.TransformDirection(t0);
+                Vector3 t1w = transform.TransformDirection(t1);
+                Vector3 pAw = RejectFromUnit(aW, unifiedPiBondDirWorld);
+                Vector3 pOw = RejectFromUnit(oW, unifiedPiBondDirWorld);
+                Vector3 pT0w = RejectFromUnit(t0w, unifiedPiBondDirWorld);
+                Vector3 pT1w = RejectFromUnit(t1w, unifiedPiBondDirWorld);
+                useWorldPlaneCross = pAw.sqrMagnitude >= perpEpsSq && pOw.sqrMagnitude >= perpEpsSq
+                    && pT0w.sqrMagnitude >= perpEpsSq && pT1w.sqrMagnitude >= perpEpsSq;
+            }
+
+            bool sameWinding;
+            if (useWorldPlaneCross)
+            {
+                Vector3 aW = transform.TransformDirection(aSig);
+                Vector3 oW = transform.TransformDirection(tipO);
+                Vector3 t0w = transform.TransformDirection(t0);
+                Vector3 t1w = transform.TransformDirection(t1);
+                Vector3 pAw = RejectFromUnit(aW, unifiedPiBondDirWorld);
+                Vector3 pOw = RejectFromUnit(oW, unifiedPiBondDirWorld);
+                Vector3 pT0w = RejectFromUnit(t0w, unifiedPiBondDirWorld);
+                Vector3 pT1w = RejectFromUnit(t1w, unifiedPiBondDirWorld);
+                float sM = Vector3.Dot(unifiedPiBondDirWorld, Vector3.Cross(pAw.normalized, pOw.normalized));
+                float sT = Vector3.Dot(unifiedPiBondDirWorld, Vector3.Cross(pT0w.normalized, pT1w.normalized));
+                if (Mathf.Abs(sM) > crossEps && Mathf.Abs(sT) > crossEps)
+                {
+                    usedUnifiedBondWorldCross = true;
+                    sameWinding = (sM > crossEps && sT > crossEps) || (sM < -crossEps && sT < -crossEps);
+                }
+                else
+                {
+                    usedUnifiedBondWorldCross = false;
+                    if (!PreferIdentityAssignmentByConeAndSlotQuat(out sameWinding))
+                        return false;
+                }
+            }
+            else
+            {
+                Vector3 pA = RejectFromG(aSig);
+                Vector3 pO = RejectFromG(tipO);
+                Vector3 pT0loc = RejectFromG(t0);
+                Vector3 pT1loc = RejectFromG(t1);
+                if (pA.sqrMagnitude < perpEpsSq || pO.sqrMagnitude < perpEpsSq
+                    || pT0loc.sqrMagnitude < perpEpsSq || pT1loc.sqrMagnitude < perpEpsSq)
+                    return false;
+                float sM = Vector3.Dot(g, Vector3.Cross(pA.normalized, pO.normalized));
+                float sT = Vector3.Dot(g, Vector3.Cross(pT0loc.normalized, pT1loc.normalized));
+                if (Mathf.Abs(sM) > crossEps && Mathf.Abs(sT) > crossEps)
+                    sameWinding = (sM > crossEps && sT > crossEps) || (sM < -crossEps && sT < -crossEps);
+                else if (!PreferIdentityAssignmentByConeAndSlotQuat(out sameWinding))
+                    return false;
+            }
+
+            perm = new int[2];
+            if (sameWinding)
+            {
+                perm[iSig] = 0;
+                perm[iOther] = 1;
+            }
+            else
+            {
+                perm[iSig] = 1;
+                perm[iOther] = 0;
+            }
+            return true;
+        }
+
+        if (!sig0 && !sig1)
+        {
+            Vector3 tipA = OrbitalTipDirectionInNucleusLocal(movers[0]);
+            Vector3 tipB = OrbitalTipDirectionInNucleusLocal(movers[1]);
+            if (tipA.sqrMagnitude < 1e-14f || tipB.sqrMagnitude < 1e-14f) return false;
+            tipA.Normalize();
+            tipB.Normalize();
+
+            bool useWorldPlaneCrossL = false;
+            if (haveUnifiedPiBondDirWorld)
+            {
+                Vector3 t0wL = transform.TransformDirection(t0);
+                Vector3 t1wL = transform.TransformDirection(t1);
+                Vector3 tAwL = transform.TransformDirection(tipA);
+                Vector3 tBwL = transform.TransformDirection(tipB);
+                Vector3 pAwL = RejectFromUnit(tAwL, unifiedPiBondDirWorld);
+                Vector3 pBwL = RejectFromUnit(tBwL, unifiedPiBondDirWorld);
+                Vector3 pT0wL = RejectFromUnit(t0wL, unifiedPiBondDirWorld);
+                Vector3 pT1wL = RejectFromUnit(t1wL, unifiedPiBondDirWorld);
+                useWorldPlaneCrossL = pAwL.sqrMagnitude >= perpEpsSq && pBwL.sqrMagnitude >= perpEpsSq
+                    && pT0wL.sqrMagnitude >= perpEpsSq && pT1wL.sqrMagnitude >= perpEpsSq;
+            }
+
+            bool sameWL;
+            if (useWorldPlaneCrossL)
+            {
+                Vector3 t0wL = transform.TransformDirection(t0);
+                Vector3 t1wL = transform.TransformDirection(t1);
+                Vector3 tAwL = transform.TransformDirection(tipA);
+                Vector3 tBwL = transform.TransformDirection(tipB);
+                Vector3 pAwL = RejectFromUnit(tAwL, unifiedPiBondDirWorld);
+                Vector3 pBwL = RejectFromUnit(tBwL, unifiedPiBondDirWorld);
+                Vector3 pT0wL = RejectFromUnit(t0wL, unifiedPiBondDirWorld);
+                Vector3 pT1wL = RejectFromUnit(t1wL, unifiedPiBondDirWorld);
+                float sML = Vector3.Dot(unifiedPiBondDirWorld, Vector3.Cross(pAwL.normalized, pBwL.normalized));
+                float sTL = Vector3.Dot(unifiedPiBondDirWorld, Vector3.Cross(pT0wL.normalized, pT1wL.normalized));
+                if (Mathf.Abs(sML) > crossEps && Mathf.Abs(sTL) > crossEps)
+                {
+                    usedUnifiedBondWorldCross = true;
+                    sameWL = (sML > crossEps && sTL > crossEps) || (sML < -crossEps && sTL < -crossEps);
+                }
+                else
+                {
+                    usedUnifiedBondWorldCross = false;
+                    if (!PreferIdentityAssignmentByConeAndSlotQuat(out sameWL))
+                        return false;
+                }
+            }
+            else
+            {
+                Vector3 pAl = RejectFromG(tipA);
+                Vector3 pBl = RejectFromG(tipB);
+                Vector3 pT0locL = RejectFromG(t0);
+                Vector3 pT1locL = RejectFromG(t1);
+                if (pAl.sqrMagnitude < perpEpsSq || pBl.sqrMagnitude < perpEpsSq
+                    || pT0locL.sqrMagnitude < perpEpsSq || pT1locL.sqrMagnitude < perpEpsSq)
+                    return false;
+                float sML = Vector3.Dot(g, Vector3.Cross(pAl.normalized, pBl.normalized));
+                float sTL = Vector3.Dot(g, Vector3.Cross(pT0locL.normalized, pT1locL.normalized));
+                if (Mathf.Abs(sML) > crossEps && Mathf.Abs(sTL) > crossEps)
+                    sameWL = (sML > crossEps && sTL > crossEps) || (sML < -crossEps && sTL < -crossEps);
+                else if (!PreferIdentityAssignmentByConeAndSlotQuat(out sameWL))
+                    return false;
+            }
+
+            perm = new int[2];
+            perm[0] = sameWL ? 0 : 1;
+            perm[1] = sameWL ? 1 : 0;
+            return true;
+        }
+
+        if (!sig0 || !sig1 || b0 == null || b1 == null) return false;
+
         Vector3 a0 = InternuclearSigmaAxisNucleusLocalForBond(b0);
         Vector3 a1 = InternuclearSigmaAxisNucleusLocalForBond(b1);
-        Vector3 t0 = targetDirsNucleusLocal[0].sqrMagnitude < 1e-14f ? Vector3.forward : targetDirsNucleusLocal[0].normalized;
-        Vector3 t1 = targetDirsNucleusLocal[1].sqrMagnitude < 1e-14f ? Vector3.forward : targetDirsNucleusLocal[1].normalized;
 
         int p0 = PartnerInst(b0);
         int p1 = PartnerInst(b1);
-        const float crossEps = 1e-5f;
-        const float perpEpsSq = 1e-12f;
 
-        Vector3 uWorld = default;
-        bool haveBondW = piOpBondForUnifiedCrossWorld != null
-            && TryUnifiedBondDirWorldForPiPerm(piOpBondForUnifiedCrossWorld, out uWorld);
-
-        bool useWorldPlaneCross = false;
-        if (haveBondW)
+        bool useWorldPlaneCross2 = false;
+        if (haveUnifiedPiBondDirWorld)
         {
             Vector3 a0w = transform.TransformDirection(a0);
             Vector3 a1w = transform.TransformDirection(a1);
             Vector3 t0w = transform.TransformDirection(t0);
             Vector3 t1w = transform.TransformDirection(t1);
-            Vector3 pA0w = RejectFromUnit(a0w, uWorld);
-            Vector3 pA1w = RejectFromUnit(a1w, uWorld);
-            Vector3 pT0w = RejectFromUnit(t0w, uWorld);
-            Vector3 pT1w = RejectFromUnit(t1w, uWorld);
-            useWorldPlaneCross = pA0w.sqrMagnitude >= perpEpsSq && pA1w.sqrMagnitude >= perpEpsSq
+            Vector3 pA0w = RejectFromUnit(a0w, unifiedPiBondDirWorld);
+            Vector3 pA1w = RejectFromUnit(a1w, unifiedPiBondDirWorld);
+            Vector3 pT0w = RejectFromUnit(t0w, unifiedPiBondDirWorld);
+            Vector3 pT1w = RejectFromUnit(t1w, unifiedPiBondDirWorld);
+            useWorldPlaneCross2 = pA0w.sqrMagnitude >= perpEpsSq && pA1w.sqrMagnitude >= perpEpsSq
                 && pT0w.sqrMagnitude >= perpEpsSq && pT1w.sqrMagnitude >= perpEpsSq;
         }
 
         int[] mOrd;
         int[] tOrd;
-        if (useWorldPlaneCross)
+        if (useWorldPlaneCross2)
         {
             usedUnifiedBondWorldCross = true;
             Vector3 a0w = transform.TransformDirection(a0);
             Vector3 a1w = transform.TransformDirection(a1);
             Vector3 t0w = transform.TransformDirection(t0);
             Vector3 t1w = transform.TransformDirection(t1);
-            Vector3 pA0w = RejectFromUnit(a0w, uWorld);
-            Vector3 pA1w = RejectFromUnit(a1w, uWorld);
-            Vector3 pT0w = RejectFromUnit(t0w, uWorld);
-            Vector3 pT1w = RejectFromUnit(t1w, uWorld);
-            float sM = Vector3.Dot(uWorld, Vector3.Cross(pA0w.normalized, pA1w.normalized));
+            Vector3 pA0w = RejectFromUnit(a0w, unifiedPiBondDirWorld);
+            Vector3 pA1w = RejectFromUnit(a1w, unifiedPiBondDirWorld);
+            Vector3 pT0w = RejectFromUnit(t0w, unifiedPiBondDirWorld);
+            Vector3 pT1w = RejectFromUnit(t1w, unifiedPiBondDirWorld);
+            float sM = Vector3.Dot(unifiedPiBondDirWorld, Vector3.Cross(pA0w.normalized, pA1w.normalized));
             if (sM > crossEps) mOrd = new[] { 0, 1 };
             else if (sM < -crossEps) mOrd = new[] { 1, 0 };
             else
                 mOrd = p0 <= p1 ? new[] { 0, 1 } : new[] { 1, 0 };
 
-            float sT = Vector3.Dot(uWorld, Vector3.Cross(pT0w.normalized, pT1w.normalized));
+            float sT = Vector3.Dot(unifiedPiBondDirWorld, Vector3.Cross(pT0w.normalized, pT1w.normalized));
             if (sT > crossEps) tOrd = new[] { 0, 1 };
             else if (sT < -crossEps) tOrd = new[] { 1, 0 };
             else
@@ -9777,7 +9995,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 bool sigmaLine = cb is CovalentBond cbSigmaRow && cbSigmaRow.IsSigmaBondLine();
                 // σ hybrid direction is an axis; +X vs −X are equivalent for undirected lobe alignment. Joint solve used +X only,
                 // which can over-rotate fragments when −X is much closer to des (runtime R5: angOppCurToDesDeg ≪ angCurToDesDeg).
-                bool sigmaJointUsedOppHemisphere = false;
                 if (sigmaLine)
                 {
                     float angPlus = Vector3.Angle(cur, des);
@@ -9788,10 +10005,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     const float minDirectedGapDegForSigmaJointOppHem = 70f;
                     if (angMinus < angPlus - tieEpsJointSigmaHemDeg
                         && (angPlus - angMinus) > minDirectedGapDegForSigmaJointOppHem)
-                    {
                         cur = -cur;
-                        sigmaJointUsedOppHemisphere = true;
-                    }
                 }
                 currentTips.Add(cur);
                 desiredTips.Add(des);
@@ -9979,7 +10193,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     /// <summary>
     /// After π snap + hybrid: logs mesh +X in world vs redistribute row local target (meaningful for solver mismatch),
-    /// and vs <see cref="OrbitalTipDirectionInNucleusLocal"/> (for nucleus children this matches mesh +X by construction).
+    /// and vs <see cref="OrbitalTipDirectionInNucleusLocal"/> (pivot→orbital center in reference nucleus space; degenerate case uses +X lobe).
     /// Also logs π lobes vs bond <see cref="CovalentBond.GetOrbitalTargetWorldState"/> when parented on the bond.
     /// </summary>
     public static void LogPiOrbitalVisualTipProbeNdjson(
