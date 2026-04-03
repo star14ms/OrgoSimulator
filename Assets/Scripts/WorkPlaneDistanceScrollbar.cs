@@ -17,6 +17,8 @@ public class WorkPlaneDistanceScrollbar : MonoBehaviour
     [SerializeField] float orthographicSizeMin = 2.5f;
     [Tooltip("Orthographic: max size (zoomed out) at scrollbar bottom.")]
     [SerializeField] float orthographicSizeMax = 12f;
+    [Tooltip("Initial zoom: 0 = match scene camera only; 1 = maximum zoom-in (scrollbar top). Values in between blend toward max.")]
+    [SerializeField] [Range(0f, 1f)] float defaultZoomBlendTowardMax = 0.75f;
 
     Scrollbar scrollbar;
     ScrollOrbitCamera orbit;
@@ -24,6 +26,10 @@ public class WorkPlaneDistanceScrollbar : MonoBehaviour
 
     void Start()
     {
+        float sceneSyncedValue = 0.5f;
+        if (TryGetScrollbarValueFromCamera(Camera.main, out float synced))
+            sceneSyncedValue = synced;
+
         var canvas = GetComponentInParent<Canvas>();
         if (canvas == null)
             canvas = GetComponentInChildren<Canvas>();
@@ -57,6 +63,12 @@ public class WorkPlaneDistanceScrollbar : MonoBehaviour
         scrollbar.onValueChanged.AddListener(OnScrollbarValueChanged);
         scrollbar.direction = Scrollbar.Direction.BottomToTop;
 
+        // Blend between scene camera and maximum zoom-in (value 1 = top).
+        float initial = Mathf.Lerp(sceneSyncedValue, 1f, Mathf.Clamp01(defaultZoomBlendTowardMax));
+        suppressCallback = true;
+        scrollbar.value = initial;
+        suppressCallback = false;
+        OnScrollbarValueChanged(initial);
         SyncScrollbarFromCamera();
     }
 
@@ -126,28 +138,30 @@ public class WorkPlaneDistanceScrollbar : MonoBehaviour
         orbit.SyncMoleculeWorkPlaneToView();
     }
 
-    void SyncScrollbarFromCamera()
+    bool TryGetScrollbarValueFromCamera(Camera cam, out float value)
     {
-        if (scrollbar == null) return;
-        var cam = Camera.main;
-        if (cam == null) return;
-
-        float value;
+        value = 0f;
+        if (cam == null) return false;
         if (cam.orthographic)
         {
             float lo = Mathf.Min(orthographicSizeMin, orthographicSizeMax);
             float hi = Mathf.Max(orthographicSizeMin, orthographicSizeMax);
             float s = Mathf.Clamp(cam.orthographicSize, lo, hi);
             value = Mathf.InverseLerp(hi, lo, s);
+            return true;
         }
-        else
-        {
-            orbit = cam.GetComponent<ScrollOrbitCamera>();
-            if (orbit == null) return;
-            orbit.GetDepthClampRange(out float loD, out float hiD);
-            float d = orbit.GetDepthAlongViewClamped();
-            value = Mathf.InverseLerp(hiD, loD, d);
-        }
+        orbit = cam.GetComponent<ScrollOrbitCamera>();
+        if (orbit == null) return false;
+        orbit.GetDepthClampRange(out float loD, out float hiD);
+        float d = orbit.GetDepthAlongViewClamped();
+        value = Mathf.InverseLerp(hiD, loD, d);
+        return true;
+    }
+
+    void SyncScrollbarFromCamera()
+    {
+        if (scrollbar == null) return;
+        if (!TryGetScrollbarValueFromCamera(Camera.main, out float value)) return;
 
         if (Mathf.Approximately(scrollbar.value, value)) return;
         suppressCallback = true;

@@ -16,7 +16,7 @@ public class EditModeManager : MonoBehaviour
 {
     [SerializeField] GameObject atomPrefab;
     bool editModeActive = true;
-    bool hAutoMode = true;
+    bool hAutoMode;
     bool eraserMode;
     AtomFunction selectedAtom;
     ElectronOrbitalFunction selectedOrbital;

@@ -43,6 +43,10 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     BoxCollider lineCollider3D;
     static Sprite lineSprite;
     static Material bondCylinderMaterial;
+    MaterialPropertyBlock bondFormationDebugGuideMpb;
+    MaterialPropertyBlock bondFormationTemplatePickMpb;
+    static readonly int BondShaderBaseColorId = Shader.PropertyToID("_BaseColor");
+    static readonly int BondShaderColorId = Shader.PropertyToID("_Color");
 
     /// <summary>Black bond stroke with slight transparency (sprite + 3D cylinder).</summary>
     const float BondVisualAlpha = 0.82f;
@@ -504,6 +508,58 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
             mat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
         }
+    }
+
+    /// <summary>Bond stepped-debug: tint existing line/cylinder renderers (MPB on 3D mesh so shared material stays black for other bonds).</summary>
+    public void SetBondFormationDebugGuideHighlight(bool highlighted)
+    {
+        if (!highlighted)
+        {
+            if (cylinderRenderer != null)
+                cylinderRenderer.SetPropertyBlock(null);
+            if (lineRenderer != null)
+                lineRenderer.color = BondVisualColor;
+            return;
+        }
+        var c = new Color(0.12f, 0.88f, 0.4f, 0.92f);
+        if (cylinderRenderer != null)
+        {
+            if (bondFormationDebugGuideMpb == null)
+                bondFormationDebugGuideMpb = new MaterialPropertyBlock();
+            bondFormationDebugGuideMpb.Clear();
+            bondFormationDebugGuideMpb.SetColor(BondShaderBaseColorId, c);
+            bondFormationDebugGuideMpb.SetColor(BondShaderColorId, c);
+            cylinderRenderer.SetPropertyBlock(bondFormationDebugGuideMpb);
+        }
+        if (lineRenderer != null)
+            lineRenderer.color = c;
+    }
+
+    /// <summary>Template preview pick: tint bond line/cylinder red (MPB on 3D mesh; sprite line color).</summary>
+    public void SetBondFormationTemplatePickHighlight(bool highlighted)
+    {
+        if (!highlighted)
+        {
+            if (bondFormationTemplatePickMpb != null)
+                bondFormationTemplatePickMpb.Clear();
+            if (cylinderRenderer != null)
+                cylinderRenderer.SetPropertyBlock(null);
+            if (lineRenderer != null)
+                lineRenderer.color = BondVisualColor;
+            return;
+        }
+        var c = new Color(0.95f, 0.2f, 0.2f, 0.92f);
+        if (cylinderRenderer != null)
+        {
+            if (bondFormationTemplatePickMpb == null)
+                bondFormationTemplatePickMpb = new MaterialPropertyBlock();
+            bondFormationTemplatePickMpb.Clear();
+            bondFormationTemplatePickMpb.SetColor(BondShaderBaseColorId, c);
+            bondFormationTemplatePickMpb.SetColor(BondShaderColorId, c);
+            cylinderRenderer.SetPropertyBlock(bondFormationTemplatePickMpb);
+        }
+        if (lineRenderer != null)
+            lineRenderer.color = c;
     }
 
     Vector3 PerpendicularToBondDirection(Vector3 deltaNormalized)

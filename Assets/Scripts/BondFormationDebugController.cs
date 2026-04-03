@@ -1,0 +1,41 @@
+using System.Collections;
+using UnityEngine;
+
+/// <summary>
+/// Stepped bond-formation debug: pause at three template phases when <see cref="SteppedModeEnabled"/> is true.
+/// UI toggle sets <see cref="SteppedModeEnabled"/>; <see cref="RequestAdvance"/> continues to the next phase.
+/// Turning stepped mode off while waiting calls <see cref="OnSteppedModeDisabled"/> so bonding continues.
+/// </summary>
+public static class BondFormationDebugController
+{
+    /// <summary>Bound from HUD toggle. When false during <see cref="WaitPhase"/>, wait ends immediately.</summary>
+    public static bool SteppedModeEnabled { get; set; }
+
+    static bool _pendingAdvance;
+    static bool _waiting;
+
+    public static bool IsWaitingForPhase => _waiting;
+
+    public static void RequestAdvance() => _pendingAdvance = true;
+
+    /// <summary>Call when the user turns the debug toggle off while a phase wait is active.</summary>
+    public static void OnSteppedModeDisabled()
+    {
+        if (_waiting)
+            _pendingAdvance = true;
+    }
+
+    /// <param name="phase">1 = template created, 2 = joint / vertex-0 alignment resolved, 3 = after further rotation (pre-apply).</param>
+    public static IEnumerator WaitPhase(int phase)
+    {
+        if (!SteppedModeEnabled) yield break;
+        _waiting = true;
+        _pendingAdvance = false;
+        BondFormationDebugHud.Instance?.SetPhaseWaiting(phase, true);
+        while (SteppedModeEnabled && !_pendingAdvance)
+            yield return null;
+        _waiting = false;
+        _pendingAdvance = false;
+        BondFormationDebugHud.Instance?.SetPhaseWaiting(phase, false);
+    }
+}

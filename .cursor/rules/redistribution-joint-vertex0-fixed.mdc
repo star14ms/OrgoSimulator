@@ -1,0 +1,24 @@
+---
+description: After vertex 0 is aligned to the guide group, joint world rotation must not drift vertex 0; factor DOF or constrain rotation.
+alwaysApply: true
+---
+
+# Redistribution: fix vertex 0 during the post-alignment world rotation
+
+## Invariant
+
+When the trigonal / multiply-bond template has already aligned **vertex 0** to the **guide (multiply) cluster**, a later **single world rotation** used to carry σ / nucleus domains into place (e.g. π step 2 joint, `ComputeJointRedistributeRotationWorldFromTargetsAndStarts` and rigid apply) **must not** re-spin or drift that **vertex-0–guide alignment**.
+
+Treat **vertex 0 as fixed** for that rotation: the rotation should be chosen (or the problem factored) so the direction that was established as “template vertex 0 ↔ guide” **stays fixed in world space** while remaining movers are matched to the remaining template directions.
+
+## Intent vs coupled solve
+
+Avoid treating this as only “match all hybrid tips with one unconstrained quaternion” when the design step is **guide + vertex 0 already correct**: a coupled least-squares or multi-tip joint can introduce **extra** world rotation that moves vertex 0 together with the whole shell. Prefer a **factored** approach (e.g. constrain rotation to leave the vertex-0 axis invariant, or exclude fixed rows from the joint solve in a principled way) when the user-facing spec is “only align the in-operation / non-guide domains.”
+
+## Where this applies
+
+Relevant implementation areas include π-trigonal `TryBuildRedistributeTargets3DGuideGroupPrefix`, joint tip assembly and `ComputeJointRedistributeRotationWorld`, π step 2 joint / lerp in `ElectronOrbitalFunction`, and `ApplyRedistributeTargets` joint phase — **without** violating the temporary restriction on rewriting `RedistributeOrbitals3D` (keep it a thin forwarder unless the user asks otherwise).
+
+## Debug / fix phase
+
+Per `debug-phase-vs-fix-phase.mdc`: treat a change to joint math or DOF factoring as **fix phase** only after runtime evidence and explicit user permission to **fix**.

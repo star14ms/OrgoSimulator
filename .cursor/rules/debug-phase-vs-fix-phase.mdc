@@ -1,0 +1,28 @@
+---
+description: Separate debug instrumentation from behavioral fixes; require chat permission before fix phase; avoid narrow workaround branches.
+alwaysApply: true
+---
+
+# Debugging: phases and root-cause fixes
+
+## Two phases (do not mix)
+
+1. **Debug phase** — Add or adjust instrumentation (logs, NDJSON, flags), reproduce, read runtime output, compare cases, form hypotheses. **Allowed without special permission.**
+2. **Fix phase** — Change **production logic** (behavior, algorithms, data flow) intended to resolve the bug.
+
+**Gate:** Do **not** enter the fix phase until the user gives explicit permission in chat to **fix** (or equivalent, e.g. “go ahead and implement the fix”). Until then, limit changes to debugging/triage.
+
+**After a fix phase:** Treat the next work as **debug phase** again. A production change is **not** proof the issue is resolved. Do **not** chain a **second** fix (another behavioral change) in the same line of work until you have: (1) runtime logs or NDJSON from a verification run, (2) comparison to the contrasting case if the bug is “works in A, fails in B”, and (3) a hypothesis that explains **why** A and B differ (e.g. different reparent order, not only different symptoms at a downstream callsite). **Do not** patch a downstream function to paper over a difference that should be fixed at the true divergence point (e.g. joint math vs **why** the guide orbital is bond-parented in one run and nucleus-parented in another) without that evidence.
+
+**User phrasing:** If the user says something like **“issue reproduced, please proceed”** (or clearly equivalent), interpret it as: the problem **still happens** — **not** verification success. Proceed with **debugging** (read logs, refine hypotheses). Another **fix** still requires explicit fix permission after analysis.
+
+Diagnostics-only refactors (e.g. extracting a helper that does not change behavior) can stay in the debug phase if they serve instrumentation or clarity.
+
+## No narrow “paper over” branches
+
+Except for debugging (gated logs, temporary probes), **do not** add code that special-cases a single failing scenario when it does not correct the underlying rule.
+
+- **Avoid:** New branches like `if (nVseprGroups == 2 && source == RedistributionGuideSource.PiBondInOperation) { … }` that bypass or patch one case without fixing the general mechanism those cases should share.
+- **Prefer:** Fix the existing general path; **or** extend behavior in a **generalized** way (documented invariant, shared helper, principled condition) so the fix applies to a class of situations, not one repro.
+
+If the true fix is not yet proven, stay in the **debug phase** until logs and user permission justify a **fix**.

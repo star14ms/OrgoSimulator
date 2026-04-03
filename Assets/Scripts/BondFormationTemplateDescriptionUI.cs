@@ -1,0 +1,68 @@
+using TMPro;
+using UnityEngine;
+using UnityEngine.UI;
+
+/// <summary>Screen-space blurb for picked redistribute template stem/tip (bond-steps debug).</summary>
+public static class BondFormationTemplateDescriptionUI
+{
+    static GameObject panel;
+    static TextMeshProUGUI label;
+
+    public static void Show(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            Hide();
+            return;
+        }
+        EnsurePanel();
+        if (label != null) label.text = text;
+        if (panel != null) panel.SetActive(true);
+    }
+
+    public static void Hide()
+    {
+        if (panel != null) panel.SetActive(false);
+    }
+
+    static void EnsurePanel()
+    {
+        if (panel != null) return;
+        var canvas = Object.FindFirstObjectByType<Canvas>();
+        if (canvas == null) return;
+        Transform parent = canvas.rootCanvas != null ? canvas.rootCanvas.transform : canvas.transform;
+        float sf = canvas.scaleFactor > 0.01f ? canvas.scaleFactor : 1f;
+        float w = 520f * sf;
+        float h = 120f * sf;
+        float bottomY = 112f * sf;
+
+        panel = new GameObject("BondFormationTemplateDescription");
+        panel.transform.SetParent(parent, false);
+        panel.transform.SetAsLastSibling();
+        var rt = panel.AddComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0.5f, 0f);
+        rt.anchorMax = new Vector2(0.5f, 0f);
+        rt.pivot = new Vector2(0.5f, 0f);
+        rt.anchoredPosition = new Vector2(0f, bottomY);
+        rt.sizeDelta = new Vector2(w, h);
+
+        var bg = panel.AddComponent<Image>();
+        bg.color = new Color(0.08f, 0.1f, 0.14f, 0.92f);
+
+        var textGo = new GameObject("Text");
+        textGo.transform.SetParent(panel.transform, false);
+        var textRt = textGo.AddComponent<RectTransform>();
+        textRt.anchorMin = Vector2.zero;
+        textRt.anchorMax = Vector2.one;
+        float pad = 14f * sf;
+        textRt.offsetMin = new Vector2(pad, pad);
+        textRt.offsetMax = new Vector2(-pad, -pad);
+        label = textGo.AddComponent<TextMeshProUGUI>();
+        label.font = AtomFunction.GetDefaultFont();
+        label.fontSize = Mathf.Max(12, Mathf.RoundToInt(14f * sf));
+        label.alignment = TextAlignmentOptions.Center;
+        label.color = new Color(0.92f, 0.94f, 0.96f, 1f);
+        label.textWrappingMode = TextWrappingModes.Normal;
+        label.raycastTarget = false;
+    }
+}

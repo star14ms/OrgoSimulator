@@ -99,6 +99,9 @@ public class AtomQuickAddUI : MonoBehaviour
 
     void Update()
     {
+        if (BondFormationDebugController.IsWaitingForPhase)
+            return;
+
         var k = Keyboard.current;
         if (k == null) return;
         if (k.hKey.wasPressedThisFrame) OnElementClicked(1);
@@ -359,6 +362,7 @@ public class AtomQuickAddUI : MonoBehaviour
         row2.transform.SetParent(toolbar.transform, false);
 
         BuildTogglesPanelUpperRight(canvas);
+        BondFormationDebugHud.Build(canvas, layoutButtonSize, layoutFontSize, Px);
         BuildChargeModeToggleLowerLeft(canvas);
     }
 

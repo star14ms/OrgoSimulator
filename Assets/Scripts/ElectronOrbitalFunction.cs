@@ -170,6 +170,489 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             || Quaternion.Angle(entry.orb.transform.localRotation, entry.rot) > rotThreshold;
     }
 
+    static Material _redistributeTemplatePreviewMaterial;
+
+    static Material GetOrCreateRedistributeTemplatePreviewMaterial()
+    {
+        if (_redistributeTemplatePreviewMaterial != null) return _redistributeTemplatePreviewMaterial;
+        Shader sh = Shader.Find("Universal Render Pipeline/Lit");
+        if (sh == null) sh = Shader.Find("Standard");
+        if (sh == null) sh = Shader.Find("Unlit/Color");
+        _redistributeTemplatePreviewMaterial = new Material(sh);
+        var c = new Color(0.22f, 0.9f, 0.32f, 0.45f);
+        if (_redistributeTemplatePreviewMaterial.HasProperty("_BaseColor"))
+            _redistributeTemplatePreviewMaterial.SetColor("_BaseColor", c);
+        if (_redistributeTemplatePreviewMaterial.HasProperty("_Color"))
+            _redistributeTemplatePreviewMaterial.color = c;
+        if (_redistributeTemplatePreviewMaterial.HasProperty("_Surface"))
+            _redistributeTemplatePreviewMaterial.SetFloat("_Surface", 1f);
+        if (_redistributeTemplatePreviewMaterial.HasProperty("_Blend"))
+            _redistributeTemplatePreviewMaterial.SetFloat("_Blend", 0f);
+        _redistributeTemplatePreviewMaterial.renderQueue = 3000;
+        return _redistributeTemplatePreviewMaterial;
+    }
+
+    static void ConfigureRedistributeTemplatePrimitive(GameObject go, bool keepColliderForPicking)
+    {
+        if (go == null) return;
+        var col = go.GetComponent<Collider>();
+        if (col != null)
+        {
+            if (!keepColliderForPicking)
+                UnityEngine.Object.Destroy(col);
+            else
+            {
+                // Atoms use non-kinematic Rigidbodies (3D prefab). A solid pick collider on this preview can overlap
+                // the atom/orbital and the physics engine depenetrates — reads as the atom being "pushed" or shaking.
+                // Triggers do not apply contact resolution; raycasts still hit them when Physics.queriesHitTriggers is true.
+                col.isTrigger = true;
+            }
+        }
+        var r = go.GetComponent<Renderer>();
+        if (r != null)
+        {
+            r.shadowCastingMode = ShadowCastingMode.Off;
+            r.receiveShadows = false;
+        }
+    }
+
+    static string BuildRedistributeTemplateStemDescription(AtomFunction pivot, ElectronOrbitalFunction orb)
+    {
+        if (pivot == null) return "Template stem: nucleus anchor toward target hybrid tip.";
+        string sym = AtomFunction.GetElementSymbol(pivot.AtomicNumber);
+        string orbName = orb != null ? orb.gameObject.name : "orbital";
+        return "Stem — " + sym + " (" + pivot.name + "): anchor toward VSEPR target along hybrid axis · " + orbName;
+    }
+
+    static string BuildRedistributeTemplateTipDescription(AtomFunction pivot, ElectronOrbitalFunction orb)
+    {
+        if (pivot == null) return "Template tip: target hybrid direction endpoint.";
+        string sym = AtomFunction.GetElementSymbol(pivot.AtomicNumber);
+        string orbName = orb != null ? orb.gameObject.name : "orbital";
+        return "Tip — " + sym + " (" + pivot.name + "): hybrid target endpoint · " + orbName;
+    }
+
+    /// <summary>World anchor (orbital parent local origin) and tip along target +X hybrid direction for preview visuals.</summary>
+    static bool TryGetRedistributeTemplateAnchorAndTipWorld(
+        AtomFunction pivot,
+        ElectronOrbitalFunction orb,
+        Vector3 localPos,
+        Quaternion localRot,
+        out Vector3 anchorWorld,
+        out Vector3 tipWorld)
+    {
+        anchorWorld = default;
+        tipWorld = default;
+        if (pivot == null || orb == null) return false;
+        Transform parent = orb.transform.parent;
+        if (parent == null) return false;
+        anchorWorld = parent.TransformPoint(localPos);
+        Vector3 tipDir = pivot.GetRedistributeTargetHybridTipWorldFromTuple(orb, localRot);
+        if (tipDir.sqrMagnitude < 1e-16f) return false;
+        tipDir.Normalize();
+        float tipLen = Mathf.Max(0.08f, pivot.BondRadius * 0.52f);
+        tipWorld = anchorWorld + tipDir * tipLen;
+        return true;
+    }
+
+    static bool TryAddRedistributeTemplateTipVisual(Transform root, AtomFunction pivot, (ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot) entry)
+    {
+        if (!TryGetRedistributeTemplateAnchorAndTipWorld(pivot, entry.orb, entry.pos, entry.rot, out var anchorW, out var tipW))
+            return false;
+        return AddRedistributeTemplateStemAndTipWorld(root, anchorW, tipW, pivot, entry.orb);
+    }
+
+    /// <summary>Green stem + tip from explicit world anchor/tip (phase 3: current orbital pose after step-2 lerp).</summary>
+    /// <remarks>
+    /// Tip/Stem GameObject names use the orbital instance id so stepped-phase transitions can match the same lobe across
+    /// phases. Sequential indices (0,1,2…) were wrong when <see cref="SigmaFormationRedistTargetHasSignificantDelta"/> left different sets between phases.
+    /// </remarks>
+    static bool AddRedistributeTemplateStemAndTipWorld(
+        Transform root,
+        Vector3 anchorWorld,
+        Vector3 tipWorld,
+        AtomFunction pivot,
+        ElectronOrbitalFunction orbForDescription)
+    {
+        if (root == null || pivot == null) return false;
+        string idSuffix = orbForDescription != null ? orbForDescription.GetInstanceID().ToString() : "0";
+        var m = GetOrCreateRedistributeTemplatePreviewMaterial();
+        Vector3 seg = tipWorld - anchorWorld;
+        float dist = seg.magnitude;
+        float sphR = Mathf.Max(0.035f, pivot.BondRadius * 0.07f);
+        var tipGo = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        tipGo.name = "Tip_" + idSuffix;
+        tipGo.transform.SetParent(root, false);
+        tipGo.transform.position = tipWorld;
+        tipGo.transform.localScale = Vector3.one * (sphR * 2f);
+        ConfigureRedistributeTemplatePrimitive(tipGo, true);
+        var rend = tipGo.GetComponent<Renderer>();
+        if (rend != null && m != null) rend.sharedMaterial = m;
+        var tipPick = tipGo.AddComponent<BondFormationTemplatePreviewPick>();
+        tipPick.SetDescription(BuildRedistributeTemplateTipDescription(pivot, orbForDescription));
+        if (dist > 1e-4f)
+        {
+            var cylGo = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            cylGo.name = "Stem_" + idSuffix;
+            cylGo.transform.SetParent(root, false);
+            cylGo.transform.SetPositionAndRotation(
+                anchorWorld + seg * 0.5f,
+                Quaternion.FromToRotation(Vector3.up, seg.normalized));
+            float cylRad = Mathf.Max(0.012f, pivot.BondRadius * 0.028f);
+            cylGo.transform.localScale = new Vector3(cylRad * 2f, dist * 0.5f, cylRad * 2f);
+            // No collider: primitive capsule/mesh under non-uniform scale misses raycasts; stem uses ray-vs-segment picking.
+            ConfigureRedistributeTemplatePrimitive(cylGo, false);
+            var rendC = cylGo.GetComponent<Renderer>();
+            if (rendC != null && m != null) rendC.sharedMaterial = m;
+            var stemPick = cylGo.AddComponent<BondFormationTemplatePreviewPick>();
+            stemPick.SetDescription(BuildRedistributeTemplateStemDescription(pivot, orbForDescription));
+            var stemRay = cylGo.AddComponent<BondFormationTemplateStemRayPick>();
+            float stemPickRad = Mathf.Max(cylRad * 5f, 0.03f);
+            stemRay.SetSegment(anchorWorld, tipWorld, stemPickRad, stemPick);
+            var group = new Renderer[] { rend, rendC };
+            tipPick.SetLinkedOrbital(orbForDescription, group);
+            stemPick.SetLinkedOrbital(orbForDescription, group);
+        }
+        else
+            tipPick.SetLinkedOrbital(orbForDescription, new Renderer[] { rend });
+        return true;
+    }
+
+    static GameObject CreateRedistributeTemplatePreviewFromCurrentWorldTips(
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistA,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistB,
+        float posThreshold,
+        float rotThreshold)
+    {
+        if (sourceAtom == null || targetAtom == null) return null;
+        var root = new GameObject("RedistributeTemplatePreviewWorld");
+        int n = 0;
+        void AddForPivot(AtomFunction pivot, (ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot) e)
+        {
+            if (!SigmaFormationRedistTargetHasSignificantDelta(e, pivot, posThreshold, rotThreshold)) return;
+            if (e.orb == null) return;
+            Vector3 anchorW = e.orb.transform.position;
+            Vector3 tipDirW = e.orb.transform.TransformDirection(Vector3.right);
+            if (tipDirW.sqrMagnitude < 1e-16f) return;
+            tipDirW.Normalize();
+            float tipLen = Mathf.Max(0.08f, pivot.BondRadius * 0.52f);
+            Vector3 tipW = anchorW + tipDirW * tipLen;
+            if (AddRedistributeTemplateStemAndTipWorld(root.transform, anchorW, tipW, pivot, e.orb)) n++;
+        }
+        if (redistA != null)
+            foreach (var e in redistA) AddForPivot(sourceAtom, e);
+        if (redistB != null)
+            foreach (var e in redistB) AddForPivot(targetAtom, e);
+        if (n == 0)
+        {
+            UnityEngine.Object.Destroy(root);
+            return null;
+        }
+        root.AddComponent<BondFormationTemplatePreviewInput>();
+        return root;
+    }
+
+    static GameObject CreateRedistributeTemplatePreviewRoot(
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistA,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistB,
+        float posThreshold,
+        float rotThreshold)
+    {
+        if (sourceAtom == null || targetAtom == null) return null;
+        var root = new GameObject("RedistributeTemplatePreview");
+        int n = 0;
+        if (redistA != null)
+        {
+            foreach (var e in redistA)
+            {
+                if (!SigmaFormationRedistTargetHasSignificantDelta(e, sourceAtom, posThreshold, rotThreshold)) continue;
+                if (TryAddRedistributeTemplateTipVisual(root.transform, sourceAtom, e)) n++;
+            }
+        }
+        if (redistB != null)
+        {
+            foreach (var e in redistB)
+            {
+                if (!SigmaFormationRedistTargetHasSignificantDelta(e, targetAtom, posThreshold, rotThreshold)) continue;
+                if (TryAddRedistributeTemplateTipVisual(root.transform, targetAtom, e)) n++;
+            }
+        }
+        if (n == 0)
+        {
+            UnityEngine.Object.Destroy(root);
+            return null;
+        }
+        root.AddComponent<BondFormationTemplatePreviewInput>();
+        return root;
+    }
+
+    /// <summary>Stepped HUD only — from target tuples (same geometry as timed preview, separate code path).</summary>
+    static GameObject CreateBondStepDebugTemplatePreviewFromRedistributeTargets(
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistA,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistB,
+        float posThreshold,
+        float rotThreshold) =>
+        CreateRedistributeTemplatePreviewRoot(sourceAtom, targetAtom, redistA, redistB, posThreshold, rotThreshold);
+
+    /// <summary>Stepped HUD only — from current world orbital tips after step-2 pose (phase 3).</summary>
+    static GameObject CreateBondStepDebugTemplatePreviewFromCurrentWorldTips(
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistA,
+        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistB,
+        float posThreshold,
+        float rotThreshold) =>
+        CreateRedistributeTemplatePreviewFromCurrentWorldTips(sourceAtom, targetAtom, redistA, redistB, posThreshold, rotThreshold);
+
+    static readonly List<CovalentBond> BondSteppedGuideBondLines = new List<CovalentBond>();
+
+    /// <summary>Previous phase template root kept between 1→2 and 2→3; cleared after phase 3 or when stepped mode cancels.</summary>
+    static GameObject s_steppedTemplatePreviewHandoff;
+
+    const float SteppedTemplatePhaseTransitionDuration = 0.55f;
+
+    static void SetTemplatePreviewRenderersEnabled(GameObject root, bool enabled)
+    {
+        if (root == null) return;
+        foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+            if (r != null) r.enabled = enabled;
+    }
+
+    static void SetTemplatePreviewInputEnabled(GameObject root, bool enabled)
+    {
+        if (root == null) return;
+        var inp = root.GetComponent<BondFormationTemplatePreviewInput>();
+        if (inp != null) inp.enabled = enabled;
+    }
+
+    /// <summary>Lerp matched Tip_{orbInstanceId}/Stem_{orbInstanceId} transforms from old preview toward new; then destroy old. New is hidden until the end.</summary>
+    static IEnumerator CoAnimateSteppedTemplatePhaseTransition(GameObject oldRoot, GameObject newRoot)
+    {
+        if (oldRoot == null || newRoot == null) yield break;
+
+        SetTemplatePreviewInputEnabled(oldRoot, false);
+        SetTemplatePreviewInputEnabled(newRoot, false);
+        SetTemplatePreviewRenderersEnabled(newRoot, false);
+
+        var newByName = new Dictionary<string, Transform>(16);
+        foreach (Transform c in newRoot.transform)
+            newByName[c.name] = c;
+
+        var lerpParts = new List<(Transform t, Vector3 p0, Vector3 p1, Quaternion r0, Quaternion r1, Vector3 s0, Vector3 s1,
+            BondFormationTemplateStemRayPick ray, bool hasRay, Vector3 sa0, Vector3 sa1, Vector3 sb0, Vector3 sb1)>(16);
+
+        foreach (Transform oldTr in oldRoot.transform)
+        {
+            if (!newByName.TryGetValue(oldTr.name, out var newTr)) continue;
+
+            var rayOld = oldTr.GetComponent<BondFormationTemplateStemRayPick>();
+            var rayNew = newTr.GetComponent<BondFormationTemplateStemRayPick>();
+            bool hasRay = rayOld != null && rayNew != null;
+            Vector3 sa0 = default, sa1 = default, sb0 = default, sb1 = default;
+            if (hasRay)
+            {
+                sa0 = rayOld.SegmentAWorld;
+                sb0 = rayOld.SegmentBWorld;
+                sa1 = rayNew.SegmentAWorld;
+                sb1 = rayNew.SegmentBWorld;
+            }
+
+            lerpParts.Add((
+                oldTr,
+                oldTr.position, newTr.position,
+                oldTr.rotation, newTr.rotation,
+                oldTr.localScale, newTr.localScale,
+                rayOld, hasRay,
+                sa0, sa1, sb0, sb1));
+        }
+
+        if (lerpParts.Count == 0)
+        {
+            UnityEngine.Object.Destroy(oldRoot);
+            SetTemplatePreviewRenderersEnabled(newRoot, true);
+            SetTemplatePreviewInputEnabled(newRoot, true);
+            yield break;
+        }
+
+        float dur = Mathf.Max(0.04f, SteppedTemplatePhaseTransitionDuration);
+        for (float t = 0f; t < dur; t += Time.deltaTime)
+        {
+            float u = Mathf.Clamp01(t / dur);
+            u = u * u * (3f - 2f * u);
+            for (int i = 0; i < lerpParts.Count; i++)
+            {
+                var x = lerpParts[i];
+                x.t.SetPositionAndRotation(
+                    Vector3.Lerp(x.p0, x.p1, u),
+                    Quaternion.Slerp(x.r0, x.r1, u));
+                x.t.localScale = Vector3.Lerp(x.s0, x.s1, u);
+                if (x.hasRay && x.ray != null)
+                {
+                    x.ray.SegmentAWorld = Vector3.Lerp(x.sa0, x.sa1, u);
+                    x.ray.SegmentBWorld = Vector3.Lerp(x.sb0, x.sb1, u);
+                }
+            }
+            yield return null;
+        }
+
+        for (int i = 0; i < lerpParts.Count; i++)
+        {
+            var x = lerpParts[i];
+            x.t.SetPositionAndRotation(x.p1, x.r1);
+            x.t.localScale = x.s1;
+            if (x.hasRay && x.ray != null)
+            {
+                x.ray.SegmentAWorld = x.sa1;
+                x.ray.SegmentBWorld = x.sb1;
+            }
+        }
+
+        UnityEngine.Object.Destroy(oldRoot);
+        SetTemplatePreviewRenderersEnabled(newRoot, true);
+        SetTemplatePreviewInputEnabled(newRoot, true);
+    }
+
+    static bool CovalentBondsSameAtomPairForStepDebug(CovalentBond a, CovalentBond b)
+    {
+        if (a == null || b == null || a.AtomA == null || a.AtomB == null || b.AtomA == null || b.AtomB == null) return false;
+        return (a.AtomA == b.AtomA && a.AtomB == b.AtomB) || (a.AtomA == b.AtomB && a.AtomB == b.AtomA);
+    }
+
+    /// <summary>All σ/π line visuals on the resolved guide multiply-bond pair (or operation pair if guide has no bond).</summary>
+    static void CollectGuideBondsForBondStepDebug(
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        CovalentBond opBond,
+        ElectronOrbitalFunction bondBreakGuideSource,
+        ElectronOrbitalFunction bondBreakGuideTarget,
+        List<CovalentBond> dst)
+    {
+        dst.Clear();
+        if (opBond == null) return;
+        AtomFunction.OrderPairAtomsForRedistributionGuideTier(
+            sourceAtom, targetAtom, opBond, bondBreakGuideSource, bondBreakGuideTarget, out var first, out var second);
+        var bgFirst = first == sourceAtom ? bondBreakGuideSource : bondBreakGuideTarget;
+        var bgSecond = second == sourceAtom ? bondBreakGuideSource : bondBreakGuideTarget;
+        CovalentBond anchorBond = opBond;
+        if (first != null && first.TryGetRedistributionGuideBondAnchorForSteppedDebug(opBond, bgFirst, out var gb1) && gb1 != null)
+            anchorBond = gb1;
+        else if (second != null && second.TryGetRedistributionGuideBondAnchorForSteppedDebug(opBond, bgSecond, out var gb2) && gb2 != null)
+            anchorBond = gb2;
+        var seen = new HashSet<CovalentBond>();
+        void AddFrom(AtomFunction atom)
+        {
+            if (atom == null) return;
+            foreach (var cb in atom.CovalentBonds)
+            {
+                if (cb == null) continue;
+                if (!CovalentBondsSameAtomPairForStepDebug(cb, anchorBond)) continue;
+                if (seen.Add(cb)) dst.Add(cb);
+            }
+        }
+        AddFrom(sourceAtom);
+        AddFrom(targetAtom);
+    }
+
+    static void BondSteppedDebugSetGuideClusterHighlight(
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        CovalentBond opBond,
+        ElectronOrbitalFunction bondBreakGuideSource,
+        ElectronOrbitalFunction bondBreakGuideTarget,
+        bool highlightOn)
+    {
+        if (!highlightOn)
+        {
+            foreach (var b in BondSteppedGuideBondLines)
+                if (b != null) b.SetBondFormationDebugGuideHighlight(false);
+            BondSteppedGuideBondLines.Clear();
+            return;
+        }
+        BondSteppedGuideBondLines.Clear();
+        CollectGuideBondsForBondStepDebug(
+            sourceAtom, targetAtom, opBond, bondBreakGuideSource, bondBreakGuideTarget, BondSteppedGuideBondLines);
+        foreach (var b in BondSteppedGuideBondLines)
+            if (b != null) b.SetBondFormationDebugGuideHighlight(true);
+    }
+
+    /// <summary>After clearing template pick (red) from bond cylinder, restore green guide tint if stepped debug is active.</summary>
+    internal static void ReapplyBondSteppedGuideClusterHighlightAfterPickClear()
+    {
+        foreach (var b in BondSteppedGuideBondLines)
+            if (b != null) b.SetBondFormationDebugGuideHighlight(true);
+    }
+
+    /// <summary>Bond steps HUD: green template preview + guide multiply-bond line tint. Keeps guide cylinders/lines tinted and template visible between phases 1–2 and 2–3; animates template morph when advancing.</summary>
+    static IEnumerator CoBondSteppedDebugPauseWithTemplate(
+        int phase,
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        CovalentBond opBond,
+        ElectronOrbitalFunction bondBreakGuideSource,
+        ElectronOrbitalFunction bondBreakGuideTarget,
+        Func<GameObject> createTemplatePreviewRoot)
+    {
+        GameObject preview = null;
+        BondSteppedDebugSetGuideClusterHighlight(
+            sourceAtom, targetAtom, opBond, bondBreakGuideSource, bondBreakGuideTarget, true);
+        try
+        {
+            if (phase == 1 && s_steppedTemplatePreviewHandoff != null)
+            {
+                UnityEngine.Object.Destroy(s_steppedTemplatePreviewHandoff);
+                s_steppedTemplatePreviewHandoff = null;
+            }
+
+            GameObject newRoot = createTemplatePreviewRoot != null ? createTemplatePreviewRoot() : null;
+
+            if (s_steppedTemplatePreviewHandoff != null && newRoot != null)
+            {
+                yield return CoAnimateSteppedTemplatePhaseTransition(s_steppedTemplatePreviewHandoff, newRoot);
+                s_steppedTemplatePreviewHandoff = null;
+                preview = newRoot;
+            }
+            else if (s_steppedTemplatePreviewHandoff != null && newRoot == null)
+            {
+                UnityEngine.Object.Destroy(s_steppedTemplatePreviewHandoff);
+                s_steppedTemplatePreviewHandoff = null;
+                preview = null;
+            }
+            else
+                preview = newRoot;
+
+            yield return BondFormationDebugController.WaitPhase(phase);
+        }
+        finally
+        {
+            bool steppedStillOn = BondFormationDebugController.SteppedModeEnabled;
+            bool fullCleanup = !steppedStillOn || phase >= 3;
+
+            if (fullCleanup)
+            {
+                if (preview != null)
+                {
+                    UnityEngine.Object.Destroy(preview);
+                    preview = null;
+                }
+                if (s_steppedTemplatePreviewHandoff != null)
+                {
+                    UnityEngine.Object.Destroy(s_steppedTemplatePreviewHandoff);
+                    s_steppedTemplatePreviewHandoff = null;
+                }
+                BondSteppedDebugSetGuideClusterHighlight(
+                    sourceAtom, targetAtom, opBond, bondBreakGuideSource, bondBreakGuideTarget, false);
+            }
+            else if (preview != null)
+                s_steppedTemplatePreviewHandoff = preview;
+        }
+    }
+
     static void LogSigmaFormationStep2Precalc(
         AtomFunction sourceAtom,
         AtomFunction targetAtom,
@@ -485,12 +968,46 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
     bool editSelectionHighlightActive;
 
+    MeshRenderer GetPrimaryBodyMeshRendererForVisual()
+    {
+        var mr = GetComponent<MeshRenderer>();
+        if (mr != null) return mr;
+        if (mainMeshRenderer != null) return mainMeshRenderer;
+        foreach (var r in GetComponentsInChildren<MeshRenderer>(true))
+        {
+            if (r.GetComponent<ElectronFunction>() != null) continue;
+            return r;
+        }
+        return null;
+    }
+
     /// <summary>Highlight this orbital in edit mode by raising body opacity (no ring overlay).</summary>
     public void SetHighlighted(bool on)
     {
         editSelectionHighlightActive = on;
         DestroyLegacyOrbitalOutlineDecorations();
         ApplyOrbitalEditSelectionVisual(on);
+    }
+
+    /// <summary>Redistribute template preview click: tint main orbital body red (bond line uses <see cref="CovalentBond.SetBondFormationTemplatePickHighlight"/>).</summary>
+    public void SetBondFormationTemplatePickHighlight(bool on)
+    {
+        var sr = GetComponent<SpriteRenderer>();
+        var mr = GetPrimaryBodyMeshRendererForVisual();
+        if (sr == null && mr == null) return;
+        EnsureOriginalColorFromRenderer();
+        if (!on)
+        {
+            if (editSelectionHighlightActive)
+                ApplyOrbitalEditSelectionVisual(true);
+            else
+                ApplyOrbitalVisualOpacity(sr, mr);
+            return;
+        }
+        float a = Mathf.Clamp01(originalColor.a);
+        Color red = new Color(0.95f, 0.2f, 0.2f, Mathf.Max(0.35f, a));
+        if (sr != null) sr.color = red;
+        else if (mr != null) SetMaterialTint(mr.material, red);
     }
 
     void DestroyLegacyOrbitalOutlineDecorations()
@@ -508,7 +1025,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     {
         if (originalColor.a >= 0.01f) return;
         var sr = GetComponent<SpriteRenderer>();
-        var mr = GetComponent<MeshRenderer>();
+        var mr = GetPrimaryBodyMeshRendererForVisual();
         if (sr != null) originalColor = sr.color;
         else if (mr != null && mr.sharedMaterial != null) originalColor = GetMaterialTint(mr.sharedMaterial);
     }
@@ -516,7 +1033,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     void ApplyOrbitalEditSelectionVisual(bool selected)
     {
         var sr = GetComponent<SpriteRenderer>();
-        var mr = GetComponent<MeshRenderer>();
+        var mr = GetPrimaryBodyMeshRendererForVisual();
         if (sr == null && mr == null) return;
         EnsureOriginalColorFromRenderer();
         if (!selected)
@@ -597,6 +1114,17 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         else if (mat.HasProperty(ShaderPropWhite)) mat.SetColor(ShaderPropWhite, c);
         else if (mat.HasProperty(ShaderPropRendererColor)) mat.SetColor(ShaderPropRendererColor, c);
         else if (mat.HasProperty(ShaderPropColor)) mat.SetColor(ShaderPropColor, c);
+    }
+
+    /// <summary>Template preview stem/tip mesh tint: green default vs red when picked.</summary>
+    public static void SetRedistributeTemplatePreviewRendererPickHighlight(Renderer r, bool highlightRed)
+    {
+        if (r == null) return;
+        var m = r.material;
+        var c = highlightRed
+            ? new Color(0.95f, 0.18f, 0.18f, 0.45f)
+            : new Color(0.22f, 0.9f, 0.32f, 0.45f);
+        SetMaterialTint(m, c);
     }
 
     static Material GetOrCreateTriangleClipMaterial()
@@ -874,6 +1402,17 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             return;
         }
 
+        // Stepped bond debug: selection resolves in OnPointerUp; do not start drag / stretch / bond gestures.
+        if (BondFormationDebugController.IsWaitingForPhase)
+        {
+            orbitalPressHasPairedPointerDown = true;
+            pointerDownPosition = eventData.position;
+            originalLocalPosition = transform.localPosition;
+            originalLocalScale = transform.localScale;
+            originalLocalRotation = transform.localRotation;
+            return;
+        }
+
         orbitalPressHasPairedPointerDown = true;
         isBeingHeld = true;
         pointerDownPosition = eventData.position;
@@ -934,13 +1473,34 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (mainSpriteRenderer != null) mainSpriteRenderer.enabled = true;
         if (mainMeshRenderer != null) mainMeshRenderer.enabled = true;
         RefreshOrbitalBodyVisualAfterDrag();
-        SetPhysicsEnabled(true);
+        var atomForBondBlock = bondedAtom ?? transform.parent?.GetComponent<AtomFunction>();
+        if (atomForBondBlock == null || !atomForBondBlock.IsInteractionBlockedByBondFormation)
+            SetPhysicsEnabled(true);
 
         if (!hadPairedDown)
             return;
 
         bool shortClickNoDrag = (eventData.position - pointerDownPosition).sqrMagnitude <
                                 ShortClickDragThresholdPx * ShortClickDragThresholdPx;
+
+        // Stepped debug wait: selection only (handled here); do not peel, bond, swap, or VSEPR drag.
+        if (BondFormationDebugController.IsWaitingForPhase)
+        {
+            var editModeWait = UnityEngine.Object.FindFirstObjectByType<EditModeManager>();
+            if (editModeWait != null && editModeWait.EditModeActive && bond == null && electronCount == 1 && shortClickNoDrag)
+            {
+                var atomSel = bondedAtom ?? transform.parent?.GetComponent<AtomFunction>();
+                if (atomSel != null)
+                {
+                    editModeWait.OnOrbitalClicked(atomSel, this);
+                    transform.localPosition = originalLocalPosition;
+                    transform.localScale = originalLocalScale;
+                    transform.localRotation = originalLocalRotation;
+                    Reposition3DElectronsAfterOrbitalDrag();
+                }
+            }
+            return;
+        }
 
         if (shortClickNoDrag && bond == null && electronCount >= 1 &&
             TryPeelOneElectronForCarry(eventData.position))
@@ -1647,6 +2207,14 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
             bool step2PoseLoggedS1 = false;
 
+            if (BondFormationDebugController.SteppedModeEnabled)
+            {
+                yield return CoBondSteppedDebugPauseWithTemplate(
+                    1, sourceAtom, targetAtom, bond, null, null,
+                    () => CreateBondStepDebugTemplatePreviewFromRedistributeTargets(
+                        sourceAtom, targetAtom, redistA, redistB, posThreshold, rotThreshold));
+            }
+
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
                 sourceAtom.SnapshotJointFragmentWorldPositionsForTargets(redistA, fragWorldStep2A);
@@ -1659,6 +2227,14 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 targetAtom.SnapshotNucleusParentedSiblingsExcludedFromRedistTargets(redistB, nucleusSiblingStep2B);
                 sourceAtom.LogJointFragRedistLine("start", "sigmaStep2Src", fragWorldStep2A, pivotStartStep2A, sourceAtom.transform.position, -1f, deltaJointStep2A, partnerSummaryStep2A);
                 targetAtom.LogJointFragRedistLine("start", "sigmaStep2Tgt", fragWorldStep2B, pivotStartStep2B, targetAtom.transform.position, -1f, deltaJointStep2B, partnerSummaryStep2B);
+            }
+
+            if (BondFormationDebugController.SteppedModeEnabled)
+            {
+                yield return CoBondSteppedDebugPauseWithTemplate(
+                    2, sourceAtom, targetAtom, bond, null, null,
+                    () => CreateBondStepDebugTemplatePreviewFromRedistributeTargets(
+                        sourceAtom, targetAtom, redistA, redistB, posThreshold, rotThreshold));
             }
 
             for (float t = 0; t < bondAnimStep2Duration; t += Time.deltaTime)
@@ -1843,6 +2419,14 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                     sourceAtom.LogJointFragRedistLine("commit", "sigmaStep2Src", fragWorldStep2A, pivotStartStep2A, sourceAtom.transform.position, 1f, deltaJointStep2A, partnerSummaryStep2A);
                     targetAtom.LogJointFragRedistLine("commit", "sigmaStep2Tgt", fragWorldStep2B, pivotStartStep2B, targetAtom.transform.position, 1f, deltaJointStep2B, partnerSummaryStep2B);
                 }
+            }
+
+            if (BondFormationDebugController.SteppedModeEnabled)
+            {
+                yield return CoBondSteppedDebugPauseWithTemplate(
+                    3, sourceAtom, targetAtom, bond, null, null,
+                    () => CreateBondStepDebugTemplatePreviewFromCurrentWorldTips(
+                        sourceAtom, targetAtom, redistA, redistB, posThreshold, rotThreshold));
             }
         }
 
@@ -2364,8 +2948,22 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         int lastPiJointFragBucket = -1;
         Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)> nucleusSiblingPiA = null;
         Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)> nucleusSiblingPiB = null;
+        if (!skipPiStep2 && bond != null && !bond.IsSigmaBondLine() && BondFormationDebugController.SteppedModeEnabled)
+        {
+            yield return CoBondSteppedDebugPauseWithTemplate(
+                1, sourceAtom, targetAtom, bond, null, null,
+                () => CreateBondStepDebugTemplatePreviewFromRedistributeTargets(
+                    sourceAtom, targetAtom, redistA, redistB, piPosThreshold, piRotThreshold));
+        }
         if (!skipPiStep2 && OrbitalAngleUtility.UseFull3DOrbitalGeometry)
         {
+            // #region agent log
+            if (bond != null && !bond.IsSigmaBondLine())
+            {
+                sourceAtom.AppendVertex0SigmaGroupWorldTraceNdjson("pi_step2_entry", bond, 0f);
+                targetAtom.AppendVertex0SigmaGroupWorldTraceNdjson("pi_step2_entry", bond, 0f);
+            }
+            // #endregion
             sourceAtom.SnapshotJointFragmentWorldPositionsForTargets(redistA, fragWorldPiA);
             targetAtom.SnapshotJointFragmentWorldPositionsForTargets(redistB, fragWorldPiB);
             deltaJointPiA = sourceAtom.ComputeJointRedistributeRotationWorldFromTargetsAndStarts(redistA, redistAStarts);
@@ -2374,8 +2972,57 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             nucleusSiblingPiB = new Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)>();
             sourceAtom.SnapshotNucleusParentedSiblingsExcludedFromRedistTargets(redistA, nucleusSiblingPiA);
             targetAtom.SnapshotNucleusParentedSiblingsExcludedFromRedistTargets(redistB, nucleusSiblingPiB);
+            // #region agent log
+            if (bond != null && !bond.IsSigmaBondLine())
+            {
+                float jdaTrace = Quaternion.Angle(Quaternion.identity, deltaJointPiA);
+                float jdbTrace = Quaternion.Angle(Quaternion.identity, deltaJointPiB);
+                sourceAtom.AppendVertex0SigmaGroupWorldTraceNdjson("pi_step2_afterJointCompute", bond, jdaTrace);
+                targetAtom.AppendVertex0SigmaGroupWorldTraceNdjson("pi_step2_afterJointCompute", bond, jdbTrace);
+            }
+            try
+            {
+                int lerpB = 0;
+                for (int i = 0; i < redistB.Count; i++)
+                {
+                    if (ShouldLerpPiRedistRow(redistB[i], targetAtom)) lerpB++;
+                }
+                int lerpA = 0;
+                for (int i = 0; i < redistA.Count; i++)
+                {
+                    if (ShouldLerpPiRedistRow(redistA[i], sourceAtom)) lerpA++;
+                }
+                float jDegA = Quaternion.Angle(Quaternion.identity, deltaJointPiA);
+                float jDegB = Quaternion.Angle(Quaternion.identity, deltaJointPiB);
+                string partnersA = AtomFunction.BuildJointFragSigmaPartnerIdSummary(sourceAtom, redistA);
+                string partnersB = AtomFunction.BuildJointFragSigmaPartnerIdSummary(targetAtom, redistB);
+                string h2 = "{\"skipPiStep2\":" + (skipPiStep2 ? "true" : "false") + ",\"hasRedistMovement\":" + (hasRedistMovement ? "true" : "false")
+                    + ",\"sourceAtBond\":" + (sourceAtBond ? "true" : "false") + ",\"targetAtBond\":" + (targetAtBond ? "true" : "false")
+                    + ",\"neighborTriN\":" + neighborTrigonalMoves.Count
+                    + ",\"srcId\":" + sourceAtom.GetInstanceID() + ",\"srcZ\":" + sourceAtom.AtomicNumber
+                    + ",\"tgtId\":" + targetAtom.GetInstanceID() + ",\"tgtZ\":" + targetAtom.AtomicNumber
+                    + ",\"redistACount\":" + redistA.Count + ",\"redistBCount\":" + redistB.Count
+                    + ",\"lerpRowsA\":" + lerpA + ",\"lerpRowsB\":" + lerpB
+                    + ",\"jointDegSrc\":" + jDegA.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + ",\"jointDegTgt\":" + jDegB.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + ",\"partnersA\":\"" + partnersA.Replace("\"", "") + "\",\"partnersB\":\"" + partnersB.Replace("\"", "") + "\""
+                    + ",\"frame\":" + UnityEngine.Time.frameCount + "}";
+                AtomFunction.AppendOcoCaseDebugNdjson("H2_H4", "CoAnimatePiBondStep2Joint", "pi_step2_joint_start", h2);
+            }
+            catch
+            {
+                /* optional */
+            }
+            // #endregion
             sourceAtom.LogJointFragRedistLine("start", "piStep2Src", fragWorldPiA, pivotStartPiA, sourceAtom.transform.position, -1f, deltaJointPiA, partnerSummaryPiA);
             targetAtom.LogJointFragRedistLine("start", "piStep2Tgt", fragWorldPiB, pivotStartPiB, targetAtom.transform.position, -1f, deltaJointPiB, partnerSummaryPiB);
+            if (bond != null && !bond.IsSigmaBondLine() && BondFormationDebugController.SteppedModeEnabled)
+            {
+                yield return CoBondSteppedDebugPauseWithTemplate(
+                    2, sourceAtom, targetAtom, bond, null, null,
+                    () => CreateBondStepDebugTemplatePreviewFromRedistributeTargets(
+                        sourceAtom, targetAtom, redistA, redistB, piPosThreshold, piRotThreshold));
+            }
         }
 
         AtomFunction.PiStep2VisualBakeState piBakeA = null;
@@ -2428,10 +3075,28 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                     targetAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
                         nucleusSiblingPiB, deltaJointPiB, sEnd, pivotStartPiB, targetAtom.transform.position);
             }
+            // #region agent log
+            if (bond != null && !bond.IsSigmaBondLine())
+            {
+                sourceAtom.AppendVertex0SigmaGroupWorldTraceNdjson(
+                    "pi_step2_afterJointFragLerp_beforeNucleusReset", bond, Quaternion.Angle(Quaternion.identity, deltaJointPiA));
+                targetAtom.AppendVertex0SigmaGroupWorldTraceNdjson(
+                    "pi_step2_afterJointFragLerp_beforeNucleusReset", bond, Quaternion.Angle(Quaternion.identity, deltaJointPiB));
+            }
+            // #endregion
             foreach (var kv in neighborTrigonalMoves)
                 kv.Key.transform.position = kv.Value.end;
             sourceAtom.transform.SetPositionAndRotation(opSourceStartPos, opSourceStartRot);
             targetAtom.transform.SetPositionAndRotation(opTargetStartPos, opTargetStartRot);
+            // #region agent log
+            if (bond != null && !bond.IsSigmaBondLine())
+            {
+                sourceAtom.AppendVertex0SigmaGroupWorldTraceNdjson(
+                    "pi_step2_afterNucleusPoseReset", bond, Quaternion.Angle(Quaternion.identity, deltaJointPiA));
+                targetAtom.AppendVertex0SigmaGroupWorldTraceNdjson(
+                    "pi_step2_afterNucleusPoseReset", bond, Quaternion.Angle(Quaternion.identity, deltaJointPiB));
+            }
+            // #endregion
             if (sourceOrbital != null && bond != null)
             {
                 sourceOrbital.transform.position = Vector3.Lerp(sourceOrbStart.Item1, bondTargetPos, sEnd);
@@ -2468,6 +3133,15 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 sourceAtom.ApplyRedistributeTargets(redistA, skipJointRigidFragmentMotion: piDidJointLocal);
                 targetAtom.ApplyRedistributeTargets(redistB, skipJointRigidFragmentMotion: piDidJointLocal);
             }
+            // #region agent log
+            if (bond != null && !bond.IsSigmaBondLine())
+            {
+                sourceAtom.AppendVertex0SigmaGroupWorldTraceNdjson(
+                    "pi_step2_afterApplyRedist", bond, Quaternion.Angle(Quaternion.identity, deltaJointPiA));
+                targetAtom.AppendVertex0SigmaGroupWorldTraceNdjson(
+                    "pi_step2_afterApplyRedist", bond, Quaternion.Angle(Quaternion.identity, deltaJointPiB));
+            }
+            // #endregion
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
                 sourceAtom.LogJointFragRedistLine("afterApply", "piStep2Src", fragWorldPiA, pivotStartPiA, sourceAtom.transform.position, 1f, deltaJointPiA, partnerSummaryPiA);
@@ -2477,6 +3151,15 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             {
                 sourceAtom.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(targetAtom);
                 targetAtom.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(sourceAtom);
+                // #region agent log
+                if (bond != null && !bond.IsSigmaBondLine())
+                {
+                    sourceAtom.AppendVertex0SigmaGroupWorldTraceNdjson(
+                        "pi_step2_afterRefreshHybrid", bond, Quaternion.Angle(Quaternion.identity, deltaJointPiA));
+                    targetAtom.AppendVertex0SigmaGroupWorldTraceNdjson(
+                        "pi_step2_afterRefreshHybrid", bond, Quaternion.Angle(Quaternion.identity, deltaJointPiB));
+                }
+                // #endregion
                 if (AtomFunction.DebugLogJointFragRedistMilestones)
                 {
                     sourceAtom.LogJointFragRedistLine("afterHybrid", "piStep2Src", fragWorldPiA, pivotStartPiA, sourceAtom.transform.position, 1f, deltaJointPiA, partnerSummaryPiA);
@@ -2661,6 +3344,13 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
             }
         }
+        if (!skipPiStep2 && bond != null && !bond.IsSigmaBondLine() && BondFormationDebugController.SteppedModeEnabled)
+        {
+            yield return CoBondSteppedDebugPauseWithTemplate(
+                3, sourceAtom, targetAtom, bond, null, null,
+                () => CreateBondStepDebugTemplatePreviewFromCurrentWorldTips(
+                    sourceAtom, targetAtom, redistA, redistB, piPosThreshold, piRotThreshold));
+        }
         if (!skipPiStep2 && !usePiVisualBake)
         {
             const float sEnd = 1f;
@@ -2708,10 +3398,28 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                     targetAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
                         nucleusSiblingPiB, deltaJointPiB, sEnd, pivotStartPiB, targetAtom.transform.position);
             }
+            // #region agent log
+            if (bond != null && !bond.IsSigmaBondLine())
+            {
+                sourceAtom.AppendVertex0SigmaGroupWorldTraceNdjson(
+                    "pi_step2_afterJointFragLerp_beforeNucleusReset", bond, Quaternion.Angle(Quaternion.identity, deltaJointPiA));
+                targetAtom.AppendVertex0SigmaGroupWorldTraceNdjson(
+                    "pi_step2_afterJointFragLerp_beforeNucleusReset", bond, Quaternion.Angle(Quaternion.identity, deltaJointPiB));
+            }
+            // #endregion
             foreach (var kv in neighborTrigonalMoves)
                 kv.Key.transform.position = kv.Value.end;
             sourceAtom.transform.SetPositionAndRotation(opSourceStartPos, opSourceStartRot);
             targetAtom.transform.SetPositionAndRotation(opTargetStartPos, opTargetStartRot);
+            // #region agent log
+            if (bond != null && !bond.IsSigmaBondLine())
+            {
+                sourceAtom.AppendVertex0SigmaGroupWorldTraceNdjson(
+                    "pi_step2_afterNucleusPoseReset", bond, Quaternion.Angle(Quaternion.identity, deltaJointPiA));
+                targetAtom.AppendVertex0SigmaGroupWorldTraceNdjson(
+                    "pi_step2_afterNucleusPoseReset", bond, Quaternion.Angle(Quaternion.identity, deltaJointPiB));
+            }
+            // #endregion
             if (sourceOrbital != null && bond != null)
             {
                 sourceOrbital.transform.position = Vector3.Lerp(sourceOrbStart.Item1, bondTargetPos, sEnd);
@@ -3393,7 +4101,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (editSelectionHighlightActive)
             ApplyOrbitalEditSelectionVisual(true);
         else
-            ApplyOrbitalVisualOpacity(GetComponent<SpriteRenderer>(), GetComponent<MeshRenderer>());
+            ApplyOrbitalVisualOpacity(GetComponent<SpriteRenderer>() ?? mainSpriteRenderer, GetPrimaryBodyMeshRendererForVisual());
     }
 
     void IgnoreCollisionsWithChildren()
