@@ -640,15 +640,21 @@ public class EditModeManager : MonoBehaviour
 
         if (anchorHasBondingLone)
         {
-            Vector3 dirToSelected = (selectedAtom.transform.position - newAtom.transform.position).normalized;
-            var newOrb = newAtom.GetLoneOrbitalWithOneElectron(dirToSelected);
+            var anchor = selectedAtom;
+            // Anti-parallel to anchor lobe so the new center's σ orbital faces the target lobe (bond axis).
+            Vector3 dirNewLobeTowardAnchor = -OrbitalAngleUtility.GetOrbitalDirectionWorld(orb.transform);
+            if (dirNewLobeTowardAnchor.sqrMagnitude < 1e-10f)
+                dirNewLobeTowardAnchor = (selectedAtom.transform.position - newAtom.transform.position).normalized;
+
+            var newOrb = newAtom.GetLoneOrbitalWithOneElectron(dirNewLobeTowardAnchor);
             if (newOrb == null)
             {
                 Destroy(newAtomGo);
                 return false;
             }
 
-            var anchor = selectedAtom;
+            newAtom.RotateAboutCenterSoOrbitalLobePointsWorld(newOrb, dirNewLobeTowardAnchor, anchor, orb);
+
             bool heavyHeavy = atomicNumber > 1 && anchor.AtomicNumber > 1;
             bool hOnHeavy = atomicNumber == 1 && anchor.AtomicNumber > 1;
             // Heavy–heavy: keep anchor geometry (chain extend). H→heavy: do not run full anchor redistribute here (avoids diverging from heavy–heavy attach; VSEPR H placement uses hDir / newAtom redistribute only).
@@ -768,13 +774,18 @@ public class EditModeManager : MonoBehaviour
             return false;
         }
 
-        Vector3 dirToParent = (parentAtom.transform.position - newAtom.transform.position).normalized;
-        var newOrb = newAtom.GetLoneOrbitalWithOneElectron(dirToParent);
+        Vector3 dirNewLobeTowardParent = -OrbitalAngleUtility.GetOrbitalDirectionWorld(parentOrb.transform);
+        if (dirNewLobeTowardParent.sqrMagnitude < 1e-10f)
+            dirNewLobeTowardParent = (parentAtom.transform.position - newAtom.transform.position).normalized;
+
+        var newOrb = newAtom.GetLoneOrbitalWithOneElectron(dirNewLobeTowardParent);
         if (newOrb == null)
         {
             Destroy(newAtomGo);
             return false;
         }
+
+        newAtom.RotateAboutCenterSoOrbitalLobePointsWorld(newOrb, dirNewLobeTowardParent, parentAtom, parentOrb);
 
         // H-auto saturation (and work-plane sync) can shift apparent framing; freeze perspective camera + orbit pivot for this replace sequence.
         bool preserveCamView = hAutoMode && Camera.main != null && !Camera.main.orthographic;

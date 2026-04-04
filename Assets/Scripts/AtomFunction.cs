@@ -8689,6 +8689,176 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return best;
     }
 
+    /// <summary>
+    /// Rotate this atom about its nucleus so <paramref name="orbital"/>'s lobe axis (local +X) matches <paramref name="worldDirection"/>.
+    /// Rigidly carries all orbitals and electrons (whole VSEPR shell); used when spawning a partner so the σ lobe faces the anchor orbital.
+    /// When <paramref name="staggerVsPartner"/> is set, applies a Newman ψ twist about the child→partner axis (~60° vs the partner’s σ
+    /// projections when both sides are trigonal) so the three non-bonding groups are staggered relative to the existing center’s conformation.
+    /// Pass <paramref name="partnerOrbitalTowardThis"/> (anchor lobe used for the new σ) when the partner has no σ neighbors yet so stagger can use the partner’s other lobes as the “back” reference.
+    /// </summary>
+    public void RotateAboutCenterSoOrbitalLobePointsWorld(
+        ElectronOrbitalFunction orbital,
+        Vector3 worldDirection,
+        AtomFunction staggerVsPartner = null,
+        ElectronOrbitalFunction partnerOrbitalTowardThis = null)
+    {
+        if (orbital == null || worldDirection.sqrMagnitude < 1e-14f) return;
+        Vector3 d0 = OrbitalAngleUtility.GetOrbitalDirectionWorld(orbital.transform);
+        Vector3 d1 = worldDirection.normalized;
+        if (d0.sqrMagnitude < 1e-14f) return;
+        transform.rotation = Quaternion.FromToRotation(d0, d1) * transform.rotation;
+
+        if (staggerVsPartner == null) return;
+        if (!TryComputeNewmanStaggerPsiForEditAttach(staggerVsPartner, orbital, partnerOrbitalTowardThis, out float psiDeg)
+            || Mathf.Abs(psiDeg) < 0.01f)
+            return;
+
+        Vector3 ax = staggerVsPartner.transform.position - transform.position;
+        if (ax.sqrMagnitude < 1e-14f) return;
+        ax.Normalize();
+        // Bond lobe is along this axis; twist preserves its direction.
+        transform.rotation = Quaternion.AngleAxis(psiDeg, ax) * transform.rotation;
+    }
+
+    /// <summary>σ-neighbor list can be empty before the new bond exists; use partner lobe directions (excluding the bond lobe) as Newman “back” references.</summary>
+    static void AppendParentNewmanProjectionsFromPartnerLobes(
+        AtomFunction partner,
+        Vector3 bondPartnerToChildUnit,
+        ElectronOrbitalFunction excludeOrbitalTowardChild,
+        List<Vector3> parentProj)
+    {
+        if (partner == null) return;
+        foreach (var o in partner.bondedOrbitals)
+        {
+            if (o == null || o == excludeOrbitalTowardChild) continue;
+            if (o.ElectronCount <= 0) continue;
+            Vector3 v = OrbitalAngleUtility.GetOrbitalDirectionWorld(o.transform);
+            if (v.sqrMagnitude < 1e-10f) continue;
+            Vector3 p = v - Vector3.Dot(v, bondPartnerToChildUnit) * bondPartnerToChildUnit;
+            if (p.sqrMagnitude < 1e-8f) continue;
+            parentProj.Add(p.normalized);
+        }
+    }
+
+    /// <summary>
+    /// Newman ψ (degrees) about axis this→<paramref name="partner"/> to stagger occupied non-bond lobes vs partner’s σ substituents.
+    /// Bond to partner need not exist yet (edit spawn). Uses the same scoring as <see cref="TryComputeNewmanStaggerPsi"/> where applicable.
+    /// When the partner has no σ-bonded atoms yet, <paramref name="partnerOrbitalTowardThis"/> supplies the “back” Newman reference via other occupied lobes.
+    /// </summary>
+    bool TryComputeNewmanStaggerPsiForEditAttach(
+        AtomFunction partner,
+        ElectronOrbitalFunction bondingOrbitalOnChild,
+        ElectronOrbitalFunction partnerOrbitalTowardThis,
+        out float psiDeg)
+    {
+        psiDeg = 0f;
+        if (partner == null || bondingOrbitalOnChild == null) return false;
+
+        Vector3 axis = partner.transform.position - transform.position;
+        if (axis.sqrMagnitude < 1e-10f) return false;
+        axis.Normalize();
+
+        Vector3 bondParentToChild = transform.position - partner.transform.position;
+        if (bondParentToChild.sqrMagnitude < 1e-10f) return false;
+        bondParentToChild.Normalize();
+
+        var parentProj = new List<Vector3>();
+        foreach (var n in partner.GetDistinctSigmaNeighborAtoms())
+        {
+            if (n == null || n == this) continue;
+            Vector3 v = n.transform.position - partner.transform.position;
+            if (v.sqrMagnitude < 1e-10f) continue;
+            v.Normalize();
+            Vector3 p = v - Vector3.Dot(v, bondParentToChild) * bondParentToChild;
+            if (p.sqrMagnitude < 1e-8f) continue;
+            parentProj.Add(p.normalized);
+        }
+
+        if (parentProj.Count == 0 && partnerOrbitalTowardThis != null)
+            AppendParentNewmanProjectionsFromPartnerLobes(partner, bondParentToChild, partnerOrbitalTowardThis, parentProj);
+
+        if (parentProj.Count == 0)
+            return false;
+
+        var childRadial = new List<Vector3>();
+        foreach (var orb in bondedOrbitals)
+        {
+            if (orb == null || orb == bondingOrbitalOnChild || orb.Bond != null) continue;
+            if (orb.ElectronCount <= 0) continue;
+            Vector3 dW = OrbitalAngleUtility.GetOrbitalDirectionWorld(orb.transform);
+            if (dW.sqrMagnitude < 1e-10f) continue;
+            childRadial.Add(dW.normalized);
+        }
+        if (childRadial.Count == 0)
+            return false;
+
+        var childHDirForTrigonal = new List<Vector3>();
+        foreach (var n in GetDistinctSigmaNeighborAtoms())
+        {
+            if (n == null || n == partner || n.AtomicNumber != 1) continue;
+            Vector3 d = n.transform.position - transform.position;
+            if (d.sqrMagnitude < 1e-10f) continue;
+            childHDirForTrigonal.Add(d.normalized);
+        }
+
+        float bestPsi = 0f;
+        if (childHDirForTrigonal.Count == 3 && childRadial.Count == 3
+            && TryTrigonalMethylNewmanStaggerPsiDegrees(parentProj, childHDirForTrigonal, axis, out bestPsi))
+        {
+            // Rare at spawn: three σ-H on the new center (same closed form as TryComputeNewmanStaggerPsi).
+        }
+        else if (parentProj.Count == 3 && childRadial.Count == 3
+                 && TryTrigonalMethylNewmanStaggerPsiDegrees(parentProj, childRadial, axis, out bestPsi))
+        {
+            // Typical edit add: tetrahedral new center — three occupied non-bond lobes vs partner’s three σ projections (~60° stagger).
+        }
+        else
+        {
+            const float stepDeg = 10f;
+            float bestScore = float.MaxValue;
+            float bestMinSep = -1f;
+            for (float psi = 0f; psi < 359.99f; psi += stepDeg)
+            {
+                Quaternion r = Quaternion.AngleAxis(psi, axis);
+                float score = NewmanStaggerEclipseScore(parentProj, childRadial, axis, r);
+                float minSep = NewmanBottleneckMinAngleToBack(parentProj, childRadial, axis, r);
+                bool betterScore = score < bestScore - 1e-4f;
+                bool tiePreferStagger = Mathf.Abs(score - bestScore) <= 1e-4f && minSep > bestMinSep + 0.05f;
+                if (betterScore || tiePreferStagger)
+                {
+                    bestScore = score;
+                    bestPsi = psi;
+                    bestMinSep = minSep;
+                }
+            }
+        }
+
+        if (Mathf.Abs(bestPsi) < 0.01f && childHDirForTrigonal.Count == 0 && childRadial.Count >= 1 && parentProj.Count >= 2)
+        {
+            float b0 = NewmanBottleneckMinAngleToBack(parentProj, childRadial, axis, Quaternion.identity);
+            float bestB = b0;
+            float psiPick = 0f;
+            const float fineStep = 5f;
+            for (float psi = fineStep; psi < 359.99f; psi += fineStep)
+            {
+                Quaternion r = Quaternion.AngleAxis(psi, axis);
+                float b = NewmanBottleneckMinAngleToBack(parentProj, childRadial, axis, r);
+                if (b > bestB + 0.05f)
+                {
+                    bestB = b;
+                    psiPick = psi;
+                }
+            }
+            if (bestB > b0 + 1.5f)
+                bestPsi = psiPick;
+        }
+
+        if (Mathf.Abs(bestPsi) < 0.01f)
+            return false;
+        psiDeg = bestPsi;
+        return true;
+    }
+
     /// <summary>Returns a lone orbital with exactly 1 electron, preferring the one closest to preferredDirection. For programmatic bonding.
     /// After choosing the orbital, place the partner along <see cref="OrbitalAngleUtility.GetOrbitalDirectionWorld"/> for that lobe when
     /// preferredDirection comes from σ-only VSEPR (lone-pair domains are otherwise ignored).</summary>
