@@ -227,10 +227,6 @@ public class MoleculeBuilder : MonoBehaviour
                 FormSigmaBondInstant(anchorAtom, atoms[0], anchorOrbital, orb0, true, true);
         }
 
-        foreach (var a in atoms)
-            if (a != null) a.RedistributeOrbitals();
-        if (anchorAtom != null) anchorAtom.RedistributeOrbitals();
-
         if (editMode != null)
         {
             editMode.SaturateCycloalkaneWithHydrogen(atoms);
@@ -304,10 +300,6 @@ public class MoleculeBuilder : MonoBehaviour
             FormPiBondInstant(atoms[a], atoms[b], redistributeEndpoints: false);
         }
 
-        foreach (var a in atoms)
-            if (a != null) a.RedistributeOrbitals();
-        if (anchorAtom != null) anchorAtom.RedistributeOrbitals();
-
         if (editMode != null)
         {
             foreach (var a in atoms)
@@ -371,10 +363,8 @@ public class MoleculeBuilder : MonoBehaviour
         {
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
-            if (redistributeAtomA)
-                atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA, pinAtomsForSigmaRelax: pinAtomsForSigmaRelaxAtomA, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
-            if (redistributeAtomB)
-                atomB.RedistributeOrbitals(newSigmaBondPartnerHint: atomA, sigmaNeighborCountBeforeHint: sigmaBeforeB, pinAtomsForSigmaRelax: pinAtomsForSigmaRelaxAtomB, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
+            _ = redistributeAtomA;
+            _ = redistributeAtomB;
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }
@@ -402,11 +392,7 @@ public class MoleculeBuilder : MonoBehaviour
         {
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
-            if (redistributeEndpoints)
-            {
-                atomA.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
-                atomB.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
-            }
+            _ = redistributeEndpoints;
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }
@@ -441,11 +427,7 @@ public class MoleculeBuilder : MonoBehaviour
         {
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
-            if (redistributeEndpoints)
-            {
-                atomA.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
-                atomB.RedistributeOrbitals(freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
-            }
+            _ = redistributeEndpoints;
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }
@@ -480,20 +462,15 @@ public class MoleculeBuilder : MonoBehaviour
 
     static void RedistributeOrbitalsOnConnectedMolecule(AtomFunction anyAtomInFragment)
     {
-        if (anyAtomInFragment == null) return;
-        foreach (var atom in anyAtomInFragment.GetConnectedMolecule())
-            if (atom != null) atom.RedistributeOrbitals();
+        _ = anyAtomInFragment;
     }
 
     /// <summary>Like <see cref="RedistributeOrbitalsOnConnectedMolecule"/> but skips <paramref name="skipAtom"/> (e.g. attachment carbon when preserving —CH₃ lobe/H geometry).</summary>
     static void RedistributeOrbitalsOnConnectedMoleculeExcept(AtomFunction anyAtomInFragment, AtomFunction skipAtom, HashSet<AtomFunction> pinAtomsForSigmaRelax = null)
     {
-        if (anyAtomInFragment == null) return;
-        foreach (var atom in anyAtomInFragment.GetConnectedMolecule())
-        {
-            if (atom == null || atom == skipAtom) continue;
-            atom.RedistributeOrbitals(pinAtomsForSigmaRelax: pinAtomsForSigmaRelax);
-        }
+        _ = anyAtomInFragment;
+        _ = skipAtom;
+        _ = pinAtomsForSigmaRelax;
     }
 
     /// <summary>
@@ -501,12 +478,8 @@ public class MoleculeBuilder : MonoBehaviour
     /// </summary>
     static void RedistributeOrbitalsFunctionalGroupSide(AtomFunction parent, AtomFunction anchor)
     {
-        if (parent == null || anchor == null) return;
-        foreach (var atom in parent.GetAtomsOnSideOfSigmaBond(anchor))
-        {
-            if (atom == null) continue;
-            atom.RedistributeOrbitals(pinAtomsForSigmaRelax: null, freezeSigmaNeighborSubtreeRoot: parent);
-        }
+        _ = parent;
+        _ = anchor;
     }
 
     /// <summary>
@@ -585,7 +558,6 @@ public class MoleculeBuilder : MonoBehaviour
                 var oth = b.AtomA == atom ? b.AtomB : b.AtomA;
                 if (oth == partner) { piOp = b; break; }
             }
-            atom.RedistributeOrbitals(refBondWorldDirection: (partner.transform.position - atom.transform.position).normalized, freezeSigmaNeighborSubtreeRoot: partner, redistributionOperationBond: piOp);
             ForceTrigonalPlanarNeighborPositionsForPiCenter(atom, partner);
         }
 

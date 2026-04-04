@@ -837,14 +837,13 @@ public class EditModeManager : MonoBehaviour
         {
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
-            if (redistributeAtomA)
-                atomA.RedistributeOrbitals(newSigmaBondPartnerHint: atomB, sigmaNeighborCountBeforeHint: sigmaBeforeA, pinAtomsForSigmaRelax: pinSigmaRelaxForAtomA, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
-            if (redistributeAtomB)
-            {
-                Vector3 dirBtoA = (atomA.transform.position - atomB.transform.position).normalized;
-                float bondAngleFromB = Mathf.Atan2(dirBtoA.y, dirBtoA.x) * Mathf.Rad2Deg;
-                atomB.RedistributeOrbitals(piBondAngleOverride: bondAngleFromB, refBondWorldDirection: dirBtoA, newSigmaBondPartnerHint: atomA, sigmaNeighborCountBeforeHint: sigmaBeforeB, pinAtomsForSigmaRelax: pinSigmaRelaxForAtomB, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot, redistributionOperationBond: bond);
-            }
+            _ = redistributeAtomA;
+            _ = redistributeAtomB;
+            _ = sigmaBeforeA;
+            _ = sigmaBeforeB;
+            _ = pinSigmaRelaxForAtomA;
+            _ = pinSigmaRelaxForAtomB;
+            _ = freezeSigmaNeighborSubtreeRoot;
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }

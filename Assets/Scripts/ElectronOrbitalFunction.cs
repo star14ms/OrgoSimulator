@@ -247,7 +247,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         Transform parent = orb.transform.parent;
         if (parent == null) return false;
         anchorWorld = parent.TransformPoint(localPos);
-        Vector3 tipDir = pivot.GetRedistributeTargetHybridTipWorldFromTuple(orb, localRot);
+        Vector3 tipDir = pivot.GetOrbitalHybridTipWorldFromLocalRotation(orb, localRot);
         if (tipDir.sqrMagnitude < 1e-16f) return false;
         tipDir.Normalize();
         float tipLen = Mathf.Max(0.08f, pivot.BondRadius * 0.52f);
@@ -455,7 +455,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     {
         dst.Clear();
         if (opBond == null) return;
-        AtomFunction.OrderPairAtomsForRedistributionGuideTier(
+        AtomFunction.OrderPairAtomsForBondFormationStep(
             sourceAtom, targetAtom, opBond, bondBreakGuideSource, bondBreakGuideTarget, out var first, out var second);
         var bgFirst = first == sourceAtom ? bondBreakGuideSource : bondBreakGuideTarget;
         var bgSecond = second == sourceAtom ? bondBreakGuideSource : bondBreakGuideTarget;
@@ -1919,8 +1919,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
         else
         {
-            redistA = sourceAtom.GetRedistributeTargets(piBeforeSource, targetAtom, sigmaNeighborCountBefore: sigmaBeforeSource, redistributionOperationBond: bond);
-            redistB = targetAtom.GetRedistributeTargets(piBeforeTarget, sourceAtom, sigmaNeighborCountBefore: sigmaBeforeTarget, redistributionOperationBond: bond);
+            redistA = new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
+            redistB = new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
         }
 
         // σ-relax preview uses endWorld for GetRedistributeTargets, but step 2 starts with nuclei at startWorld.
@@ -2122,8 +2122,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             {
                 sourceAtom.SnapshotJointFragmentWorldPositionsForTargets(redistA, fragWorldStep2A);
                 targetAtom.SnapshotJointFragmentWorldPositionsForTargets(redistB, fragWorldStep2B);
-                deltaJointStep2A = sourceAtom.ComputeJointRedistributeRotationWorldFromTargetsAndStarts(redistA, redistAStarts);
-                deltaJointStep2B = targetAtom.ComputeJointRedistributeRotationWorldFromTargetsAndStarts(redistB, redistBStarts);
+                deltaJointStep2A = sourceAtom.ComputeJointRotationWorldFromOrbitalTuples(redistA, redistAStarts);
+                deltaJointStep2B = targetAtom.ComputeJointRotationWorldFromOrbitalTuples(redistB, redistBStarts);
                 nucleusSiblingStep2A = new Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)>();
                 nucleusSiblingStep2B = new Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)>();
                 sourceAtom.SnapshotNucleusParentedSiblingsExcludedFromRedistTargets(redistA, nucleusSiblingStep2A);
@@ -2179,9 +2179,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 atom.transform.position = Vector3.Lerp(startW, endW, s);
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
-                sourceAtom.ApplyJointRedistributeFragmentMotionFraction(
+                sourceAtom.ApplyJointFragmentMotionForOrbitalTargets(
                     redistA, deltaJointStep2A, s, pivotStartStep2A, sourceAtom.transform.position, fragWorldStep2A);
-                targetAtom.ApplyJointRedistributeFragmentMotionFraction(
+                targetAtom.ApplyJointFragmentMotionForOrbitalTargets(
                     redistB, deltaJointStep2B, s, pivotStartStep2B, targetAtom.transform.position, fragWorldStep2B);
                 if (nucleusSiblingStep2A != null)
                     sourceAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
@@ -2285,9 +2285,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 }
                 if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
                 {
-                    sourceAtom.ApplyJointRedistributeFragmentMotionFraction(
+                    sourceAtom.ApplyJointFragmentMotionForOrbitalTargets(
                         redistA, deltaJointStep2A, sEnd, pivotStartStep2A, sourceAtom.transform.position, fragWorldStep2A);
-                    targetAtom.ApplyJointRedistributeFragmentMotionFraction(
+                    targetAtom.ApplyJointFragmentMotionForOrbitalTargets(
                         redistB, deltaJointStep2B, sEnd, pivotStartStep2B, targetAtom.transform.position, fragWorldStep2B);
                     if (nucleusSiblingStep2A != null)
                         sourceAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
@@ -2465,13 +2465,12 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             if (!skipPostFormationRedistAndHybrid3D)
             {
                 bool step2DidJointFragmentLerp = !skipStep2;
-                if (applyEndA) sourceAtom.ApplyRedistributeTargets(redistAEndAfterSigmaRelax);
-                else sourceAtom.ApplyRedistributeTargets(redistA, skipJointRigidFragmentMotion: step2DidJointFragmentLerp);
+                _ = step2DidJointFragmentLerp;
+                _ = applyEndA;
+                _ = applyEndB;
                 if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
                     sourceAtom.LogJointFragRedistLine("afterApply", "sigmaStep2Src", fragWorldStep2A, pivotStartStep2A, sourceAtom.transform.position, 1f, deltaJointStep2A, partnerSummaryStep2A);
 
-                if (applyEndB) targetAtom.ApplyRedistributeTargets(redistBEndAfterSigmaRelax);
-                else targetAtom.ApplyRedistributeTargets(redistB, skipJointRigidFragmentMotion: step2DidJointFragmentLerp);
                 if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
                     targetAtom.LogJointFragRedistLine("afterApply", "sigmaStep2Tgt", fragWorldStep2B, pivotStartStep2B, targetAtom.transform.position, 1f, deltaJointStep2B, partnerSummaryStep2B);
             }
@@ -2483,10 +2482,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             if (!skipPostFormationRedistAndHybrid3D)
             {
                 bool step2DidJointFragmentLerp = !skipStep2;
-                sourceAtom.ApplyRedistributeTargets(redistA, skipJointRigidFragmentMotion: step2DidJointFragmentLerp);
+                _ = step2DidJointFragmentLerp;
                 if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
                     sourceAtom.LogJointFragRedistLine("afterApply", "sigmaStep2Src", fragWorldStep2A, pivotStartStep2A, sourceAtom.transform.position, 1f, deltaJointStep2A, partnerSummaryStep2A);
-                targetAtom.ApplyRedistributeTargets(redistB, skipJointRigidFragmentMotion: step2DidJointFragmentLerp);
                 if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
                     targetAtom.LogJointFragRedistLine("afterApply", "sigmaStep2Tgt", fragWorldStep2B, pivotStartStep2B, targetAtom.transform.position, 1f, deltaJointStep2B, partnerSummaryStep2B);
             }
@@ -2655,11 +2653,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
-    /// <summary>
-    /// π step 2: call <see cref="AtomFunction.GetRedistributeTargets"/> using <see cref="AtomFunction.OrderPairAtomsForRedistributionGuideTier"/>
-    /// (larger guide tier first; tie → larger InstanceID). Maps back to source=A / target=B lists.
-    /// Passes <paramref name="piSourceOrbitalForVseprPredict"/> / <paramref name="piTargetOrbitalForVseprPredict"/> per atom so predictive VSEPR can drop the merging lobe from lone-domain inventory when <see cref="CovalentBond.OrbitalBeingFadedForCharge"/> misses it.
-    /// </summary>
+    /// <summary>π step 2: stable atom ordering via <see cref="AtomFunction.OrderPairAtomsForBondFormationStep"/>; target lists are empty (orbital layout redistribution removed).</summary>
     static void GetRedistributeTargetsPiStepPairOrdered(
         AtomFunction sourceAtom,
         AtomFunction targetAtom,
@@ -2673,26 +2667,16 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         out List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistA,
         out List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> redistB)
     {
-        AtomFunction.OrderPairAtomsForRedistributionGuideTier(
+        _ = piBeforeSource;
+        _ = piBeforeTarget;
+        _ = sigmaBeforeSource;
+        _ = sigmaBeforeTarget;
+        _ = piSourceOrbitalForVseprPredict;
+        _ = piTargetOrbitalForVseprPredict;
+        AtomFunction.OrderPairAtomsForBondFormationStep(
             sourceAtom, targetAtom, bond, null, null, out AtomFunction first, out AtomFunction second);
-        int piFirst = first == sourceAtom ? piBeforeSource : piBeforeTarget;
-        int piSecond = first == sourceAtom ? piBeforeTarget : piBeforeSource;
-        int sigFirst = first == sourceAtom ? sigmaBeforeSource : sigmaBeforeTarget;
-        int sigSecond = first == sourceAtom ? sigmaBeforeTarget : sigmaBeforeSource;
-        var vseprDisappearFirst = first == sourceAtom ? piSourceOrbitalForVseprPredict : piTargetOrbitalForVseprPredict;
-        var vseprDisappearSecond = second == sourceAtom ? piSourceOrbitalForVseprPredict : piTargetOrbitalForVseprPredict;
-        var rFirst = first.GetRedistributeTargets(
-            piFirst,
-            second,
-            sigmaNeighborCountBefore: sigFirst,
-            redistributionOperationBond: bond,
-            vseprDisappearingLoneForPredictiveCount: vseprDisappearFirst);
-        var rSecond = second.GetRedistributeTargets(
-            piSecond,
-            first,
-            sigmaNeighborCountBefore: sigSecond,
-            redistributionOperationBond: bond,
-            vseprDisappearingLoneForPredictiveCount: vseprDisappearSecond);
+        var rFirst = new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
+        var rSecond = new List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)>();
         if (first == sourceAtom)
         {
             redistA = rFirst;
@@ -2705,7 +2689,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
-        IEnumerator AnimateRedistributeOrbitals(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget,
+    IEnumerator AnimateRedistributeOrbitals(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget,
         int sigmaBeforeSource, int sigmaBeforeTarget,
         ElectronOrbitalFunction sourceOrbital, ElectronOrbitalFunction targetOrbital, CovalentBond bond)
     {
@@ -2739,7 +2723,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             void AddTrigonalMoves(AtomFunction a)
             {
                 if (a == null) return;
-                Vector3 refL = a.GetRedistributeReferenceLocal(null, null);
+                Vector3 refL = a.GetReferenceDirectionLocalForVsepr(null, null);
                 if (a.TryComputeTrigonalPlanarSigmaNeighborRelaxTargets(refL, out var t) && t != null)
                 {
                     foreach (var (n, end) in t)
@@ -2749,7 +2733,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             void AddLinearMoves(AtomFunction a)
             {
                 if (a == null) return;
-                Vector3 refL = a.GetRedistributeReferenceLocal(null, null);
+                Vector3 refL = a.GetReferenceDirectionLocalForVsepr(null, null);
                 if (a.TryComputeLinearSigmaNeighborRelaxTargets(refL, out var t) && t != null)
                 {
                     foreach (var (n, end) in t)
@@ -2868,8 +2852,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             // #endregion
             sourceAtom.SnapshotJointFragmentWorldPositionsForTargets(redistA, fragWorldPiA);
             targetAtom.SnapshotJointFragmentWorldPositionsForTargets(redistB, fragWorldPiB);
-            deltaJointPiA = sourceAtom.ComputeJointRedistributeRotationWorldFromTargetsAndStarts(redistA, redistAStarts);
-            deltaJointPiB = targetAtom.ComputeJointRedistributeRotationWorldFromTargetsAndStarts(redistB, redistBStarts);
+            deltaJointPiA = sourceAtom.ComputeJointRotationWorldFromOrbitalTuples(redistA, redistAStarts);
+            deltaJointPiB = targetAtom.ComputeJointRotationWorldFromOrbitalTuples(redistB, redistBStarts);
             nucleusSiblingPiA = new Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)>();
             nucleusSiblingPiB = new Dictionary<ElectronOrbitalFunction, (Vector3 worldPos, Quaternion worldRot)>();
             sourceAtom.SnapshotNucleusParentedSiblingsExcludedFromRedistTargets(redistA, nucleusSiblingPiA);
@@ -2966,9 +2950,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             }
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
-                sourceAtom.ApplyJointRedistributeFragmentMotionFraction(
+                sourceAtom.ApplyJointFragmentMotionForOrbitalTargets(
                     redistA, deltaJointPiA, sEnd, pivotStartPiA, sourceAtom.transform.position, fragWorldPiA);
-                targetAtom.ApplyJointRedistributeFragmentMotionFraction(
+                targetAtom.ApplyJointFragmentMotionForOrbitalTargets(
                     redistB, deltaJointPiB, sEnd, pivotStartPiB, targetAtom.transform.position, fragWorldPiB);
                 if (nucleusSiblingPiA != null)
                     sourceAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
@@ -3023,17 +3007,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             bool piDidJointLocal = !skipPiStep2;
             if (bond != null && !bond.IsSigmaBondLine() && piDidJointLocal)
             {
-                AtomFunction.OrderPairAtomsForRedistributionGuideTier(
+                AtomFunction.OrderPairAtomsForBondFormationStep(
                     sourceAtom, targetAtom, bond, null, null, out AtomFunction firstApply, out AtomFunction secondApply);
-                var redistFirstApply = firstApply == sourceAtom ? redistA : redistB;
-                var redistSecondApply = firstApply == sourceAtom ? redistB : redistA;
-                firstApply.ApplyRedistributeTargets(redistFirstApply, skipJointRigidFragmentMotion: piDidJointLocal);
-                secondApply.ApplyRedistributeTargets(redistSecondApply, skipJointRigidFragmentMotion: piDidJointLocal);
-            }
-            else
-            {
-                sourceAtom.ApplyRedistributeTargets(redistA, skipJointRigidFragmentMotion: piDidJointLocal);
-                targetAtom.ApplyRedistributeTargets(redistB, skipJointRigidFragmentMotion: piDidJointLocal);
+                _ = firstApply;
+                _ = secondApply;
             }
             // #region agent log
             if (bond != null && !bond.IsSigmaBondLine())
@@ -3196,9 +3173,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             // BuildSigmaNeighborTargetsWithFragmentRigidRotation). Previous order overwrote relax with a different rigid map → end-of-anim pop.
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
-                sourceAtom.ApplyJointRedistributeFragmentMotionFraction(
+                sourceAtom.ApplyJointFragmentMotionForOrbitalTargets(
                     redistA, deltaJointPiA, s, pivotStartPiA, sourceAtom.transform.position, fragWorldPiA);
-                targetAtom.ApplyJointRedistributeFragmentMotionFraction(
+                targetAtom.ApplyJointFragmentMotionForOrbitalTargets(
                     redistB, deltaJointPiB, s, pivotStartPiB, targetAtom.transform.position, fragWorldPiB);
                 if (nucleusSiblingPiA != null)
                     sourceAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
@@ -3289,9 +3266,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             }
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
-                sourceAtom.ApplyJointRedistributeFragmentMotionFraction(
+                sourceAtom.ApplyJointFragmentMotionForOrbitalTargets(
                     redistA, deltaJointPiA, sEnd, pivotStartPiA, sourceAtom.transform.position, fragWorldPiA);
-                targetAtom.ApplyJointRedistributeFragmentMotionFraction(
+                targetAtom.ApplyJointFragmentMotionForOrbitalTargets(
                     redistB, deltaJointPiB, sEnd, pivotStartPiB, targetAtom.transform.position, fragWorldPiB);
                 if (nucleusSiblingPiA != null)
                     sourceAtom.ApplyNucleusSiblingOrbitalsJointRotationFraction(
@@ -3351,17 +3328,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             bool piDidJointFragmentLerp = !skipPiStep2;
             if (bond != null && !bond.IsSigmaBondLine() && piDidJointFragmentLerp)
             {
-                AtomFunction.OrderPairAtomsForRedistributionGuideTier(
+                AtomFunction.OrderPairAtomsForBondFormationStep(
                     sourceAtom, targetAtom, bond, null, null, out AtomFunction firstApply, out AtomFunction secondApply);
-                var redistFirstApply = firstApply == sourceAtom ? redistA : redistB;
-                var redistSecondApply = firstApply == sourceAtom ? redistB : redistA;
-                firstApply.ApplyRedistributeTargets(redistFirstApply, skipJointRigidFragmentMotion: piDidJointFragmentLerp);
-                secondApply.ApplyRedistributeTargets(redistSecondApply, skipJointRigidFragmentMotion: piDidJointFragmentLerp);
-            }
-            else
-            {
-                sourceAtom.ApplyRedistributeTargets(redistA, skipJointRigidFragmentMotion: piDidJointFragmentLerp);
-                targetAtom.ApplyRedistributeTargets(redistB, skipJointRigidFragmentMotion: piDidJointFragmentLerp);
+                _ = firstApply;
+                _ = secondApply;
             }
             if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
             {
@@ -3433,13 +3403,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 sourceAtom.LogJointFragRedistLine("afterPiBondSnap", "piStep2Src", fragWorldPiA, pivotStartPiA, sourceAtom.transform.position, 1f, deltaJointPiA, partnerSummaryPiA);
                 targetAtom.LogJointFragRedistLine("afterPiBondSnap", "piStep2Tgt", fragWorldPiB, pivotStartPiB, targetAtom.transform.position, 1f, deltaJointPiB, partnerSummaryPiB);
             }
-            // #region agent log
-            if (AtomFunction.DebugLogTrigonalDiagD374b0)
-            {
-                sourceAtom.AppendCarbonSigmaNeighborWorldAnglesNdjson_d374b0("afterPiBondSnap_piStep2Src");
-                targetAtom.AppendCarbonSigmaNeighborWorldAnglesNdjson_d374b0("afterPiBondSnap_piStep2Tgt");
-            }
-            // #endregion
         }
 
         // Animation + ApplyRedistributeTargets already placed orbitals at VSEPR positions above.
@@ -3554,8 +3517,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
     static void TryRedistributeOrbitalsAfterBondChange(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget)
     {
-        if (sourceAtom != null) sourceAtom.RedistributeOrbitals();
-        if (targetAtom != null) targetAtom.RedistributeOrbitals();
+        _ = sourceAtom;
+        _ = targetAtom;
+        _ = piBeforeSource;
+        _ = piBeforeTarget;
     }
 
     /// <param name="partnerOrbital">Lone pair on the partner atom (receptor direction reference).</param>

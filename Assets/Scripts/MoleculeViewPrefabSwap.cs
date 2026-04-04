@@ -184,8 +184,6 @@ public static class MoleculeViewPrefabSwap
         {
             orbA.ElectronCount = merged;
             Object.Destroy(orbB.gameObject);
-            atomA.RedistributeOrbitals();
-            atomB.RedistributeOrbitals();
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }
@@ -212,8 +210,6 @@ public static class MoleculeViewPrefabSwap
         {
             orbA.ElectronCount = merged;
             Object.Destroy(orbB.gameObject);
-            atomA.RedistributeOrbitals();
-            atomB.RedistributeOrbitals();
             atomA.RefreshCharge();
             atomB.RefreshCharge();
         }

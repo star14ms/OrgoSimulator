@@ -123,11 +123,6 @@ public sealed class CameraViewModeToggle : MonoBehaviour
             if (bond != null) bond.RefreshLineVisualForCameraMode();
         }
 
-        foreach (var atom in Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None))
-        {
-            if (atom != null) atom.RedistributeOrbitals();
-        }
-
         AtomFunction.SetupGlobalIgnoreCollisions();
         var edit = Object.FindFirstObjectByType<EditModeManager>();
         edit?.RepositionDeselectBackground();
