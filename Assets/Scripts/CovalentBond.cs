@@ -861,6 +861,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public void OnPointerDown(PointerEventData eventData)
     {
+        if (BondFormationDebugController.IsWaitingForPhase)
+            return;
         if (orbitalVisible) return;
         if (atomA == null || atomB == null) return;
         var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
@@ -940,6 +942,12 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public void OnDrag(PointerEventData eventData)
     {
+        if (BondFormationDebugController.IsWaitingForPhase)
+        {
+            if (orbitalVisible)
+                ReturnToLineView();
+            return;
+        }
         if (!orbitalVisible || orbital == null) return;
         if (!forwardedPressToOrbital)
         {
@@ -953,6 +961,12 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public void OnPointerUp(PointerEventData eventData)
     {
+        if (BondFormationDebugController.IsWaitingForPhase)
+        {
+            if (orbitalVisible)
+                ReturnToLineView();
+            return;
+        }
         if (!orbitalVisible) return;
         if (forwardedPressToOrbital && orbital != null)
             orbital.OnPointerUp(eventData);

@@ -29,17 +29,31 @@ public static class BondFormationTemplateDescriptionUI
     {
         if (panel != null) return;
         var canvas = Object.FindFirstObjectByType<Canvas>();
-        if (canvas == null) return;
+        if (canvas == null)
+        {
+            var canvasGo = new GameObject("BondFormationTemplateFallbackCanvas");
+            canvas = canvasGo.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            canvas.sortingOrder = 40000;
+            var scaler = canvasGo.AddComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920f, 1080f);
+            canvasGo.AddComponent<GraphicRaycaster>();
+        }
         Transform parent = canvas.rootCanvas != null ? canvas.rootCanvas.transform : canvas.transform;
         float sf = canvas.scaleFactor > 0.01f ? canvas.scaleFactor : 1f;
-        float w = 520f * sf;
-        float h = 120f * sf;
+        float w = 560f * sf;
+        float h = 148f * sf;
         float bottomY = 112f * sf;
 
         panel = new GameObject("BondFormationTemplateDescription");
         panel.transform.SetParent(parent, false);
         panel.transform.SetAsLastSibling();
-        var rt = panel.AddComponent<RectTransform>();
+        var descCanvas = panel.AddComponent<Canvas>();
+        descCanvas.overrideSorting = true;
+        descCanvas.sortingOrder = 40000;
+        panel.AddComponent<GraphicRaycaster>();
+        var rt = panel.GetComponent<RectTransform>();
         rt.anchorMin = new Vector2(0.5f, 0f);
         rt.anchorMax = new Vector2(0.5f, 0f);
         rt.pivot = new Vector2(0.5f, 0f);
@@ -48,18 +62,19 @@ public static class BondFormationTemplateDescriptionUI
 
         var bg = panel.AddComponent<Image>();
         bg.color = new Color(0.08f, 0.1f, 0.14f, 0.92f);
+        bg.raycastTarget = false;
 
         var textGo = new GameObject("Text");
         textGo.transform.SetParent(panel.transform, false);
         var textRt = textGo.AddComponent<RectTransform>();
         textRt.anchorMin = Vector2.zero;
         textRt.anchorMax = Vector2.one;
-        float pad = 14f * sf;
+        float pad = 12f * sf;
         textRt.offsetMin = new Vector2(pad, pad);
         textRt.offsetMax = new Vector2(-pad, -pad);
         label = textGo.AddComponent<TextMeshProUGUI>();
         label.font = AtomFunction.GetDefaultFont();
-        label.fontSize = Mathf.Max(12, Mathf.RoundToInt(14f * sf));
+        label.fontSize = Mathf.Max(20, Mathf.RoundToInt(24f * sf));
         label.alignment = TextAlignmentOptions.Center;
         label.color = new Color(0.92f, 0.94f, 0.96f, 1f);
         label.textWrappingMode = TextWrappingModes.Normal;

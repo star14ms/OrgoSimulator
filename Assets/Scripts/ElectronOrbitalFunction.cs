@@ -307,7 +307,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             var stemPick = cylGo.AddComponent<BondFormationTemplatePreviewPick>();
             stemPick.SetDescription(BuildRedistributeTemplateStemDescription(pivot, orbForDescription));
             var stemRay = cylGo.AddComponent<BondFormationTemplateStemRayPick>();
-            float stemPickRad = Mathf.Max(cylRad * 5f, 0.03f);
+            float stemPickRad = Mathf.Max(cylRad * 12f, 0.07f);
             stemRay.SetSegment(anchorWorld, tipWorld, stemPickRad, stemPick);
             var group = new Renderer[] { rend, rendC };
             tipPick.SetLinkedOrbital(orbForDescription, group);
@@ -415,8 +415,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     /// <summary>Previous phase template root kept between 1→2 and 2→3; cleared after phase 3 or when stepped mode cancels.</summary>
     static GameObject s_steppedTemplatePreviewHandoff;
 
-    const float SteppedTemplatePhaseTransitionDuration = 0.55f;
-
     static void SetTemplatePreviewRenderersEnabled(GameObject root, bool enabled)
     {
         if (root == null) return;
@@ -431,88 +429,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (inp != null) inp.enabled = enabled;
     }
 
-    /// <summary>Lerp matched Tip_{orbInstanceId}/Stem_{orbInstanceId} transforms from old preview toward new; then destroy old. New is hidden until the end.</summary>
-    static IEnumerator CoAnimateSteppedTemplatePhaseTransition(GameObject oldRoot, GameObject newRoot)
+    /// <summary>Replace handoff template with the new phase root immediately (no lerp between debug phases).</summary>
+    static void SwapSteppedTemplatePreviewRootInstant(GameObject oldRoot, GameObject newRoot)
     {
-        if (oldRoot == null || newRoot == null) yield break;
-
-        SetTemplatePreviewInputEnabled(oldRoot, false);
-        SetTemplatePreviewInputEnabled(newRoot, false);
-        SetTemplatePreviewRenderersEnabled(newRoot, false);
-
-        var newByName = new Dictionary<string, Transform>(16);
-        foreach (Transform c in newRoot.transform)
-            newByName[c.name] = c;
-
-        var lerpParts = new List<(Transform t, Vector3 p0, Vector3 p1, Quaternion r0, Quaternion r1, Vector3 s0, Vector3 s1,
-            BondFormationTemplateStemRayPick ray, bool hasRay, Vector3 sa0, Vector3 sa1, Vector3 sb0, Vector3 sb1)>(16);
-
-        foreach (Transform oldTr in oldRoot.transform)
-        {
-            if (!newByName.TryGetValue(oldTr.name, out var newTr)) continue;
-
-            var rayOld = oldTr.GetComponent<BondFormationTemplateStemRayPick>();
-            var rayNew = newTr.GetComponent<BondFormationTemplateStemRayPick>();
-            bool hasRay = rayOld != null && rayNew != null;
-            Vector3 sa0 = default, sa1 = default, sb0 = default, sb1 = default;
-            if (hasRay)
-            {
-                sa0 = rayOld.SegmentAWorld;
-                sb0 = rayOld.SegmentBWorld;
-                sa1 = rayNew.SegmentAWorld;
-                sb1 = rayNew.SegmentBWorld;
-            }
-
-            lerpParts.Add((
-                oldTr,
-                oldTr.position, newTr.position,
-                oldTr.rotation, newTr.rotation,
-                oldTr.localScale, newTr.localScale,
-                rayOld, hasRay,
-                sa0, sa1, sb0, sb1));
-        }
-
-        if (lerpParts.Count == 0)
-        {
-            UnityEngine.Object.Destroy(oldRoot);
-            SetTemplatePreviewRenderersEnabled(newRoot, true);
-            SetTemplatePreviewInputEnabled(newRoot, true);
-            yield break;
-        }
-
-        float dur = Mathf.Max(0.04f, SteppedTemplatePhaseTransitionDuration);
-        for (float t = 0f; t < dur; t += Time.deltaTime)
-        {
-            float u = Mathf.Clamp01(t / dur);
-            u = u * u * (3f - 2f * u);
-            for (int i = 0; i < lerpParts.Count; i++)
-            {
-                var x = lerpParts[i];
-                x.t.SetPositionAndRotation(
-                    Vector3.Lerp(x.p0, x.p1, u),
-                    Quaternion.Slerp(x.r0, x.r1, u));
-                x.t.localScale = Vector3.Lerp(x.s0, x.s1, u);
-                if (x.hasRay && x.ray != null)
-                {
-                    x.ray.SegmentAWorld = Vector3.Lerp(x.sa0, x.sa1, u);
-                    x.ray.SegmentBWorld = Vector3.Lerp(x.sb0, x.sb1, u);
-                }
-            }
-            yield return null;
-        }
-
-        for (int i = 0; i < lerpParts.Count; i++)
-        {
-            var x = lerpParts[i];
-            x.t.SetPositionAndRotation(x.p1, x.r1);
-            x.t.localScale = x.s1;
-            if (x.hasRay && x.ray != null)
-            {
-                x.ray.SegmentAWorld = x.sa1;
-                x.ray.SegmentBWorld = x.sb1;
-            }
-        }
-
+        if (oldRoot == null || newRoot == null) return;
         UnityEngine.Object.Destroy(oldRoot);
         SetTemplatePreviewRenderersEnabled(newRoot, true);
         SetTemplatePreviewInputEnabled(newRoot, true);
@@ -588,7 +508,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             if (b != null) b.SetBondFormationDebugGuideHighlight(true);
     }
 
-    /// <summary>Bond steps HUD: green template preview + guide multiply-bond line tint. Keeps guide cylinders/lines tinted and template visible between phases 1–2 and 2–3; animates template morph when advancing.</summary>
+    /// <summary>Bond steps HUD: green template preview + guide multiply-bond line tint. Keeps guide cylinders/lines tinted and template visible between phases 1–2 and 2–3; swaps template instantly when advancing.</summary>
     static IEnumerator CoBondSteppedDebugPauseWithTemplate(
         int phase,
         AtomFunction sourceAtom,
@@ -613,8 +533,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
             if (s_steppedTemplatePreviewHandoff != null && newRoot != null)
             {
-                yield return CoAnimateSteppedTemplatePhaseTransition(s_steppedTemplatePreviewHandoff, newRoot);
+                var oldH = s_steppedTemplatePreviewHandoff;
                 s_steppedTemplatePreviewHandoff = null;
+                SwapSteppedTemplatePreviewRootInstant(oldH, newRoot);
                 preview = newRoot;
             }
             else if (s_steppedTemplatePreviewHandoff != null && newRoot == null)

@@ -144,6 +144,37 @@ public static class ProjectAgentDebugLog
     }
 
     /// <summary>
+    /// Append one NDJSON line to <c>{project}/.cursor/<paramref name="fileName"/></c> for Cursor Debug Mode (session-specific file). Does not mirror to Console.
+    /// </summary>
+    public static void AppendDebugModeNdjson(
+        string fileName,
+        string sessionId,
+        string hypothesisId,
+        string location,
+        string message,
+        string dataJsonObject = "{}",
+        string runId = "pre-fix")
+    {
+        if (string.IsNullOrEmpty(fileName) || string.IsNullOrEmpty(message)) return;
+        long ts = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+        string line = BuildCursorWorkspaceNdjsonLine(sessionId ?? "", hypothesisId, location, message, dataJsonObject ?? "{}", runId, ts);
+        try
+        {
+            string root = Directory.GetParent(Application.dataPath)?.FullName;
+            if (string.IsNullOrEmpty(root)) return;
+            string path = Path.GetFullPath(Path.Combine(root, ".cursor", fileName));
+            string dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+            File.AppendAllText(path, line);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("[debug-mode-ndjson] append failed: " + e.Message);
+        }
+    }
+
+    /// <summary>
     /// One NDJSON line to <c>{project}/.cursor/</c><see cref="CursorDebugModeIngestNdjsonFileName"/> for Cursor Debug Mode ingest.
     /// Shape: sessionId, runId, hypothesisId, location, message, data, timestamp.
     /// </summary>

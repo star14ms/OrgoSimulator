@@ -1,4 +1,4 @@
 # Last compact
-- **When**: 2026-04-03T12:00:00Z
+- **When**: 2026-04-03
 - **Ref**: pending
-- **Note**: Large uncommitted tree (bond stepped-debug UI, `ElectronOrbitalFunction` / `AtomFunction` / `CovalentBond` / etc.). Set **Ref** to the commit hash after you commit.
+- **Note**: Working tree not committed. Set **Ref** to `git rev-parse HEAD` after you commit this batch.
