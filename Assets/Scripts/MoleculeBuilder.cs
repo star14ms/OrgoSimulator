@@ -163,9 +163,7 @@ public class MoleculeBuilder : MonoBehaviour
 
     public void SetAtomPrefab(GameObject prefab) => atomPrefab = prefab;
 
-    /// <param name="attachToSelectedOrbital">
-    /// Perspective (3D): bond ring to edit selection only when true (e.g. Shift+click). Orthographic (2D): restores legacy behavior — attach whenever selection has a free 1e orbital, ignoring this flag.
-    /// </param>
+    /// <param name="attachToSelectedOrbital">When true (e.g. Shift+click), fuse the new ring to the edit selection’s free 1e orbital.</param>
     public void CreateCycloalkane(int ringSize, bool attachToSelectedOrbital = false)
     {
         if (ringSize < 3 || ringSize > 6 || atomPrefab == null || Camera.main == null) return;
@@ -175,15 +173,11 @@ public class MoleculeBuilder : MonoBehaviour
         AtomFunction anchorAtom = null;
         ElectronOrbitalFunction anchorOrbital = null;
 
-        bool use3DRing = OrbitalAngleUtility.UseFull3DOrbitalGeometry;
         bool canAnchor = editMode != null && editMode.SelectedAtom != null && editMode.SelectedOrbital != null
             && editMode.SelectedOrbital.Bond == null && editMode.SelectedOrbital.ElectronCount == 1;
-        // 2D: always fuse to selection when possible (previous toolbar behavior). 3D: only with explicit attach (Shift).
-        bool anchoredToSelection = canAnchor && (!use3DRing || attachToSelectedOrbital);
+        bool anchoredToSelection = canAnchor && attachToSelectedOrbital;
         Vector3 center = GetViewportCenter();
-        Vector3[] carbonPos = use3DRing
-            ? CycloalkaneCarbonPositions3D(ringSize, bondLength, center)
-            : CycloalkaneCarbonPositionsPlanar(ringSize, bondLength, center, 0f);
+        Vector3[] carbonPos = CycloalkaneCarbonPositions3D(ringSize, bondLength, center);
 
         if (anchoredToSelection)
         {
@@ -191,16 +185,8 @@ public class MoleculeBuilder : MonoBehaviour
             anchorOrbital = editMode.SelectedOrbital;
             Vector3 dirOrb = anchorOrbital.transform.TransformDirection(Vector3.right).normalized;
             if (dirOrb.sqrMagnitude < 1e-6f) dirOrb = Vector3.right;
-            if (!use3DRing)
-            {
-                dirOrb.z = 0f;
-                if (dirOrb.sqrMagnitude < 1e-8f) dirOrb = Vector3.right;
-                else dirOrb.Normalize();
-            }
 
-            carbonPos = use3DRing
-                ? CycloalkaneCarbonPositions3D(ringSize, bondLength, Vector3.zero)
-                : CycloalkaneCarbonPositionsPlanar(ringSize, bondLength, Vector3.zero, 0f);
+            carbonPos = CycloalkaneCarbonPositions3D(ringSize, bondLength, Vector3.zero);
             Vector3 p0 = carbonPos[0];
             Vector3 edge01 = (carbonPos[1] - p0).normalized;
             if (edge01.sqrMagnitude > 1e-8f)
@@ -530,7 +516,7 @@ public class MoleculeBuilder : MonoBehaviour
     /// </summary>
     static void FinalizeFunctionalGroupNewmanAndSigmaHybridSync(AtomFunction parent, AtomFunction anchor, List<AtomFunction> touched)
     {
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || parent == null || touched == null) return;
+        if (parent == null || touched == null) return;
         var touchedSet = new HashSet<AtomFunction>();
         foreach (var a in touched)
             if (a != null) touchedSet.Add(a);
@@ -621,7 +607,7 @@ public class MoleculeBuilder : MonoBehaviour
     /// </summary>
     static void ForceTrigonalPlanarNeighborPositionsForPiCenter(AtomFunction center, AtomFunction towardParentPartner)
     {
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || center == null || towardParentPartner == null) return;
+        if (center == null || towardParentPartner == null) return;
         int z = center.AtomicNumber;
         if (z != 6 && z != 7) return;
         if (center.GetPiBondCount() <= 0) return;
@@ -844,17 +830,6 @@ public class MoleculeBuilder : MonoBehaviour
     static void GetAttachBasis(Vector3 dirParentToAnchor, out Vector3 right, out Vector3 up)
     {
         Vector3 f = dirParentToAnchor.normalized;
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-        {
-            f.z = 0f;
-            if (f.sqrMagnitude < 1e-8f) f = Vector3.right;
-            else f.Normalize();
-            right = new Vector3(-f.y, f.x, 0f);
-            if (right.sqrMagnitude < 1e-8f) right = Vector3.up;
-            else right.Normalize();
-            up = Vector3.forward;
-            return;
-        }
         Vector3 refAxis = Mathf.Abs(Vector3.Dot(f, Vector3.up)) < 0.95f ? Vector3.up : Vector3.right;
         right = Vector3.Cross(refAxis, f).normalized;
         up = Vector3.Cross(f, right).normalized;
@@ -1095,13 +1070,7 @@ public class MoleculeBuilder : MonoBehaviour
     static void ComputeTrigonalDirsTowardParentForFunctionalGroup(Vector3 centerWorld, Vector3 parentWorld, out Vector3 dirSubA, out Vector3 dirSubB)
     {
         Vector3 uR = parentWorld - centerWorld;
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-        {
-            uR.z = 0f;
-            if (uR.sqrMagnitude < 1e-10f) uR = Vector3.right;
-            else uR.Normalize();
-        }
-        else if (uR.sqrMagnitude < 1e-10f)
+        if (uR.sqrMagnitude < 1e-10f)
             uR = Vector3.right;
         else
             uR.Normalize();
@@ -1109,24 +1078,13 @@ public class MoleculeBuilder : MonoBehaviour
         var tri = VseprLayout.AlignFirstDirectionTo(VseprLayout.GetIdealLocalDirections(3), uR);
         dirSubA = tri[1].normalized;
         dirSubB = tri[2].normalized;
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-        {
-            ProjectFunctionalGroupDirToXY(ref dirSubA, uR, null);
-            ProjectFunctionalGroupDirToXY(ref dirSubB, uR, dirSubA);
-        }
     }
 
     /// <summary>Three σ directions from a tetrahedral frame aligned to center→parent (first arm); for sulfo/phosphate O placement.</summary>
     static void ComputeTetraThreeOxyDirsTowardParentForSulfo(Vector3 centerWorld, Vector3 parentWorld, out Vector3 d1, out Vector3 d2, out Vector3 d3)
     {
         Vector3 uR = parentWorld - centerWorld;
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-        {
-            uR.z = 0f;
-            if (uR.sqrMagnitude < 1e-10f) uR = Vector3.right;
-            else uR.Normalize();
-        }
-        else if (uR.sqrMagnitude < 1e-10f)
+        if (uR.sqrMagnitude < 1e-10f)
             uR = Vector3.right;
         else
             uR.Normalize();
@@ -1135,12 +1093,6 @@ public class MoleculeBuilder : MonoBehaviour
         d1 = tet[1].normalized;
         d2 = tet[2].normalized;
         d3 = tet[3].normalized;
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-        {
-            ProjectFunctionalGroupDirToXY(ref d1, uR, null);
-            ProjectFunctionalGroupDirToXY(ref d2, uR, d1);
-            ProjectFunctionalGroupDirToXY(ref d3, uR, d1 + d2);
-        }
     }
 
     static void ProjectFunctionalGroupDirToXY(ref Vector3 v, Vector3 uR, Vector3? sumPrior)

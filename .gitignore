@@ -80,3 +80,6 @@ crashlytics-build.properties
 # WebGL deploy staging (build output copied here before Vercel deploy)
 /webgl-deploy/*
 !/webgl-deploy/.gitkeep
+
+# logs
+cursor-workspace-debug.ndjson

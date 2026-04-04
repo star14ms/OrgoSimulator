@@ -7,15 +7,12 @@ using UnityEngine;
 /// </summary>
 public static class OrbitalAngleUtility
 {
-    /// <summary>Perspective camera: orbitals use full 3D VSEPR layout. Orthographic: XY work-plane only.</summary>
-    public static bool UseFull3DOrbitalGeometry =>
-        Camera.main != null && !Camera.main.orthographic;
+    /// <summary>Always true: this project uses full 3D orbital geometry only (no XY work-plane mode).</summary>
+    public static bool UseFull3DOrbitalGeometry => true;
 
     /// <summary>Convert a world-space direction to angle (0° = right).</summary>
     public static float DirectionToAngleWorld(Vector3 worldDir)
     {
-        if (!UseFull3DOrbitalGeometry)
-            worldDir.z = 0;
         if (worldDir.sqrMagnitude < 0.01f) return 0f;
         worldDir.Normalize();
         return Mathf.Atan2(worldDir.y, worldDir.x) * Mathf.Rad2Deg;
@@ -25,12 +22,6 @@ public static class OrbitalAngleUtility
     public static Vector3 GetOrbitalDirectionWorld(Transform orbital)
     {
         var dir = orbital.TransformDirection(Vector3.right);
-        if (!UseFull3DOrbitalGeometry)
-        {
-            dir.z = 0f;
-            if (dir.sqrMagnitude < 0.01f) return Vector3.right;
-            return dir.normalized;
-        }
         if (dir.sqrMagnitude < 0.01f) return Vector3.right;
         return dir.normalized;
     }

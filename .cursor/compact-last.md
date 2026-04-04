@@ -1,4 +1,4 @@
 # Last compact
-- **When**: 2026-04-03
+- **When**: 2026-04-04T00:00:00Z
 - **Ref**: pending
-- **Note**: Working tree not committed. Set **Ref** to `git rev-parse HEAD` after you commit this batch.
+- **Note**: Set **Ref** to `git rev-parse HEAD` after you commit this batch.

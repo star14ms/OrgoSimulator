@@ -596,17 +596,8 @@ public class EditModeManager : MonoBehaviour
         Vector3? hydrogenBondDirWorld = null;
         if (atomicNumber == 1 && selectedAtom.AtomicNumber > 1 && oneELones.Count > 0 && !orbitalExplicitlySelected)
         {
-            Vector3 dirN;
-            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-            {
-                var sigmaWorld = CollectSigmaBondNeighborDirectionsWorld(selectedAtom);
-                dirN = ComputeNextHydrogenDirectionWorldForSaturate(selectedAtom, sigmaWorld);
-            }
-            else
-            {
-                var dirsXY = CollectSigmaBondNeighborDirectionsWorldXY(selectedAtom);
-                dirN = ComputeNextHydrogenDirectionWorldForSaturatePlanarXY(selectedAtom, dirsXY);
-            }
+            var sigmaWorld = CollectSigmaBondNeighborDirectionsWorld(selectedAtom);
+            Vector3 dirN = ComputeNextHydrogenDirectionWorldForSaturate(selectedAtom, sigmaWorld);
             var idealOrb = selectedAtom.GetLoneOrbitalWithOneElectron(dirN);
             if (idealOrb != null)
             {
@@ -633,7 +624,6 @@ public class EditModeManager : MonoBehaviour
             if (Camera.main != null)
             {
                 Vector3 fd = Camera.main.transform.forward;
-                if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry) fd.z = 0f;
                 if (fd.sqrMagnitude > 1e-6f) offset = fd.normalized * bl;
             }
             newPos = selectedAtom.transform.position + offset;
@@ -681,7 +671,7 @@ public class EditModeManager : MonoBehaviour
             }
             FormSigmaBondInstant(anchor, newAtom, orb, newOrb, redistributeAtomA: redistributeAnchor, redistributeAtomB: true, pinSigmaRelaxForAtomA: pinAnchorSigmaRelax, pinSigmaRelaxForAtomB: pinChildSigmaRelax);
 
-            if (atomicNumber == 1 && anchor.AtomicNumber > 1 && OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+            if (atomicNumber == 1 && anchor.AtomicNumber > 1)
                 anchor.TryPlaceTetrahedralHydrogenSubstituentsAboutSingleHeavyNeighbor(GetBondLength());
 
             selectedOrbital?.SetHighlighted(false);
@@ -692,7 +682,7 @@ public class EditModeManager : MonoBehaviour
 
             // Saturation rebuilds tetrahedral geometry (and TryPlaceTetrahedralHydrogenSubstituentsAboutSingleHeavyNeighbor
             // re-seats —CH₃ H), which clears an earlier Newman twist — stagger after H-auto so the new center is vs the anchor.
-            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && newAtom.AtomicNumber > 1)
+            if (newAtom.AtomicNumber > 1)
                 newAtom.TryStaggerNewmanRelativeToPartner(anchor);
 
             // Same-element heavy (e.g. C on C): continue from the new tip so repeated toolbar adds extend the chain.
@@ -815,7 +805,7 @@ public class EditModeManager : MonoBehaviour
             if (hAutoMode)
                 SaturateWithHydrogen(newAtom, pinFramework);
 
-            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && newAtom.AtomicNumber > 1)
+            if (newAtom.AtomicNumber > 1)
                 newAtom.TryStaggerNewmanRelativeToPartner(parentAtom);
 
             AtomFunction.SetupGlobalIgnoreCollisions();
@@ -859,7 +849,7 @@ public class EditModeManager : MonoBehaviour
             atomB.RefreshCharge();
         }
 
-        if (bond != null && OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        if (bond != null)
         {
             float bl = GetBondLength();
             if (atomA != null && atomA.AtomicNumber > 1 && atomB != null && atomB.AtomicNumber == 1)
@@ -874,7 +864,7 @@ public class EditModeManager : MonoBehaviour
     /// <summary>Pins everything on the framework side of <paramref name="heavyCenter"/>'s σ bond to a heavy neighbor (same as H-auto saturating a terminal C).</summary>
     HashSet<AtomFunction> TryBuildSigmaRelaxPinForHeavyCenter(AtomFunction heavyCenter)
     {
-        if (heavyCenter == null || !OrbitalAngleUtility.UseFull3DOrbitalGeometry || heavyCenter.AtomicNumber <= 1)
+        if (heavyCenter == null || heavyCenter.AtomicNumber <= 1)
             return null;
         AtomFunction heavyNeighbor = null;
         foreach (var n in heavyCenter.GetDistinctSigmaNeighborAtoms())
@@ -937,10 +927,7 @@ public class EditModeManager : MonoBehaviour
             if (hNeeded == 2)
             {
                 Vector3 h1, h2;
-                if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-                    VseprLayout.TwoHydrogenDirectionsFromBonds(toPrev, toNext, out h1, out h2);
-                else
-                    VseprLayout.TwoHydrogenDirectionsFromBondsPlanarXY(toPrev, toNext, out h1, out h2);
+                VseprLayout.TwoHydrogenDirectionsFromBonds(toPrev, toNext, out h1, out h2);
                 if (!TryPickTwoLoneOrbitalsForDirections(atom, h1, h2, out var carbonOrb1, out var carbonOrb2))
                     continue;
 
@@ -973,10 +960,7 @@ public class EditModeManager : MonoBehaviour
 
                 FormSigmaBondInstant(atom, hAtom1, carbonOrb1, hOrb1, redistributeAtomA: false, redistributeAtomB: false);
                 FormSigmaBondInstant(atom, hAtom2, carbonOrb2, hOrb2, redistributeAtomA: false, redistributeAtomB: false);
-                if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-                    atom.RedistributeOrbitals();
-                if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-                    atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
+                atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
             }
             else if (hNeeded == 1)
             {
@@ -993,9 +977,7 @@ public class EditModeManager : MonoBehaviour
                 }
                 if (dirs.Count < 3) continue;
 
-                Vector3 hDir = OrbitalAngleUtility.UseFull3DOrbitalGeometry
-                    ? VseprLayout.OneHydrogenDirectionFromThreeBondsWorld(dirs[0], dirs[1], dirs[2])
-                    : VseprLayout.OneHydrogenDirectionFromThreeBondsWorldPlanarXY(dirs[0], dirs[1], dirs[2]);
+                Vector3 hDir = VseprLayout.OneHydrogenDirectionFromThreeBondsWorld(dirs[0], dirs[1], dirs[2]);
                 var carbonOrb = atom.GetLoneOrbitalWithOneElectron(hDir);
                 if (carbonOrb == null) continue;
 
@@ -1017,10 +999,7 @@ public class EditModeManager : MonoBehaviour
                 }
 
                 FormSigmaBondInstant(atom, hAtom, carbonOrb, hOrb, redistributeAtomA: false, redistributeAtomB: false);
-                if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-                    atom.RedistributeOrbitals();
-                if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-                    atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
+                atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLength);
             }
         }
 
@@ -1052,17 +1031,8 @@ public class EditModeManager : MonoBehaviour
 
         float bondLen = GetBondLength();
         HashSet<AtomFunction> pinAddH = TryBuildSigmaRelaxPinForHeavyCenter(atom);
-        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-            FormSigmaBondInstant(atom, hAtom, orb, hOrb, redistributeAtomA: false, redistributeAtomB: false, pinSigmaRelaxForAtomA: pinAddH, pinSigmaRelaxForAtomB: pinAddH);
-        else
-            FormSigmaBondInstant(atom, hAtom, orb, hOrb, pinSigmaRelaxForAtomA: pinAddH, pinSigmaRelaxForAtomB: pinAddH);
-        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-            atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLen);
-        else
-        {
-            var bondAngle = atom.GetPrimaryBondDirectionAngle();
-            atom.RedistributeOrbitals(piBondAngleOverride: bondAngle, pinAtomsForSigmaRelax: pinAddH);
-        }
+        FormSigmaBondInstant(atom, hAtom, orb, hOrb, redistributeAtomA: false, redistributeAtomB: false, pinSigmaRelaxForAtomA: pinAddH, pinSigmaRelaxForAtomB: pinAddH);
+        atom.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bondLen);
         AtomFunction.SetupGlobalIgnoreCollisions();
     }
 
@@ -1081,20 +1051,9 @@ public class EditModeManager : MonoBehaviour
 
         while (true)
         {
-            ElectronOrbitalFunction orb;
-            Vector3 dirN;
-            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-            {
-                var sigmaWorld = CollectSigmaBondNeighborDirectionsWorld(atom);
-                dirN = ComputeNextHydrogenDirectionWorldForSaturate(atom, sigmaWorld);
-                orb = atom.GetLoneOrbitalWithOneElectron(dirN);
-            }
-            else
-            {
-                var dirsXY = CollectSigmaBondNeighborDirectionsWorldXY(atom);
-                dirN = ComputeNextHydrogenDirectionWorldForSaturatePlanarXY(atom, dirsXY);
-                orb = atom.GetLoneOrbitalWithOneElectron(dirN);
-            }
+            var sigmaWorld = CollectSigmaBondNeighborDirectionsWorld(atom);
+            Vector3 dirN = ComputeNextHydrogenDirectionWorldForSaturate(atom, sigmaWorld);
+            ElectronOrbitalFunction orb = atom.GetLoneOrbitalWithOneElectron(dirN);
 
             if (orb == null) break;
 
@@ -1118,15 +1077,7 @@ public class EditModeManager : MonoBehaviour
                 break;
             }
 
-            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-                FormSigmaBondInstant(atom, hAtom, orb, hOrb, redistributeAtomA: false, redistributeAtomB: false, pinSigmaRelaxForAtomA: pinSigmaRelaxNeighbors, pinSigmaRelaxForAtomB: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
-            else
-                FormSigmaBondInstant(atom, hAtom, orb, hOrb, pinSigmaRelaxForAtomA: pinSigmaRelaxNeighbors, pinSigmaRelaxForAtomB: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
-            if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-            {
-                var bondAngle = atom.GetPrimaryBondDirectionAngle();
-                atom.RedistributeOrbitals(piBondAngleOverride: bondAngle, pinAtomsForSigmaRelax: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
-            }
+            FormSigmaBondInstant(atom, hAtom, orb, hOrb, redistributeAtomA: false, redistributeAtomB: false, pinSigmaRelaxForAtomA: pinSigmaRelaxNeighbors, pinSigmaRelaxForAtomB: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
             if (incrementalCollisionInvolvingAtoms != null && incrementalCollisionInvolvingAtoms.Count > 0)
                 AtomFunction.SetupIgnoreCollisionsInvolvingAtoms(incrementalCollisionInvolvingAtoms);
             else
@@ -1327,13 +1278,7 @@ public class EditModeManager : MonoBehaviour
         if (orb == null || orb.Bond != null || orb.ElectronCount != 1) return false;
 
         Vector3 dir = orb.transform.TransformDirection(Vector3.right);
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-        {
-            dir.z = 0f;
-            if (dir.sqrMagnitude < 1e-8f) dir = Vector3.right;
-            else dir.Normalize();
-        }
-        else if (dir.sqrMagnitude < 1e-8f)
+        if (dir.sqrMagnitude < 1e-8f)
             dir = Vector3.right;
         else
             dir.Normalize();

@@ -138,7 +138,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var (worldPos, worldRot) = GetOrbitalTargetWorldState();
         orbital.transform.position = worldPos;
         Quaternion appliedRot = worldRot;
-        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && preserveWorldRollFrom.HasValue)
+        if (preserveWorldRollFrom.HasValue)
         {
             Quaternion pref = preserveWorldRollFrom.Value;
             Vector3 pTip = pref * Vector3.right;
@@ -146,7 +146,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             if (pTip.sqrMagnitude > 1e-12f && wTip.sqrMagnitude > 1e-12f)
                 appliedRot = Quaternion.FromToRotation(pTip.normalized, wTip.normalized) * pref;
         }
-        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry && IsSigmaBondLine())
+        if (IsSigmaBondLine())
         {
             var baseR = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
             if (orbitalRotationFlipped) baseR = baseR * Quaternion.Euler(0f, 0f, 180f);
@@ -163,7 +163,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// </summary>
     public void SyncPiOrbitalRedistributionDeltaFromCurrentWorldRotation()
     {
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || orbital == null || atomA == null || atomB == null) return;
+        if (orbital == null || atomA == null || atomB == null) return;
         if (IsSigmaBondLine()) return;
         UpdateBondTransformToCurrentAtoms();
         var baseR = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
@@ -178,7 +178,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// </summary>
     public void TwistPiOrbitalRedistributionDeltaAwayFromColinearSigmaPartnerIfNeeded(float minSeparationDeg = 35f)
     {
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || orbital == null || atomA == null || atomB == null) return;
+        if (orbital == null || atomA == null || atomB == null) return;
         if (IsSigmaBondLine()) return;
         CovalentBond sigmaPartner = FindSigmaBondToSamePartner();
         if (sigmaPartner == null || sigmaPartner.Orbital == null) return;
@@ -268,7 +268,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// </summary>
     public void CommitSigmaRedistributionDeltaFromWorldOrbitalRotation(Quaternion orbitalWorldRotation)
     {
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || !IsSigmaBondLine()) return;
+        if (!IsSigmaBondLine()) return;
         UpdateBondTransformToCurrentAtoms();
         var baseR = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
         if (orbitalRotationFlipped) baseR = baseR * Quaternion.Euler(0f, 0f, 180f);
@@ -304,7 +304,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <param name="forceApplyPoseDuringBondToLineAnim">σ formation calls <see cref="ApplySigmaOrbitalTipFromRedistribution"/> while <see cref="animatingOrbitalToBondPosition"/> is still true; those updates must still push world pose to match δ/flip before snap.</param>
     public void SyncSigmaOrbitalWorldPoseFromRedistribution(bool forceApplyPoseDuringBondToLineAnim = false)
     {
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || orbital == null || atomA == null || atomB == null) return;
+        if (orbital == null || atomA == null || atomB == null) return;
         if (!IsSigmaBondLine()) return;
         bool userDragging = orbitalVisible && orbitalToLineAnimProgress < 0;
         if (userDragging) return;
@@ -364,7 +364,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>Align shared σ lobe +X with hybrid direction expressed from <paramref name="fromAtom"/> (must be atom A or B). Uses bond axis from <paramref name="fromAtom"/> toward partner for sign.</summary>
     public void ApplySigmaOrbitalTipFromRedistribution(AtomFunction fromAtom, Vector3 hybridTipWorld)
     {
-        if (!OrbitalAngleUtility.UseFull3DOrbitalGeometry || orbital == null) return;
+        if (orbital == null) return;
         if (fromAtom == null || (fromAtom != atomA && fromAtom != atomB)) return;
         if (!IsSigmaBondLine()) return;
 
@@ -1071,19 +1071,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomA?.RefreshCharge();
         atomB?.RefreshCharge();
 
-        // Ex-bond lobes: 3D — keep bond-line world pose (no CorrectBreakGuide / bond→slot snap / σ-relax). 2D — initial nucleus slots from GetSlotForNewOrbital.
-        if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-        {
-            orbital.transform.SetPositionAndRotation(bondOrbitalWorldPos, bondOrbitalWorldRot);
-            newOrbital.transform.SetPositionAndRotation(bondOrbitalWorldPos, bondOrbitalWorldRot);
-        }
-        else
-        {
-            orbital.transform.localPosition = slotA.position;
-            orbital.transform.localRotation = slotA.rotation;
-            newOrbital.transform.localPosition = slotB.position;
-            newOrbital.transform.localRotation = slotB.rotation;
-        }
+        orbital.transform.SetPositionAndRotation(bondOrbitalWorldPos, bondOrbitalWorldRot);
+        newOrbital.transform.SetPositionAndRotation(bondOrbitalWorldPos, bondOrbitalWorldRot);
 
         atomA?.RefreshCharge();
         atomB?.RefreshCharge();
@@ -1120,36 +1109,18 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             ElectronOrbitalFunction guideA = returnOrbitalTo == atomA ? orbital : newOrbital;
             ElectronOrbitalFunction guideB = returnOrbitalTo == atomB ? orbital : newOrbital;
 
-            if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-            {
-                atomA.StartCoroutine(atomA.CoLerpBondBreakRedistribution(
-                    atomB,
-                    refWorldA,
-                    refWorldB,
-                    guideA,
-                    guideB,
-                    sigmaBeforeA,
-                    sigmaBeforeB,
-                    sigmaCleavageBetweenPartners,
-                    FinishBreakBondTail,
-                    this));
-                return;
-            }
-
-            atomA.RedistributeOrbitals(
-                refBondWorldDirection: refWorldA,
-                relaxCoplanarSigmaToTetrahedral: relaxCoplanarSigmaToTetrahedralForBreak,
-                pinAtomsForSigmaRelax: pinSigmaRelax,
-                bondBreakGuideLoneOrbital: guideA,
-                sigmaNeighborCountBeforeHint: sigmaBeforeA,
-                bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners);
-            atomB.RedistributeOrbitals(
-                refBondWorldDirection: refWorldB,
-                relaxCoplanarSigmaToTetrahedral: relaxCoplanarSigmaToTetrahedralForBreak,
-                pinAtomsForSigmaRelax: pinSigmaRelax,
-                bondBreakGuideLoneOrbital: guideB,
-                sigmaNeighborCountBeforeHint: sigmaBeforeB,
-                bondBreakIsSigmaCleavageBetweenFormerPartners: sigmaCleavageBetweenPartners);
+            atomA.StartCoroutine(atomA.CoLerpBondBreakRedistribution(
+                atomB,
+                refWorldA,
+                refWorldB,
+                guideA,
+                guideB,
+                sigmaBeforeA,
+                sigmaBeforeB,
+                sigmaCleavageBetweenPartners,
+                FinishBreakBondTail,
+                this));
+            return;
         }
 
         FinishBreakBondTail();
