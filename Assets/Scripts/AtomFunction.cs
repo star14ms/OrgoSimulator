@@ -34,6 +34,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>Log π-trigonal guide-group refine, hemisphere flip, and tip-vs-target angles (e.g. O-C-O → O=C). Default on for triage; set false for quiet runs.</summary>
     public static bool DebugLogPiTrigonalOcoConformation = true;
 
+    /// <summary>Session d374b0 NDJSON: joint tip-pair stats and peripheral full redist on π-op off-endpoint atoms. Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogTrigonalDiagD374b0 = true;
+
     /// <summary>π step 2: oxygen nucleus shell — tips not in redist rows vs operation π (O=C=C off-op lone joint). Default on for triage; set false for quiet runs.</summary>
     public static bool DebugLogOcoOffOpNucleusLoneAngles = true;
 
@@ -6920,358 +6923,19 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         Debug.Log("[pi-trigonal-oco] " + detailNoTag);
     }
 
-    /// <summary>
-    /// π endpoints use the **same** handedness; per-nucleus <paramref name="guideAxisVertex0NucleusLocal"/> points along the bond
-    /// but from opposite ends, so local <c>Dot(g, Cross(...))</c> alone can flip one endpoint’s perm vs the partner.
-    /// Two σ-line movers: pair internuclear axes vs tripod targets in the π ⊥ plane (unified bond world axis when available).
-    /// One σ-line + one other mover (e.g. lone on nucleus): same winding rule using σ axis vs the other mover’s tip — covers π trigonal OCO where <see cref="CompareGuideGroupOccPiTrigonalFor2"/> orders σ first.
-    /// Two non-σ movers (e.g. π O with two lone lobes): same winding using the two tip directions vs tripod targets; cone-cost fallback when crosses are degenerate.
-    /// </summary>
-    bool TryResolveTrigonalTwoSigmaMoverPermUsingInternuclearAxes(
-        List<ElectronOrbitalFunction> movers,
-        List<Vector3> targetDirsNucleusLocal,
-        Vector3 guideAxisVertex0NucleusLocal,
-        CovalentBond piOpBondForUnifiedCrossWorld,
-        out int[] perm,
-        out bool usedUnifiedBondWorldCross)
+    void LogTrigonalGroupAngles(string phase, Vector3 a, Vector3 b, Vector3 c, string groupLabel)
     {
-        perm = null;
-        usedUnifiedBondWorldCross = false;
-        if (movers == null || targetDirsNucleusLocal == null || movers.Count != 2 || targetDirsNucleusLocal.Count != 2)
-            return false;
-        if (movers[0] == null || movers[1] == null) return false;
-
-        Vector3 g = guideAxisVertex0NucleusLocal;
-        if (g.sqrMagnitude < 1e-14f) return false;
-        g.Normalize();
-
-        var b0 = movers[0].Bond as CovalentBond;
-        var b1 = movers[1].Bond as CovalentBond;
-        bool sig0 = b0 != null && b0.IsSigmaBondLine();
-        bool sig1 = b1 != null && b1.IsSigmaBondLine();
-        Vector3 t0 = targetDirsNucleusLocal[0].sqrMagnitude < 1e-14f ? Vector3.forward : targetDirsNucleusLocal[0].normalized;
-        Vector3 t1 = targetDirsNucleusLocal[1].sqrMagnitude < 1e-14f ? Vector3.forward : targetDirsNucleusLocal[1].normalized;
-
-        const float crossEps = 1e-5f;
-        const float perpEpsSq = 1e-12f;
-
-        int PartnerInst(CovalentBond cb)
-        {
-            var partner = cb.AtomA == this ? cb.AtomB : cb.AtomA;
-            return partner != null ? partner.GetInstanceID() : int.MinValue;
-        }
-
-        Vector3 RejectFromUnit(Vector3 v, Vector3 unitAxis)
-        {
-            return v - unitAxis * Vector3.Dot(v, unitAxis);
-        }
-
-        Vector3 RejectFromG(Vector3 unitOrDir) => RejectFromUnit(unitOrDir, g);
-
-        bool TryUnifiedBondDirWorldForPiPerm(CovalentBond opBond, out Vector3 dirW)
-        {
-            dirW = default;
-            if (opBond == null || opBond.AtomA == null || opBond.AtomB == null) return false;
-            var pa = opBond.AtomA;
-            var pb = opBond.AtomB;
-            bool tailIsA = pa.AtomicNumber < pb.AtomicNumber
-                || (pa.AtomicNumber == pb.AtomicNumber && pa.GetInstanceID() <= pb.GetInstanceID());
-            var tail = tailIsA ? pa : pb;
-            var head = tailIsA ? pb : pa;
-            Vector3 w = head.transform.position - tail.transform.position;
-            if (w.sqrMagnitude < 1e-16f) return false;
-            dirW = w.normalized;
-            return true;
-        }
-
-        Vector3 unifiedPiBondDirWorld = default;
-        bool haveUnifiedPiBondDirWorld = piOpBondForUnifiedCrossWorld != null
-            && TryUnifiedBondDirWorldForPiPerm(piOpBondForUnifiedCrossWorld, out unifiedPiBondDirWorld);
-
-        bool PreferIdentityAssignmentByConeAndSlotQuat(out bool preferIdentity)
-        {
-            preferIdentity = false;
-            float idTot = 0f;
-            float swTot = 0f;
-            for (int i = 0; i < 2; i++)
-            {
-                var o = movers[i];
-                if (o == null) return false;
-                Vector3 ot = OrbitalTipDirectionInNucleusLocal(o);
-                if (ot.sqrMagnitude < 1e-14f) return false;
-                ot.Normalize();
-                Vector3 tdId = i == 0 ? t0 : t1;
-                Vector3 tdSw = i == 0 ? t1 : t0;
-                if (tdId.sqrMagnitude < 1e-14f || tdSw.sqrMagnitude < 1e-14f) return false;
-                Vector3 tdIn = tdId.normalized;
-                Vector3 tdSwN = tdSw.normalized;
-                idTot += PiPermutationConeAngleTipToTargetDeg(o, ot, tdIn);
-                swTot += PiPermutationConeAngleTipToTargetDeg(o, ot, tdSwN);
-                if (o.Bond == null)
-                {
-                    idTot += QuaternionSlotCostOnly(o, tdIn, bondRadius);
-                    swTot += QuaternionSlotCostOnly(o, tdSwN, bondRadius);
-                }
-            }
-            preferIdentity = idTot <= swTot;
-            // #region agent log
-            try
-            {
-                long tsMs = (long)(System.DateTime.UtcNow - new System.DateTime(1970, 1, 1, 0, 0, 0, System.DateTimeKind.Utc)).TotalMilliseconds;
-                string root = Directory.GetParent(Application.dataPath)?.FullName;
-                if (!string.IsNullOrEmpty(root))
-                {
-                    string p = Path.Combine(root, ".cursor", "debug-d66405.log");
-                    string data = "{\"idTot\":" + idTot.ToString(CultureInfo.InvariantCulture)
-                        + ",\"swTot\":" + swTot.ToString(CultureInfo.InvariantCulture)
-                        + ",\"preferIdentity\":" + (preferIdentity ? "true" : "false")
-                        + ",\"sig0\":" + (sig0 ? "true" : "false")
-                        + ",\"sig1\":" + (sig1 ? "true" : "false") + "}";
-                    string line = "{\"sessionId\":\"d66405\",\"hypothesisId\":\"cone-quat-fallback\",\"location\":\"AtomFunction.PreferIdentityAssignmentByConeAndSlotQuat\",\"message\":\"totals\",\"data\":" + data + ",\"timestamp\":" + tsMs + "}\n";
-                    File.AppendAllText(p, line);
-                }
-            }
-            catch { /* ingest optional */ }
-            // #endregion
-            return true;
-        }
-
-        if (sig0 ^ sig1)
-        {
-            int iSig = sig0 ? 0 : 1;
-            int iOther = 1 - iSig;
-            CovalentBond bSig = sig0 ? b0 : b1;
-            Vector3 aSig = InternuclearSigmaAxisNucleusLocalForBond(bSig);
-            Vector3 tipO = OrbitalTipDirectionInNucleusLocal(movers[iOther]);
-            if (aSig.sqrMagnitude < 1e-14f || tipO.sqrMagnitude < 1e-14f) return false;
-            aSig.Normalize();
-            tipO.Normalize();
-
-            bool useWorldPlaneCross = false;
-            if (haveUnifiedPiBondDirWorld)
-            {
-                Vector3 aW = transform.TransformDirection(aSig);
-                Vector3 oW = transform.TransformDirection(tipO);
-                Vector3 t0w = transform.TransformDirection(t0);
-                Vector3 t1w = transform.TransformDirection(t1);
-                Vector3 pAw = RejectFromUnit(aW, unifiedPiBondDirWorld);
-                Vector3 pOw = RejectFromUnit(oW, unifiedPiBondDirWorld);
-                Vector3 pT0w = RejectFromUnit(t0w, unifiedPiBondDirWorld);
-                Vector3 pT1w = RejectFromUnit(t1w, unifiedPiBondDirWorld);
-                useWorldPlaneCross = pAw.sqrMagnitude >= perpEpsSq && pOw.sqrMagnitude >= perpEpsSq
-                    && pT0w.sqrMagnitude >= perpEpsSq && pT1w.sqrMagnitude >= perpEpsSq;
-            }
-
-            bool sameWinding;
-            if (useWorldPlaneCross)
-            {
-                Vector3 aW = transform.TransformDirection(aSig);
-                Vector3 oW = transform.TransformDirection(tipO);
-                Vector3 t0w = transform.TransformDirection(t0);
-                Vector3 t1w = transform.TransformDirection(t1);
-                Vector3 pAw = RejectFromUnit(aW, unifiedPiBondDirWorld);
-                Vector3 pOw = RejectFromUnit(oW, unifiedPiBondDirWorld);
-                Vector3 pT0w = RejectFromUnit(t0w, unifiedPiBondDirWorld);
-                Vector3 pT1w = RejectFromUnit(t1w, unifiedPiBondDirWorld);
-                float sM = Vector3.Dot(unifiedPiBondDirWorld, Vector3.Cross(pAw.normalized, pOw.normalized));
-                float sT = Vector3.Dot(unifiedPiBondDirWorld, Vector3.Cross(pT0w.normalized, pT1w.normalized));
-                if (Mathf.Abs(sM) > crossEps && Mathf.Abs(sT) > crossEps)
-                {
-                    usedUnifiedBondWorldCross = true;
-                    sameWinding = (sM > crossEps && sT > crossEps) || (sM < -crossEps && sT < -crossEps);
-                }
-                else
-                {
-                    usedUnifiedBondWorldCross = false;
-                    if (!PreferIdentityAssignmentByConeAndSlotQuat(out sameWinding))
-                        return false;
-                }
-            }
-            else
-            {
-                Vector3 pA = RejectFromG(aSig);
-                Vector3 pO = RejectFromG(tipO);
-                Vector3 pT0loc = RejectFromG(t0);
-                Vector3 pT1loc = RejectFromG(t1);
-                if (pA.sqrMagnitude < perpEpsSq || pO.sqrMagnitude < perpEpsSq
-                    || pT0loc.sqrMagnitude < perpEpsSq || pT1loc.sqrMagnitude < perpEpsSq)
-                    return false;
-                float sM = Vector3.Dot(g, Vector3.Cross(pA.normalized, pO.normalized));
-                float sT = Vector3.Dot(g, Vector3.Cross(pT0loc.normalized, pT1loc.normalized));
-                if (Mathf.Abs(sM) > crossEps && Mathf.Abs(sT) > crossEps)
-                    sameWinding = (sM > crossEps && sT > crossEps) || (sM < -crossEps && sT < -crossEps);
-                else if (!PreferIdentityAssignmentByConeAndSlotQuat(out sameWinding))
-                    return false;
-            }
-
-            perm = new int[2];
-            if (sameWinding)
-            {
-                perm[iSig] = 0;
-                perm[iOther] = 1;
-            }
-            else
-            {
-                perm[iSig] = 1;
-                perm[iOther] = 0;
-            }
-            return true;
-        }
-
-        if (!sig0 && !sig1)
-        {
-            Vector3 tipA = OrbitalTipDirectionInNucleusLocal(movers[0]);
-            Vector3 tipB = OrbitalTipDirectionInNucleusLocal(movers[1]);
-            if (tipA.sqrMagnitude < 1e-14f || tipB.sqrMagnitude < 1e-14f) return false;
-            tipA.Normalize();
-            tipB.Normalize();
-
-            bool useWorldPlaneCrossL = false;
-            if (haveUnifiedPiBondDirWorld)
-            {
-                Vector3 t0wL = transform.TransformDirection(t0);
-                Vector3 t1wL = transform.TransformDirection(t1);
-                Vector3 tAwL = transform.TransformDirection(tipA);
-                Vector3 tBwL = transform.TransformDirection(tipB);
-                Vector3 pAwL = RejectFromUnit(tAwL, unifiedPiBondDirWorld);
-                Vector3 pBwL = RejectFromUnit(tBwL, unifiedPiBondDirWorld);
-                Vector3 pT0wL = RejectFromUnit(t0wL, unifiedPiBondDirWorld);
-                Vector3 pT1wL = RejectFromUnit(t1wL, unifiedPiBondDirWorld);
-                useWorldPlaneCrossL = pAwL.sqrMagnitude >= perpEpsSq && pBwL.sqrMagnitude >= perpEpsSq
-                    && pT0wL.sqrMagnitude >= perpEpsSq && pT1wL.sqrMagnitude >= perpEpsSq;
-            }
-
-            bool sameWL;
-            if (useWorldPlaneCrossL)
-            {
-                Vector3 t0wL = transform.TransformDirection(t0);
-                Vector3 t1wL = transform.TransformDirection(t1);
-                Vector3 tAwL = transform.TransformDirection(tipA);
-                Vector3 tBwL = transform.TransformDirection(tipB);
-                Vector3 pAwL = RejectFromUnit(tAwL, unifiedPiBondDirWorld);
-                Vector3 pBwL = RejectFromUnit(tBwL, unifiedPiBondDirWorld);
-                Vector3 pT0wL = RejectFromUnit(t0wL, unifiedPiBondDirWorld);
-                Vector3 pT1wL = RejectFromUnit(t1wL, unifiedPiBondDirWorld);
-                float sML = Vector3.Dot(unifiedPiBondDirWorld, Vector3.Cross(pAwL.normalized, pBwL.normalized));
-                float sTL = Vector3.Dot(unifiedPiBondDirWorld, Vector3.Cross(pT0wL.normalized, pT1wL.normalized));
-                if (Mathf.Abs(sML) > crossEps && Mathf.Abs(sTL) > crossEps)
-                {
-                    usedUnifiedBondWorldCross = true;
-                    sameWL = (sML > crossEps && sTL > crossEps) || (sML < -crossEps && sTL < -crossEps);
-                }
-                else
-                {
-                    usedUnifiedBondWorldCross = false;
-                    if (!PreferIdentityAssignmentByConeAndSlotQuat(out sameWL))
-                        return false;
-                }
-            }
-            else
-            {
-                Vector3 pAl = RejectFromG(tipA);
-                Vector3 pBl = RejectFromG(tipB);
-                Vector3 pT0locL = RejectFromG(t0);
-                Vector3 pT1locL = RejectFromG(t1);
-                if (pAl.sqrMagnitude < perpEpsSq || pBl.sqrMagnitude < perpEpsSq
-                    || pT0locL.sqrMagnitude < perpEpsSq || pT1locL.sqrMagnitude < perpEpsSq)
-                    return false;
-                float sML = Vector3.Dot(g, Vector3.Cross(pAl.normalized, pBl.normalized));
-                float sTL = Vector3.Dot(g, Vector3.Cross(pT0locL.normalized, pT1locL.normalized));
-                if (Mathf.Abs(sML) > crossEps && Mathf.Abs(sTL) > crossEps)
-                    sameWL = (sML > crossEps && sTL > crossEps) || (sML < -crossEps && sTL < -crossEps);
-                else if (!PreferIdentityAssignmentByConeAndSlotQuat(out sameWL))
-                    return false;
-            }
-
-            perm = new int[2];
-            perm[0] = sameWL ? 0 : 1;
-            perm[1] = sameWL ? 1 : 0;
-            return true;
-        }
-
-        if (!sig0 || !sig1 || b0 == null || b1 == null) return false;
-
-        Vector3 a0 = InternuclearSigmaAxisNucleusLocalForBond(b0);
-        Vector3 a1 = InternuclearSigmaAxisNucleusLocalForBond(b1);
-
-        int p0 = PartnerInst(b0);
-        int p1 = PartnerInst(b1);
-
-        bool useWorldPlaneCross2 = false;
-        if (haveUnifiedPiBondDirWorld)
-        {
-            Vector3 a0w = transform.TransformDirection(a0);
-            Vector3 a1w = transform.TransformDirection(a1);
-            Vector3 t0w = transform.TransformDirection(t0);
-            Vector3 t1w = transform.TransformDirection(t1);
-            Vector3 pA0w = RejectFromUnit(a0w, unifiedPiBondDirWorld);
-            Vector3 pA1w = RejectFromUnit(a1w, unifiedPiBondDirWorld);
-            Vector3 pT0w = RejectFromUnit(t0w, unifiedPiBondDirWorld);
-            Vector3 pT1w = RejectFromUnit(t1w, unifiedPiBondDirWorld);
-            useWorldPlaneCross2 = pA0w.sqrMagnitude >= perpEpsSq && pA1w.sqrMagnitude >= perpEpsSq
-                && pT0w.sqrMagnitude >= perpEpsSq && pT1w.sqrMagnitude >= perpEpsSq;
-        }
-
-        int[] mOrd;
-        int[] tOrd;
-        if (useWorldPlaneCross2)
-        {
-            usedUnifiedBondWorldCross = true;
-            Vector3 a0w = transform.TransformDirection(a0);
-            Vector3 a1w = transform.TransformDirection(a1);
-            Vector3 t0w = transform.TransformDirection(t0);
-            Vector3 t1w = transform.TransformDirection(t1);
-            Vector3 pA0w = RejectFromUnit(a0w, unifiedPiBondDirWorld);
-            Vector3 pA1w = RejectFromUnit(a1w, unifiedPiBondDirWorld);
-            Vector3 pT0w = RejectFromUnit(t0w, unifiedPiBondDirWorld);
-            Vector3 pT1w = RejectFromUnit(t1w, unifiedPiBondDirWorld);
-            float sM = Vector3.Dot(unifiedPiBondDirWorld, Vector3.Cross(pA0w.normalized, pA1w.normalized));
-            if (sM > crossEps) mOrd = new[] { 0, 1 };
-            else if (sM < -crossEps) mOrd = new[] { 1, 0 };
-            else
-                mOrd = p0 <= p1 ? new[] { 0, 1 } : new[] { 1, 0 };
-
-            float sT = Vector3.Dot(unifiedPiBondDirWorld, Vector3.Cross(pT0w.normalized, pT1w.normalized));
-            if (sT > crossEps) tOrd = new[] { 0, 1 };
-            else if (sT < -crossEps) tOrd = new[] { 1, 0 };
-            else
-                tOrd = new[] { 0, 1 };
-        }
-        else
-        {
-            usedUnifiedBondWorldCross = false;
-            Vector3 pA0 = RejectFromG(a0);
-            Vector3 pA1 = RejectFromG(a1);
-            if (pA0.sqrMagnitude < perpEpsSq || pA1.sqrMagnitude < perpEpsSq)
-                mOrd = p0 <= p1 ? new[] { 0, 1 } : new[] { 1, 0 };
-            else
-            {
-                float s = Vector3.Dot(g, Vector3.Cross(pA0.normalized, pA1.normalized));
-                if (s > crossEps) mOrd = new[] { 0, 1 };
-                else if (s < -crossEps) mOrd = new[] { 1, 0 };
-                else
-                    mOrd = p0 <= p1 ? new[] { 0, 1 } : new[] { 1, 0 };
-            }
-
-            Vector3 pT0 = RejectFromG(t0);
-            Vector3 pT1 = RejectFromG(t1);
-            if (pT0.sqrMagnitude < perpEpsSq || pT1.sqrMagnitude < perpEpsSq)
-                tOrd = new[] { 0, 1 };
-            else
-            {
-                float sTloc = Vector3.Dot(g, Vector3.Cross(pT0.normalized, pT1.normalized));
-                if (sTloc > crossEps) tOrd = new[] { 0, 1 };
-                else if (sTloc < -crossEps) tOrd = new[] { 1, 0 };
-                else
-                    tOrd = new[] { 0, 1 };
-            }
-        }
-
-        perm = new int[2];
-        perm[mOrd[0]] = tOrd[0];
-        perm[mOrd[1]] = tOrd[1];
-
-        return true;
+        if (!DebugLogPiTrigonalOcoConformation) return;
+        if (a.sqrMagnitude < 1e-14f || b.sqrMagnitude < 1e-14f || c.sqrMagnitude < 1e-14f) return;
+        a.Normalize(); b.Normalize(); c.Normalize();
+        float angAB = Vector3.Angle(a, b);
+        float angAC = Vector3.Angle(a, c);
+        float angBC = Vector3.Angle(b, c);
+        LogPiTrigonalOcoLine("tri120 phase=" + phase
+            + " group=" + groupLabel
+            + " angGuideToM0Deg=" + angAB.ToString("F2", CultureInfo.InvariantCulture)
+            + " angGuideToM1Deg=" + angAC.ToString("F2", CultureInfo.InvariantCulture)
+            + " angM0ToM1Deg=" + angBC.ToString("F2", CultureInfo.InvariantCulture));
     }
 
     /// <summary>σ bond-break pin lobe tip in <b>this nucleus</b> local space (+X along lobe), even if the orbital is still parented under a bond.</summary>
@@ -8679,233 +8343,12 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (dVertex0.sqrMagnitude < 1e-14f) dVertex0 = guideTip;
         else dVertex0.Normalize();
 
-        // #region agent log
-        void LogTrigonalGroupAngles(string phase, Vector3 a, Vector3 b, Vector3 c, string groupLabel)
-        {
-            if (!DebugLogPiTrigonalOcoConformation) return;
-            if (a.sqrMagnitude < 1e-14f || b.sqrMagnitude < 1e-14f || c.sqrMagnitude < 1e-14f) return;
-            a.Normalize(); b.Normalize(); c.Normalize();
-            float angAB = Vector3.Angle(a, b);
-            float angAC = Vector3.Angle(a, c);
-            float angBC = Vector3.Angle(b, c);
-            LogPiTrigonalOcoLine("tri120 phase=" + phase
-                + " group=" + groupLabel
-                + " angGuideToM0Deg=" + angAB.ToString("F2", CultureInfo.InvariantCulture)
-                + " angGuideToM1Deg=" + angAC.ToString("F2", CultureInfo.InvariantCulture)
-                + " angM0ToM1Deg=" + angBC.ToString("F2", CultureInfo.InvariantCulture));
-        }
-        // #endregion
-
-        // #region agent log
-        if (DebugLogPiTrigonalOcoConformation
-            && source == RedistributionGuideSource.PiBondInOperation
-            && nVseprGroups == 3
-            && moversOrdered2.Count == 2
-            && permutationTargetDirs2.Count == 2)
-        {
-            int sigmaIdxPre = -1;
-            for (int i = 0; i < 2; i++)
-            {
-                if (moversOrdered2[i] != null && moversOrdered2[i].Bond is CovalentBond cbPre && cbPre.IsSigmaBondLine())
-                {
-                    sigmaIdxPre = i;
-                    break;
-                }
-            }
-            if (sigmaIdxPre >= 0 && moversOrdered2[sigmaIdxPre] != null)
-            {
-                var sigmaOrbPre = moversOrdered2[sigmaIdxPre];
-                Vector3 sigmaTipPre = OrbitalTipDirectionInNucleusLocal(sigmaOrbPre).normalized;
-                Vector3 t0Pre = permutationTargetDirs2[0].normalized;
-                Vector3 t1Pre = permutationTargetDirs2[1].normalized;
-                Vector3 sigmaAxisPre = Vector3.zero;
-                if (sigmaOrbPre.Bond is CovalentBond sigmaCbPre)
-                    sigmaAxisPre = InternuclearSigmaAxisNucleusLocalForBond(sigmaCbPre).normalized;
-                float angTipToT0Pre = Vector3.Angle(sigmaTipPre, t0Pre);
-                float angTipToT1Pre = Vector3.Angle(sigmaTipPre, t1Pre);
-                float angTipToAxisPre = sigmaAxisPre.sqrMagnitude > 1e-14f ? Vector3.Angle(sigmaTipPre, sigmaAxisPre) : -1f;
-                float angGuideToAxisPre = sigmaAxisPre.sqrMagnitude > 1e-14f ? Vector3.Angle(guideTip.normalized, sigmaAxisPre) : -1f;
-                LogPiTrigonalOcoLine("prePerm sigmaState atomId=" + GetInstanceID()
-                    + " sigmaIdx=" + sigmaIdxPre
-                    + " sigmaOrbId=" + sigmaOrbPre.GetInstanceID()
-                    + " parentIsNucleus=" + (sigmaOrbPre.transform.parent == transform)
-                    + " angTipToT0Deg=" + angTipToT0Pre.ToString("F2", CultureInfo.InvariantCulture)
-                    + " angTipToT1Deg=" + angTipToT1Pre.ToString("F2", CultureInfo.InvariantCulture)
-                    + " angTipToSigmaAxisDeg=" + angTipToAxisPre.ToString("F2", CultureInfo.InvariantCulture)
-                    + " angGuideToSigmaAxisDeg=" + angGuideToAxisPre.ToString("F2", CultureInfo.InvariantCulture));
-            }
-            if (moversOrdered2[0] != null && moversOrdered2[1] != null)
-            {
-                Vector3 t0 = permutationTargetDirs2[0].normalized;
-                Vector3 t1 = permutationTargetDirs2[1].normalized;
-                Vector3 m0Tip = OrbitalTipDirectionInNucleusLocal(moversOrdered2[0]).normalized;
-                Vector3 m1Tip = OrbitalTipDirectionInNucleusLocal(moversOrdered2[1]).normalized;
-                for (int mi = 0; mi < 2; mi++)
-                {
-                    var mo = moversOrdered2[mi];
-                    if (mo == null) continue;
-                    Vector3 mt = OrbitalTipDirectionInNucleusLocal(mo).normalized;
-                    Quaternion lr = mo.transform.localRotation;
-                    int bondId = mo.Bond != null ? mo.Bond.GetInstanceID() : 0;
-                    bool sigmaLine = mo.Bond is CovalentBond cbM && cbM.IsSigmaBondLine();
-                    LogPiTrigonalOcoLine("prePerm moverState atomId=" + GetInstanceID()
-                        + " mi=" + mi
-                        + " orbId=" + mo.GetInstanceID()
-                        + " bondId=" + bondId
-                        + " sigmaLine=" + sigmaLine
-                        + " parentIsNucleus=" + (mo.transform.parent == transform)
-                        + " tipN={" + mt.x.ToString("F4", CultureInfo.InvariantCulture) + "," + mt.y.ToString("F4", CultureInfo.InvariantCulture) + "," + mt.z.ToString("F4", CultureInfo.InvariantCulture) + "}"
-                        + " localRot={" + lr.x.ToString("F4", CultureInfo.InvariantCulture) + "," + lr.y.ToString("F4", CultureInfo.InvariantCulture) + "," + lr.z.ToString("F4", CultureInfo.InvariantCulture) + "," + lr.w.ToString("F4", CultureInfo.InvariantCulture) + "}");
-                }
-                float m0t0 = PiPermutationConeAngleTipToTargetDeg(moversOrdered2[0], m0Tip, t0);
-                float m0t1 = PiPermutationConeAngleTipToTargetDeg(moversOrdered2[0], m0Tip, t1);
-                float m1t0 = PiPermutationConeAngleTipToTargetDeg(moversOrdered2[1], m1Tip, t0);
-                float m1t1 = PiPermutationConeAngleTipToTargetDeg(moversOrdered2[1], m1Tip, t1);
-                float cost01 = m0t0 + m1t1;
-                float cost10 = m0t1 + m1t0;
-                LogPiTrigonalOcoLine("prePerm matrix atomId=" + GetInstanceID()
-                    + " m0Id=" + moversOrdered2[0].GetInstanceID()
-                    + " m1Id=" + moversOrdered2[1].GetInstanceID()
-                    + " m0_t0=" + m0t0.ToString("F2", CultureInfo.InvariantCulture)
-                    + " m0_t1=" + m0t1.ToString("F2", CultureInfo.InvariantCulture)
-                    + " m1_t0=" + m1t0.ToString("F2", CultureInfo.InvariantCulture)
-                    + " m1_t1=" + m1t1.ToString("F2", CultureInfo.InvariantCulture)
-                    + " costPerm01=" + cost01.ToString("F2", CultureInfo.InvariantCulture)
-                    + " costPerm10=" + cost10.ToString("F2", CultureInfo.InvariantCulture));
-                // #region agent log
-                int sigmaIdxParentDiag = -1;
-                for (int i = 0; i < 2; i++)
-                {
-                    if (moversOrdered2[i] != null && moversOrdered2[i].Bond is CovalentBond cbPd && cbPd.IsSigmaBondLine())
-                    {
-                        sigmaIdxParentDiag = i;
-                        break;
-                    }
-                }
-                if (sigmaIdxParentDiag >= 0 && moversOrdered2[sigmaIdxParentDiag] != null)
-                {
-                    var so = moversOrdered2[sigmaIdxParentDiag];
-                    Vector3 sigmaCurParent = (so.transform.localRotation * Vector3.right).normalized;
-                    float ParentDirectedCost(int sigmaTargetIdx)
-                    {
-                        Vector3 tdN = permutationTargetDirs2[sigmaTargetIdx].normalized;
-                        Vector3 tdP = tdN;
-                        if (so.transform.parent != null && so.transform.parent != transform)
-                        {
-                            Vector3 tdW = transform.TransformDirection(tdN);
-                            tdP = so.transform.parent.InverseTransformDirection(tdW).normalized;
-                        }
-                        return Vector3.Angle(sigmaCurParent, tdP);
-                    }
-                    float parentSigmaCostPerm01 = ParentDirectedCost(0);
-                    float parentSigmaCostPerm10 = ParentDirectedCost(1);
-                    LogPiTrigonalOcoLine("prePerm sigmaParentSpace atomId=" + GetInstanceID()
-                        + " sigmaIdx=" + sigmaIdxParentDiag
-                        + " sigmaOrbId=" + so.GetInstanceID()
-                        + " parentIsNucleus=" + (so.transform.parent == transform)
-                        + " parentCostPerm01Deg=" + parentSigmaCostPerm01.ToString("F2", CultureInfo.InvariantCulture)
-                        + " parentCostPerm10Deg=" + parentSigmaCostPerm10.ToString("F2", CultureInfo.InvariantCulture));
-                }
-                // #endregion
-
-                int sigmaIdxEval = -1;
-                for (int i = 0; i < 2; i++)
-                {
-                    if (moversOrdered2[i] != null && moversOrdered2[i].Bond is CovalentBond cbEval && cbEval.IsSigmaBondLine())
-                    {
-                        sigmaIdxEval = i;
-                        break;
-                    }
-                }
-                if (sigmaIdxEval >= 0)
-                {
-                    float EvalPostPermScore(int a0, int a1, out float sigmaToAxisDeg, out float nonSigmaToTargetDeg)
-                    {
-                        sigmaToAxisDeg = -1f;
-                        nonSigmaToTargetDeg = -1f;
-                        int[] a = { a0, a1 };
-                        float sum = 0f;
-                        for (int mi = 0; mi < 2; mi++)
-                        {
-                            var o = moversOrdered2[mi];
-                            if (o == null) return float.MaxValue;
-                            Vector3 tdEval = permutationTargetDirs2[a[mi]].normalized;
-                            var (_, rotEval) = GetCanonicalSlotPositionFromNucleusIdealForOrbitalParent(o, tdEval, bondRadius, o.transform.localRotation);
-                            Vector3 sigmaAxisEval = Vector3.zero;
-                            if (o.Bond is CovalentBond cbSigmaEval && cbSigmaEval.IsSigmaBondLine())
-                            {
-                                sigmaAxisEval = InternuclearSigmaAxisNucleusLocalForBond(cbSigmaEval);
-                                if (sigmaAxisEval.sqrMagnitude > 1e-14f)
-                                    sigmaAxisEval.Normalize();
-                            }
-                            MaybeFlipPiTrigonalCanonicalSlotRotForParentHemisphereContinuity(o, ref rotEval, tdEval);
-                            Vector3 tipEval = OrbitalSlotPlusXInNucleusLocal(o, rotEval);
-                            if (tipEval.sqrMagnitude < 1e-14f) return float.MaxValue;
-                            if (mi == sigmaIdxEval && sigmaAxisEval.sqrMagnitude > 1e-14f)
-                            {
-                                sigmaToAxisDeg = Vector3.Angle(tipEval, sigmaAxisEval);
-                                sum += sigmaToAxisDeg;
-                            }
-                            else
-                            {
-                                float ang = PiPermutationConeAngleTipToTargetDeg(o, tipEval, tdEval);
-                                nonSigmaToTargetDeg = ang;
-                                sum += ang;
-                            }
-                        }
-                        return sum;
-                    }
-
-                    float s01Post = EvalPostPermScore(0, 1, out float sigma01, out float non01);
-                    float s10Post = EvalPostPermScore(1, 0, out float sigma10, out float non10);
-                    LogPiTrigonalOcoLine("prePerm postEval atomId=" + GetInstanceID()
-                        + " sigmaIdx=" + sigmaIdxEval
-                        + " score01=" + s01Post.ToString("F2", CultureInfo.InvariantCulture)
-                        + " score10=" + s10Post.ToString("F2", CultureInfo.InvariantCulture)
-                        + " sigma01Deg=" + sigma01.ToString("F2", CultureInfo.InvariantCulture)
-                        + " sigma10Deg=" + sigma10.ToString("F2", CultureInfo.InvariantCulture)
-                        + " non01Deg=" + non01.ToString("F2", CultureInfo.InvariantCulture)
-                        + " non10Deg=" + non10.ToString("F2", CultureInfo.InvariantCulture));
-                }
-
-                LogTrigonalGroupAngles(
-                    "prePermCurrentTips",
-                    guideTip.normalized,
-                    m0Tip,
-                    m1Tip,
-                    "guide+movers");
-            }
-            LogPiTrigonalOcoLine("prePerm frame atomId=" + GetInstanceID()
-                + " guideTip={" + guideTip.x.ToString("F4", CultureInfo.InvariantCulture) + "," + guideTip.y.ToString("F4", CultureInfo.InvariantCulture) + "," + guideTip.z.ToString("F4", CultureInfo.InvariantCulture) + "}"
-                + " dV0={" + dVertex0.x.ToString("F4", CultureInfo.InvariantCulture) + "," + dVertex0.y.ToString("F4", CultureInfo.InvariantCulture) + "," + dVertex0.z.ToString("F4", CultureInfo.InvariantCulture) + "}"
-                + " t0={" + permutationTargetDirs2[0].x.ToString("F4", CultureInfo.InvariantCulture) + "," + permutationTargetDirs2[0].y.ToString("F4", CultureInfo.InvariantCulture) + "," + permutationTargetDirs2[0].z.ToString("F4", CultureInfo.InvariantCulture) + "}"
-                + " t1={" + permutationTargetDirs2[1].x.ToString("F4", CultureInfo.InvariantCulture) + "," + permutationTargetDirs2[1].y.ToString("F4", CultureInfo.InvariantCulture) + "," + permutationTargetDirs2[1].z.ToString("F4", CultureInfo.InvariantCulture) + "}");
-        }
-        // #endregion
-
         int[] perm2;
-        int[] permAxis = null;
-        bool usedUnifiedBondWorldCross = false;
-        CovalentBond piUnifiedCrossBond = source == RedistributionGuideSource.PiBondInOperation ? redistributionOperationBond : null;
-        bool usedInternuclearAxisPerm = nVseprGroups == 3
-            && moversOrdered2.Count == 2
-            && TryResolveTrigonalTwoSigmaMoverPermUsingInternuclearAxes(
-                moversOrdered2,
-                permutationTargetDirs2,
-                guideTip,
-                piUnifiedCrossBond,
-                out permAxis,
-                out usedUnifiedBondWorldCross);
-        if (usedInternuclearAxisPerm && permAxis != null)
-            perm2 = permAxis;
-        else
+        perm2 = FindBestOrbitalToTargetDirsPermutation(moversOrdered2, permutationTargetDirs2, bondRadius, this);
+        if (perm2 == null)
         {
-            perm2 = FindBestOrbitalToTargetDirsPermutation(moversOrdered2, permutationTargetDirs2, bondRadius, this);
-            if (perm2 == null)
-            {
-                LogGetRedistributeTargets3DLine("guideGroup_permutationFallback", "source=" + source + " reason=perm_null");
-                perm2 = Enumerable.Range(0, moversOrdered2.Count).ToArray();
-            }
+            LogGetRedistributeTargets3DLine("guideGroup_permutationFallback", "source=" + source + " reason=perm_null");
+            perm2 = Enumerable.Range(0, moversOrdered2.Count).ToArray();
         }
 
         if (DebugLogPiTrigonalOcoConformation
@@ -8916,79 +8359,14 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             && perm2.Length == 2)
         {
             int opId = redistributionOperationBond != null ? redistributionOperationBond.GetInstanceID() : 0;
+            ComputePermutationAssignmentCostBreakdown(
+                moversOrdered2, permutationTargetDirs2, bondRadius, this, perm2,
+                out float conePick, out float quatPick, out float totalPick);
             LogPiTrigonalOcoLine("tryBuild atomId=" + GetInstanceID() + " frame=" + Time.frameCount + " opBondId=" + opId
                 + " perm=" + perm2[0] + "," + perm2[1]
-                + " usedInternuclearPerm=" + usedInternuclearAxisPerm
-                + " unifiedPiPlaneCrossWorld=" + usedUnifiedBondWorldCross);
-            // #region agent log
-            try
-            {
-                string h3 = "{\"pivotId\":" + GetInstanceID() + ",\"Z\":" + atomicNumber + ",\"opBondId\":" + opId + ",\"perm0\":" + perm2[0] + ",\"perm1\":" + perm2[1]
-                    + ",\"usedInternuclearPerm\":" + (usedInternuclearAxisPerm ? "true" : "false")
-                    + ",\"unifiedPiPlaneCrossWorld\":" + (usedUnifiedBondWorldCross ? "true" : "false")
-                    + ",\"frame\":" + Time.frameCount + "}";
-                AppendOcoCaseDebugNdjson("H3", "TryBuildRedistributeTargets3DGuideGroupPrefix", "pi_trigonal_tryBuild", h3);
-            }
-            catch
-            {
-                /* optional */
-            }
-            // #endregion agent log
-            // #region agent log
-            if (source == RedistributionGuideSource.PiBondInOperation && nVseprGroups == 3)
-            {
-                float PermTotalWithFindBestRule(int a0, int a1, out float coneSum, out float quatSum)
-                {
-                    int[] a = { a0, a1 };
-                    coneSum = 0f;
-                    quatSum = 0f;
-                    for (int i = 0; i < 2; i++)
-                    {
-                        var o = moversOrdered2[i];
-                        if (o == null) continue;
-                        Vector3 td = permutationTargetDirs2[a[i]].normalized;
-                        Vector3 ot = OrbitalTipDirectionInNucleusLocal(o).normalized;
-                        coneSum += PiPermutationConeAngleTipToTargetDeg(o, ot, td);
-                        if (o.Bond == null)
-                            quatSum += QuaternionSlotCostOnly(o, td, bondRadius);
-                    }
-                    return coneSum + quatSum;
-                }
-                float total01 = PermTotalWithFindBestRule(0, 1, out float cone01, out float quat01);
-                float total10 = PermTotalWithFindBestRule(1, 0, out float cone10, out float quat10);
-                LogPiTrigonalOcoLine("permFindBestCost atomId=" + GetInstanceID()
-                    + " total01=" + total01.ToString("F2", CultureInfo.InvariantCulture)
-                    + " total10=" + total10.ToString("F2", CultureInfo.InvariantCulture)
-                    + " cone01=" + cone01.ToString("F2", CultureInfo.InvariantCulture)
-                    + " cone10=" + cone10.ToString("F2", CultureInfo.InvariantCulture)
-                    + " quat01=" + quat01.ToString("F2", CultureInfo.InvariantCulture)
-                    + " quat10=" + quat10.ToString("F2", CultureInfo.InvariantCulture));
-                int sigmaIdxDiag = -1;
-                for (int di = 0; di < 2; di++)
-                {
-                    if (moversOrdered2[di] != null && moversOrdered2[di].Bond is CovalentBond cbDiag && cbDiag.IsSigmaBondLine())
-                    {
-                        sigmaIdxDiag = di;
-                        break;
-                    }
-                }
-                if (sigmaIdxDiag >= 0)
-                {
-                    var sigmaCb = moversOrdered2[sigmaIdxDiag].Bond as CovalentBond;
-                    Vector3 sigmaAxisDiag = InternuclearSigmaAxisNucleusLocalForBond(sigmaCb).normalized;
-                    Vector3 d0Diag = permutationTargetDirs2[0].normalized;
-                    Vector3 d1Diag = permutationTargetDirs2[1].normalized;
-                    float angAxisToD0 = Vector3.Angle(sigmaAxisDiag, d0Diag);
-                    float angAxisToD1 = Vector3.Angle(sigmaAxisDiag, d1Diag);
-                    LogPiTrigonalOcoLine("permDiag atomId=" + GetInstanceID()
-                        + " sigmaIdx=" + sigmaIdxDiag
-                        + " angSigmaAxisToT0Deg=" + angAxisToD0.ToString("F2", CultureInfo.InvariantCulture)
-                        + " angSigmaAxisToT1Deg=" + angAxisToD1.ToString("F2", CultureInfo.InvariantCulture)
-                        + " d0DotGuide=" + Vector3.Dot(d0Diag, dVertex0).ToString("F3", CultureInfo.InvariantCulture)
-                        + " d1DotGuide=" + Vector3.Dot(d1Diag, dVertex0).ToString("F3", CultureInfo.InvariantCulture));
-                }
-            }
-            // #endregion
+                + " totalDeg=" + totalPick.ToString("F2", CultureInfo.InvariantCulture)
+                + " coneDeg=" + conePick.ToString("F2", CultureInfo.InvariantCulture)
+                + " quatDeg=" + quatPick.ToString("F2", CultureInfo.InvariantCulture));
             for (int mi = 0; mi < 2; mi++)
             {
                 var om = moversOrdered2[mi];
@@ -9003,41 +8381,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 LogPiTrigonalOcoLine("tryBuild mover mi=" + mi + " orbId=" + om.GetInstanceID() + " sigmaLine=" + sigmaLine
                     + " parentIsNucleus=" + (om.transform.parent == transform)
                     + " assignTix=" + tix + " angTipToTargetDeg=" + ang.ToString("F2", CultureInfo.InvariantCulture));
-                // #region agent log
-                if (sigmaLine && source == RedistributionGuideSource.PiBondInOperation && nVseprGroups == 3)
-                {
-                    Vector3 sigmaAxisDiag = Vector3.zero;
-                    if (om.Bond is CovalentBond cbSigmaDiag)
-                    {
-                        sigmaAxisDiag = InternuclearSigmaAxisNucleusLocalForBond(cbSigmaDiag);
-                        if (sigmaAxisDiag.sqrMagnitude > 1e-14f) sigmaAxisDiag.Normalize();
-                    }
-                    var (_, rotPrefCurrent) = GetCanonicalSlotPositionFromNucleusIdealForOrbitalParent(om, td, bondRadius, om.transform.localRotation);
-                    var (_, rotPrefIdentity) = GetCanonicalSlotPositionFromNucleusIdealForOrbitalParent(om, td, bondRadius, Quaternion.identity);
-                    Vector3 tipPrefCurrent = OrbitalSlotPlusXInNucleusLocal(om, rotPrefCurrent);
-                    Vector3 tipPrefIdentity = OrbitalSlotPlusXInNucleusLocal(om, rotPrefIdentity);
-                    float angCurToTarget = tipPrefCurrent.sqrMagnitude > 1e-14f ? Vector3.Angle(tipPrefCurrent, td) : -1f;
-                    float angIdToTarget = tipPrefIdentity.sqrMagnitude > 1e-14f ? Vector3.Angle(tipPrefIdentity, td) : -1f;
-                    float angCurToSigma = (tipPrefCurrent.sqrMagnitude > 1e-14f && sigmaAxisDiag.sqrMagnitude > 1e-14f) ? Vector3.Angle(tipPrefCurrent, sigmaAxisDiag) : -1f;
-                    float angIdToSigma = (tipPrefIdentity.sqrMagnitude > 1e-14f && sigmaAxisDiag.sqrMagnitude > 1e-14f) ? Vector3.Angle(tipPrefIdentity, sigmaAxisDiag) : -1f;
-                    Vector3 tdParent = td;
-                    Vector3 curTipParent = (om.transform.localRotation * Vector3.right).normalized;
-                    if (om.transform.parent != null && om.transform.parent != transform)
-                    {
-                        Vector3 tdWorld = transform.TransformDirection(td);
-                        tdParent = om.transform.parent.InverseTransformDirection(tdWorld).normalized;
-                    }
-                    float angCurParentToTdParent = Vector3.Angle(curTipParent, tdParent);
-                    float angOppCurParentToTdParent = Vector3.Angle(-curTipParent, tdParent);
-                    LogPiTrigonalOcoLine("canonSeedDiag orbId=" + om.GetInstanceID()
-                        + " curToTargetDeg=" + angCurToTarget.ToString("F2", CultureInfo.InvariantCulture)
-                        + " idToTargetDeg=" + angIdToTarget.ToString("F2", CultureInfo.InvariantCulture)
-                        + " curToSigmaDeg=" + angCurToSigma.ToString("F2", CultureInfo.InvariantCulture)
-                        + " idToSigmaDeg=" + angIdToSigma.ToString("F2", CultureInfo.InvariantCulture)
-                        + " curParentToTargetParentDeg=" + angCurParentToTdParent.ToString("F2", CultureInfo.InvariantCulture)
-                        + " oppCurParentToTargetParentDeg=" + angOppCurParentToTdParent.ToString("F2", CultureInfo.InvariantCulture));
-                }
-                // #endregion
             }
         }
 
@@ -9385,23 +8728,73 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         ProjectAgentDebugLog.AppendOrbitalRedistMirrorLine(msg);
     }
 
-    /// <summary>NDJSON line for O=C=O case debug session d66405; safe no-op on I/O failure.</summary>
+    /// <summary>O=C=O / joint NDJSON: delegates to <see cref="ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson"/> (single <c>.cursor/cursor-workspace-debug.ndjson</c>).</summary>
     public static void AppendOcoCaseDebugNdjson(string hypothesisId, string location, string message, string dataJsonObject)
     {
         // #region agent log
         try
         {
-            long tsMs = (long)(System.DateTime.UtcNow - new System.DateTime(1970, 1, 1, 0, 0, 0, System.DateTimeKind.Utc)).TotalMilliseconds;
-            string root = Directory.GetParent(Application.dataPath)?.FullName;
-            if (string.IsNullOrEmpty(root)) return;
-            string p = Path.Combine(root, ".cursor", "debug-d66405.log");
-            string line = "{\"sessionId\":\"d66405\",\"hypothesisId\":\"" + hypothesisId + "\",\"location\":\"" + location
-                + "\",\"message\":\"" + message + "\",\"data\":" + dataJsonObject + ",\"timestamp\":" + tsMs + "}\n";
-            File.AppendAllText(p, line);
+            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(hypothesisId, location, message, string.IsNullOrEmpty(dataJsonObject) ? "{}" : dataJsonObject);
         }
         catch
         {
             /* ingest optional */
+        }
+        // #endregion
+    }
+
+    /// <summary>Trigonal/joint probe NDJSON: same unified file as <see cref="AppendOcoCaseDebugNdjson"/>.</summary>
+    public static void AppendDebugSessionNdjson_d374b0(string hypothesisId, string location, string message, string dataJsonObject)
+    {
+        // #region agent log
+        try
+        {
+            ProjectAgentDebugLog.AppendCursorWorkspaceDebugNdjson(hypothesisId, location, message, string.IsNullOrEmpty(dataJsonObject) ? "{}" : dataJsonObject);
+        }
+        catch
+        {
+            /* ingest optional */
+        }
+        // #endregion
+    }
+
+    /// <summary>Debug d374b0: pairwise world angles between σ-neighbor directions from carbon; trigonal planar skeleton expects ~120° between arms.</summary>
+    public void AppendCarbonSigmaNeighborWorldAnglesNdjson_d374b0(string phaseTag)
+    {
+        if (!DebugLogTrigonalDiagD374b0 || atomicNumber != 6) return;
+        // #region agent log
+        try
+        {
+            var neigh = GetDistinctSigmaNeighborAtoms();
+            var inv = CultureInfo.InvariantCulture;
+            var sb = new StringBuilder(320);
+            sb.Append("{\"pivotId\":").Append(GetInstanceID()).Append(",\"phase\":\"").Append(phaseTag)
+                .Append("\",\"sigmaNeighborCount\":").Append(neigh.Count).Append(",\"pairAnglesDeg\":[");
+            bool first = true;
+            for (int i = 0; i < neigh.Count; i++)
+            {
+                if (neigh[i] == null) continue;
+                Vector3 di = neigh[i].transform.position - transform.position;
+                if (di.sqrMagnitude < 1e-14f) continue;
+                di.Normalize();
+                for (int j = i + 1; j < neigh.Count; j++)
+                {
+                    if (neigh[j] == null) continue;
+                    Vector3 dj = neigh[j].transform.position - transform.position;
+                    if (dj.sqrMagnitude < 1e-14f) continue;
+                    dj.Normalize();
+                    float ang = Vector3.Angle(di, dj);
+                    if (!first) sb.Append(',');
+                    first = false;
+                    sb.Append(ang.ToString("F2", inv));
+                }
+            }
+            sb.Append("],\"frame\":").Append(Time.frameCount).Append('}');
+            AppendDebugSessionNdjson_d374b0("H-carbon-sigma-world", "AppendCarbonSigmaNeighborWorldAnglesNdjson_d374b0", "sigma_pair_angles", sb.ToString());
+        }
+        catch
+        {
+            /* optional */
         }
         // #endregion
     }
@@ -10143,7 +9536,32 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             /* optional */
         }
         // #endregion
-        return ComputeJointRedistributeRotationWorld(currentTips, desiredTips);
+        var jointQ = ComputeJointRedistributeRotationWorld(currentTips, desiredTips);
+        // #region agent log
+        if (DebugLogTrigonalDiagD374b0 && currentTips.Count > 0)
+        {
+            try
+            {
+                var inv = CultureInfo.InvariantCulture;
+                float meanPair = 0f;
+                for (int ii = 0; ii < currentTips.Count; ii++)
+                    meanPair += Vector3.Angle(currentTips[ii], desiredTips[ii]);
+                meanPair /= currentTips.Count;
+                float jAng = Quaternion.Angle(Quaternion.identity, jointQ);
+                string d = "{\"pivotId\":" + GetInstanceID() + ",\"Z\":" + atomicNumber
+                    + ",\"jointTipPairs\":" + currentTips.Count
+                    + ",\"meanTipDeltaDeg\":" + meanPair.ToString("F2", inv)
+                    + ",\"jointQuaternionDeg\":" + jAng.ToString("F2", inv)
+                    + ",\"frame\":" + Time.frameCount + "}";
+                AppendDebugSessionNdjson_d374b0("H-joint-tips", "ComputeJointRedistributeRotationWorldFromTargetsAndStarts", "joint_compute", d);
+            }
+            catch
+            {
+                /* optional */
+            }
+        }
+        // #endregion
+        return jointQ;
     }
 
     /// <summary>
@@ -11559,7 +10977,25 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                         bondingTopologyChanged: true,
                         redistributionOperationBond: op);
                     if (peripheralTargets != null && peripheralTargets.Count > 0)
+                    {
                         a.ApplyRedistributeTargets(peripheralTargets, skipJointRigidFragmentMotion: true);
+                        // #region agent log
+                        if (DebugLogTrigonalDiagD374b0)
+                        {
+                            try
+                            {
+                                string d = "{\"atomId\":" + a.GetInstanceID() + ",\"Z\":" + a.AtomicNumber
+                                    + ",\"targetCount\":" + peripheralTargets.Count
+                                    + ",\"frame\":" + Time.frameCount + "}";
+                                AppendDebugSessionNdjson_d374b0("H-peripheral-redist", "RefreshSigmaBondOrbitalHybridAlignmentForConnectedMolecule", "peripheral_apply", d);
+                            }
+                            catch
+                            {
+                                /* optional */
+                            }
+                        }
+                        // #endregion
+                    }
                 }
             }
             a.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(null, redistributionOperationBondForPredictive, null);

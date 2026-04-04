@@ -40,7 +40,7 @@ public class BondFormationTemplatePreviewInput : MonoBehaviour
         public string exitReason;
     }
 
-    const string AgentDebugLogFile = "debug-9ddc95.log";
+    static readonly string AgentDebugLogFile = ProjectAgentDebugLog.CursorDebugModeIngestNdjsonFileName;
     const string AgentDebugSessionId = "9ddc95";
 
     static void AgentLogTemplatePick(string hypothesisId, AgentTemplatePickDbg dbg)

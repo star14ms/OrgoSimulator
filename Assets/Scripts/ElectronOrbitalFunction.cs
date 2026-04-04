@@ -3433,6 +3433,13 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 sourceAtom.LogJointFragRedistLine("afterPiBondSnap", "piStep2Src", fragWorldPiA, pivotStartPiA, sourceAtom.transform.position, 1f, deltaJointPiA, partnerSummaryPiA);
                 targetAtom.LogJointFragRedistLine("afterPiBondSnap", "piStep2Tgt", fragWorldPiB, pivotStartPiB, targetAtom.transform.position, 1f, deltaJointPiB, partnerSummaryPiB);
             }
+            // #region agent log
+            if (AtomFunction.DebugLogTrigonalDiagD374b0)
+            {
+                sourceAtom.AppendCarbonSigmaNeighborWorldAnglesNdjson_d374b0("afterPiBondSnap_piStep2Src");
+                targetAtom.AppendCarbonSigmaNeighborWorldAnglesNdjson_d374b0("afterPiBondSnap_piStep2Tgt");
+            }
+            // #endregion
         }
 
         // Animation + ApplyRedistributeTargets already placed orbitals at VSEPR positions above.

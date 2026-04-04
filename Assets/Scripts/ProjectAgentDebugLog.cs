@@ -111,7 +111,7 @@ public static class ProjectAgentDebugLog
         return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
     }
 
-    /// <summary>Ingest file under <c>.cursor/</c> for <see cref="AppendCursorWorkspaceDebugNdjson"/>; distinct from <see cref="DefaultFileName"/>.</summary>
+    /// <summary>Single workspace debug log under <c>.cursor/</c>: Cursor ingest, orbital mirror lines, and <see cref="AtomFunction.AppendOcoCaseDebugNdjson"/> / session probes all append here as NDJSON.</summary>
     public const string CursorDebugModeIngestNdjsonFileName = "cursor-workspace-debug.ndjson";
 
     /// <summary>Session id on each ingest line; override in tooling if you partition runs.</summary>
@@ -189,7 +189,11 @@ public static class ProjectAgentDebugLog
         long ts = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
         string lineIngest = BuildCursorWorkspaceNdjsonLine(
             CursorDebugModeIngestSessionId, hypothesisId, location, message, dataJsonObject, runId, ts);
+        TryAppendLineToUnifiedCursorWorkspaceFile(lineIngest, logFirstPathAsIngest: true);
+    }
 
+    static void TryAppendLineToUnifiedCursorWorkspaceFile(string line, bool logFirstPathAsIngest)
+    {
         string root = null;
         try
         {
@@ -207,9 +211,9 @@ public static class ProjectAgentDebugLog
             string dirIngest = Path.GetDirectoryName(pathIngest);
             if (!string.IsNullOrEmpty(dirIngest) && !Directory.Exists(dirIngest))
                 Directory.CreateDirectory(dirIngest);
-            File.AppendAllText(pathIngest, lineIngest);
+            File.AppendAllText(pathIngest, line);
 #if UNITY_EDITOR
-            if (!_cursorDebugModeIngestLoggedPathOnce)
+            if (logFirstPathAsIngest && !_cursorDebugModeIngestLoggedPathOnce)
             {
                 _cursorDebugModeIngestLoggedPathOnce = true;
                 Debug.Log("[cursor-debug-mode-ingest] NDJSON path=" + pathIngest + " sessionId=" + CursorDebugModeIngestSessionId);
@@ -272,13 +276,14 @@ public static class ProjectAgentDebugLog
         }
     }
 
-    /// <summary>Plaintext mirror file name, written only under <c>.cursor/</c> — not at project root.</summary>
-    public const string OrbitalRedistMirrorFileName = "debug-orbitals-redist.log";
+    /// <summary>Obsolete name: orbital mirror now uses <see cref="CursorDebugModeIngestNdjsonFileName"/>.</summary>
+    [Obsolete("Use CursorDebugModeIngestNdjsonFileName; orbital mirror is merged into that NDJSON log.")]
+    public const string OrbitalRedistMirrorFileName = "cursor-workspace-debug.ndjson";
 
-    /// <summary>When true (default), <see cref="AppendOrbitalRedistMirrorLine"/> appends under <c>.cursor/debug-orbitals-redist.log</c> only.</summary>
+    /// <summary>When true (default), <see cref="AppendOrbitalRedistMirrorLine"/> appends NDJSON lines to <see cref="CursorDebugModeIngestNdjsonFileName"/> (same file as ingest).</summary>
     public static bool MirrorOrbitalRedistDiagnosticsToProjectFile = true;
 
-    /// <summary>Appends one plaintext diagnostics line to <c>.cursor/debug-orbitals-redist.log</c> when <see cref="MirrorOrbitalRedistDiagnosticsToProjectFile"/> is true. Workspace-only; no project-root copy.</summary>
+    /// <summary>Appends one diagnostics line wrapped as NDJSON (<c>hypothesisId=orbitals-redist-mirror</c>, <c>data.line</c>) to <see cref="CursorDebugModeIngestNdjsonFileName"/> when <see cref="MirrorOrbitalRedistDiagnosticsToProjectFile"/> is true.</summary>
     public static void AppendOrbitalRedistMirrorLine(string line)
     {
         if (string.IsNullOrEmpty(line)) return;
@@ -286,30 +291,11 @@ public static class ProjectAgentDebugLog
 
         if (!MirrorOrbitalRedistDiagnosticsToProjectFile) return;
 
-        string payload = trimmed + Environment.NewLine;
-        string root = null;
-        try
-        {
-            root = Directory.GetParent(Application.dataPath)?.FullName;
-        }
-        catch
-        {
-            return;
-        }
-        if (string.IsNullOrEmpty(root)) return;
-
-        string path = Path.GetFullPath(Path.Combine(root, ".cursor", OrbitalRedistMirrorFileName));
-        try
-        {
-            string dir = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                Directory.CreateDirectory(dir);
-            File.AppendAllText(path, payload);
-        }
-        catch (Exception e)
-        {
-            Debug.LogWarning("[orbitals-redist-file] append failed path=" + path + " err=" + e.Message);
-        }
+        long ts = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+        string dataJson = "{\"line\":\"" + EscapeJson(trimmed) + "\"}";
+        string ndjsonLine = BuildCursorWorkspaceNdjsonLine(
+            CursorDebugModeIngestSessionId, "orbitals-redist-mirror", "AppendOrbitalRedistMirrorLine", "mirror_line", dataJson, "run1", ts);
+        TryAppendLineToUnifiedCursorWorkspaceFile(ndjsonLine, logFirstPathAsIngest: false);
     }
 
     /// <summary>Append one line to <c>project-root/.log</c> (used by <c>[vsepr3d]</c> / <c>[bond-break]</c> diagnostics).</summary>
