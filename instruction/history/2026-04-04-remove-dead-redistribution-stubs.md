@@ -1,0 +1,3 @@
+# Summary (since last /compact)
+
+Removed dead redistribution scaffolding: the empty `TryRedistributeOrbitalsAfterBondChange` stub in `ElectronOrbitalFunction` (plus a clarifying comment on instant bond break), and three no-op static helpers in `MoleculeBuilder` (`RedistributeOrbitalsOnConnectedMolecule`, `…Except`, `RedistributeOrbitalsFunctionalGroupSide`) together with their two call sites before FG finalize. Deleted two superseded instruction markdown files (`RedistributeOrbitals3D-flow.md`, `electron-redistribution-repulsion-guide-group.md`). A new design doc `instruction/electron-redistribution-orbital-drag-events.md` is present in the working tree but is still **untracked**—add it when committing if it should ship with this batch.

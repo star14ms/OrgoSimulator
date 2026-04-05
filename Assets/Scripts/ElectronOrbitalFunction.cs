@@ -3409,8 +3409,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         // Post-animation RedistributeOrbitals3D recomputes with post-H-snap state and displaces lone pairs
         // (e.g., CH4 H-auto: internuclear axes shift after SnapHydrogenSigmaNeighborsToBondOrbitalAxes,
         // causing the recomputation to produce non-tetrahedral geometry).
-        // Instant bond break runs RedistributeOrbitals from CovalentBond.BreakBond; this coroutine does not call TryRedistributeOrbitalsAfterBondChange.
-        // TryRedistributeOrbitalsAfterBondChange(sourceAtom, targetAtom, piBeforeSource, piBeforeTarget);
+        // Instant bond break runs redistribution from CovalentBond.BreakBond; this coroutine does not invoke a second post-pass here.
     }
 
     static (float sourceDiff, float targetDiff) ComputePiBondAngleDiffs(AtomFunction sourceAtom, AtomFunction targetAtom, Vector3 bondPos, Quaternion bondRot, CovalentBond bond)
@@ -3513,14 +3512,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         float bondAngle = OrbitalAngleUtility.DirectionToAngleWorld(planarBondDir);
         float diff = OrbitalAngleUtility.NormalizeAngle(sourceAngle - bondAngle);
         return diff;
-    }
-
-    static void TryRedistributeOrbitalsAfterBondChange(AtomFunction sourceAtom, AtomFunction targetAtom, int piBeforeSource, int piBeforeTarget)
-    {
-        _ = sourceAtom;
-        _ = targetAtom;
-        _ = piBeforeSource;
-        _ = piBeforeTarget;
     }
 
     /// <param name="partnerOrbital">Lone pair on the partner atom (receptor direction reference).</param>

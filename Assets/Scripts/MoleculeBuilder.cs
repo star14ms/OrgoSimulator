@@ -460,28 +460,6 @@ public class MoleculeBuilder : MonoBehaviour
         return true;
     }
 
-    static void RedistributeOrbitalsOnConnectedMolecule(AtomFunction anyAtomInFragment)
-    {
-        _ = anyAtomInFragment;
-    }
-
-    /// <summary>Like <see cref="RedistributeOrbitalsOnConnectedMolecule"/> but skips <paramref name="skipAtom"/> (e.g. attachment carbon when preserving —CH₃ lobe/H geometry).</summary>
-    static void RedistributeOrbitalsOnConnectedMoleculeExcept(AtomFunction anyAtomInFragment, AtomFunction skipAtom, HashSet<AtomFunction> pinAtomsForSigmaRelax = null)
-    {
-        _ = anyAtomInFragment;
-        _ = skipAtom;
-        _ = pinAtomsForSigmaRelax;
-    }
-
-    /// <summary>
-    /// VSEPR redistribute only on the functional-group fragment (beyond the <paramref name="parent"/>–<paramref name="anchor"/> σ bond), not the whole substrate.
-    /// </summary>
-    static void RedistributeOrbitalsFunctionalGroupSide(AtomFunction parent, AtomFunction anchor)
-    {
-        _ = parent;
-        _ = anchor;
-    }
-
     /// <summary>
     /// After FG H saturation: Newman-stagger each heavy along the σ bond toward <paramref name="parent"/> (breadth order),
     /// including π-bearing centers (carbonyl C, nitrile C, …). Then sync σ hybrid directions on <paramref name="parent"/>
@@ -973,8 +951,6 @@ public class MoleculeBuilder : MonoBehaviour
 
         TryFormPiBondsForFunctionalGroupCenter(anchor, parent);
 
-        RedistributeOrbitalsFunctionalGroupSide(parent, anchor);
-
         if (edit != null)
         {
             var fgOnly = new List<AtomFunction>();
@@ -1021,7 +997,6 @@ public class MoleculeBuilder : MonoBehaviour
         }
 
         EnsureSinglePiOnTrigonalCnCenters(touched, parent);
-        RedistributeOrbitalsFunctionalGroupSide(parent, anchor);
 
         // H saturation and post-saturation redistribute rebuild local tetrahedra; Newman + σ hybrid sync last.
         FinalizeFunctionalGroupNewmanAndSigmaHybridSync(parent, anchor, touched);
