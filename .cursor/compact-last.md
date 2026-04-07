@@ -1,4 +1,4 @@
 # Last compact
 - **When**: 2026-04-07
 - **Ref**: pending
-- **Note**: Follow-up summary captured while working tree is uncommitted (current HEAD `f8690d9`).
+- **Note**: Working tree still includes σ-break pure redistribution (add `SigmaBreakPureRedistribution` + `AtomFunction` / `CovalentBond` edits). Current committed HEAD: `c9d6f00`. Update **Ref** to that hash (or a new hash) after you commit.

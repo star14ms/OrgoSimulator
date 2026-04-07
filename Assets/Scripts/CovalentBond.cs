@@ -975,19 +975,13 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <param name="userDragBondCylinderBreak">When true (bond broken by dragging the bond orbital), both bonding electrons stay on the dragged atom's orbital.</param>
-    /// <param name="instantRedistributionForDestroyPartner">When true, skip post-break <see cref="AtomFunction.RedistributeOrbitals"/> so callers can keep nuclear/orbital framing (e.g. edit-mode replace-H / destroy-bridge before attach). Default false runs VSEPR redistribution after ex-bond lobes are placed.</param>
+    /// <param name="instantRedistributionForDestroyPartner">When true, skip post-break <see cref="AtomFunction.CoLerpBondBreakRedistribution"/> (pure σ-break layout lerp) so callers can keep nuclear/orbital framing (e.g. edit-mode replace-H / destroy-bridge before attach). Default false runs redistribution after ex-bond lobes are placed.</param>
     public void BreakBond(AtomFunction returnOrbitalTo, bool userDragBondCylinderBreak = false, bool instantRedistributionForDestroyPartner = false)
     {
         if (orbital == null) return;
 
         // Bond-line pose for orbitals (must capture before UnregisterBond — GetOrbitalTargetWorldState uses bond topology).
         var (bondOrbitalWorldPos, bondOrbitalWorldRot) = GetOrbitalTargetWorldState();
-
-        int edgesBetweenPartners = atomA != null && atomB != null ? atomA.GetBondsTo(atomB) : 0;
-        int sigmaBeforeA = atomA != null ? atomA.GetDistinctSigmaNeighborCount() : -1;
-        int sigmaBeforeB = atomB != null ? atomB.GetDistinctSigmaNeighborCount() : -1;
-        bool sigmaCleavageBetweenPartners = edgesBetweenPartners <= 1;
-        bool relaxCoplanarSigmaToTetrahedralForBreak = !IsSigmaBondLine();
 
         atomA?.UnregisterBond(this);
         atomB?.UnregisterBond(this);
@@ -1083,28 +1077,14 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         if (!instantRedistributionForDestroyPartner && atomA != null && atomB != null)
         {
-            Vector3 refWorldA = (atomB.transform.position - atomA.transform.position).normalized;
-            if (refWorldA.sqrMagnitude < 1e-8f) refWorldA = Vector3.right;
-            Vector3 refWorldB = (atomA.transform.position - atomB.transform.position).normalized;
-
-            HashSet<AtomFunction> pinSigmaRelax = null;
-            if (!sigmaCleavageBetweenPartners)
-                pinSigmaRelax = new HashSet<AtomFunction> { atomA, atomB };
-
-            ElectronOrbitalFunction guideA = returnOrbitalTo == atomA ? orbital : newOrbital;
-            ElectronOrbitalFunction guideB = returnOrbitalTo == atomB ? orbital : newOrbital;
+            ElectronOrbitalFunction antiGuideA = otherAtom == atomA && newOrbital.ElectronCount == 0 ? newOrbital : null;
+            ElectronOrbitalFunction antiGuideB = otherAtom == atomB && newOrbital.ElectronCount == 0 ? newOrbital : null;
 
             atomA.StartCoroutine(atomA.CoLerpBondBreakRedistribution(
                 atomB,
-                refWorldA,
-                refWorldB,
-                guideA,
-                guideB,
-                sigmaBeforeA,
-                sigmaBeforeB,
-                sigmaCleavageBetweenPartners,
-                FinishBreakBondTail,
-                this));
+                antiGuideA,
+                antiGuideB,
+                FinishBreakBondTail));
             return;
         }
 
