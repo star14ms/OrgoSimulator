@@ -1158,6 +1158,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             return targetOrbital.FormCovalentBondSigmaStartAsSource(targetAtom, sourceAtom, this, dropPosition);
         }
 
+        // σ drag: snap only the dragged lobe back to stored pre-drag locals. Do not snap the partner (often guide receptor):
+        // its canonical local pose can point opposite the incoming partner, breaking phase-1 approach (see dotGuideHeadTowardNonGuide).
+        SnapToOriginal();
+
         var sigmaFormation = SigmaBondFormation.EnsureRunnerInScene();
         if (sigmaFormation != null
             && sigmaFormation.TryBeginOrbitalDragSigmaFormation(

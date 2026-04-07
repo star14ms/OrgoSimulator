@@ -5,6 +5,30 @@ using UnityEngine;
 /// </summary>
 public static class ElectronRedistributionOrchestrator
 {
+    /// <summary>
+    /// Unit bond axis from guide σ op +X; if +X points away from the partner (dot &lt; 0 vs guide→non-guide), use −+X so the bond pocket faces the non-guide. Same rule 0e/1e/2e.
+    /// </summary>
+    static Vector3 NormalizedGuideSigmaOpHeadForDrag(
+        ElectronOrbitalFunction guideOp,
+        Vector3 guidePosW,
+        Vector3 nonGuidePosW)
+    {
+        Vector3 towardNg = nonGuidePosW - guidePosW;
+        float towardMag2 = towardNg.sqrMagnitude;
+        if (guideOp != null)
+        {
+            Vector3 gh = OrbitalAngleUtility.GetOrbitalDirectionWorld(guideOp.transform);
+            if (gh.sqrMagnitude > 1e-10f)
+            {
+                gh.Normalize();
+                if (towardMag2 > 1e-10f && Vector3.Dot(gh, towardNg) < 0f)
+                    gh = -gh;
+                return gh;
+            }
+        }
+        return towardMag2 > 1e-10f ? towardNg.normalized : Vector3.right;
+    }
+
     /// <summary>When true, resolve guide atoms and log only — no hybrid refresh. Default off so σ formation runs hybrid alignment.</summary>
     public static bool DryRunLogOnly = false;
 
@@ -36,7 +60,7 @@ public static class ElectronRedistributionOrchestrator
             ExecuteSigmaFormation12HybridAlignment(nonGuide, guide, operationBondOrNull);
     }
 
-    /// <summary>Where the non-guide nucleus should sit for σ pre-bond: along the guide op orbital head from the guide, at bond length.</summary>
+    /// <summary>Non-guide nucleus target: guide position + guide σ op head × bond length (orbital-drag σ phase 1).</summary>
     public static Vector3 ComputeNonGuideNucleusTargetAlongGuideOpHead(
         AtomFunction guide,
         AtomFunction nonGuide,
@@ -45,15 +69,8 @@ public static class ElectronRedistributionOrchestrator
     {
         Vector3 g = guide.transform.position;
         Vector3 n0 = nonGuide.transform.position;
-        Vector3 gh = OrbitalAngleUtility.GetOrbitalDirectionWorld(guideOp.transform);
-        if (gh.sqrMagnitude < 1e-10f)
-        {
-            Vector3 fallback = n0 - g;
-            gh = fallback.sqrMagnitude > 1e-10f ? fallback.normalized : Vector3.right;
-        }
-        else
-            gh.Normalize();
-        return g + gh * bondLength;
+        Vector3 u = NormalizedGuideSigmaOpHeadForDrag(guideOp, g, n0);
+        return g + u * bondLength;
     }
 
     /// <summary>
@@ -76,21 +93,15 @@ public static class ElectronRedistributionOrchestrator
         ElectronOrbitalFunction guideOp = guide == atomA ? orbA : orbB;
         if (nonGuideOp == null || guideOp == null) return;
 
-        Vector3 guideHead = OrbitalAngleUtility.GetOrbitalDirectionWorld(guideOp.transform);
-        if (guideHead.sqrMagnitude < 1e-10f)
-        {
-            Vector3 towardNonGuide = nonGuide.transform.position - guide.transform.position;
-            if (towardNonGuide.sqrMagnitude < 1e-10f) return;
-            guideHead = towardNonGuide.normalized;
-        }
-        else
-            guideHead.Normalize();
-
+        Vector3 g = guide.transform.position;
+        Vector3 nn = nonGuide.transform.position;
+        Vector3 guideHead = NormalizedGuideSigmaOpHeadForDrag(guideOp, g, nn);
         Vector3 desiredNonGuideHead = -guideHead;
+
         Vector3 currentHead = OrbitalAngleUtility.GetOrbitalDirectionWorld(nonGuideOp.transform);
         if (currentHead.sqrMagnitude < 1e-10f)
         {
-            Vector3 towardGuide = guide.transform.position - nonGuide.transform.position;
+            Vector3 towardGuide = g - nn;
             if (towardGuide.sqrMagnitude < 1e-10f) return;
             currentHead = towardGuide.normalized;
         }
@@ -102,7 +113,6 @@ public static class ElectronRedistributionOrchestrator
             return;
 
         Quaternion delta = Quaternion.FromToRotation(currentHead, desiredNonGuideHead);
-
         nonGuide.ApplyRigidWorldRotationToNucleusParentedOrbitals(delta, nonGuideOp);
     }
 
