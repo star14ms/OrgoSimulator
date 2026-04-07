@@ -126,6 +126,15 @@ public class SigmaBondFormation : MonoBehaviour
 
         try
         {
+            // Pointer-up can still leave the dragged lobe at the drop world pose in the same frame StartCoroutine runs.
+            // Snap to pre-drag locals, then wait one frame so placement / prebond read +X and nuclei from the restored configuration.
+            var draggedLobeToRestore = redistributionGuideTieBreakDraggedOrbital != null
+                ? redistributionGuideTieBreakDraggedOrbital
+                : orbA;
+            if (draggedLobeToRestore != null)
+                draggedLobeToRestore.SnapToOriginal();
+            yield return null;
+
             int merged = orbA.ElectronCount + orbB.ElectronCount;
             var guideOrb = redistributionGuideTieBreakDraggedOrbital != null ? redistributionGuideTieBreakDraggedOrbital : orbA;
             ElectronRedistributionGuide.ResolveGuideAtomForPair(atomA, atomB, guideOrb, out var guide, out var nonGuide);
@@ -276,9 +285,13 @@ public class SigmaBondFormation : MonoBehaviour
             {
                 var snapBeforeG = new List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)>();
                 guide.SnapshotNucleusParentedOrbitalLocalTransforms(snapBeforeG);
-                // Keep phase-3 ownership from phase-1 latch; re-resolving after Create can swap guide/non-guide and rotate the wrong center.
-                if (guide != null && nonGuide != null && guide.AtomicNumber > 1)
-                    guide.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(nonGuide, bond, null);
+                // Same σ-12 redistribution as EditModeManager postbond: guide-only because bond.SkipNonGuideExecuteSigmaFormation12HybridPass is set above.
+                ElectronRedistributionOrchestrator.RunElectronRedistributionForBondEvent(
+                    ElectronRedistributionOrchestrator.BondRedistributionEventId.SigmaFormation12,
+                    atomA,
+                    atomB,
+                    guideOrb,
+                    bond);
                 var snapAfterG = new List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)>();
                 guide.SnapshotNucleusParentedOrbitalLocalTransforms(snapAfterG);
                 AtomFunction.RestoreNucleusParentedOrbitalLocalTransforms(snapBeforeG);

@@ -6,25 +6,52 @@ using UnityEngine;
 public static class ElectronRedistributionOrchestrator
 {
     /// <summary>
-    /// Unit bond axis from guide σ op +X; if +X points away from the partner (dot &lt; 0 vs guide→non-guide), use −+X so the bond pocket faces the non-guide. Same rule 0e/1e/2e.
+    /// Unit vector from <paramref name="atom"/> nucleus toward <paramref name="orb"/> (world positions).
+    /// Same for 0e/1e/2e; not tied to guide/non-guide. Degenerate offset falls back to local +X.
+    /// </summary>
+    static Vector3 SigmaLobeUnitDirectionFromAtom(ElectronOrbitalFunction orb, AtomFunction atom)
+    {
+        if (orb == null) return Vector3.right;
+        if (atom != null)
+        {
+            Vector3 v = orb.transform.position - atom.transform.position;
+            if (v.sqrMagnitude > 1e-10f)
+                return v.normalized;
+        }
+        return OrbitalAngleUtility.GetOrbitalDirectionWorld(orb.transform);
+    }
+
+    /// <summary>
+    /// Unit axis for the guide atom’s in-operation σ lobe: <see cref="SigmaLobeUnitDirectionFromAtom"/> for that lobe.
+    /// Phase-1: non-guide nucleus at <c>guidePos + u × bondLength</c>; prebond non-guide lobe targets <c>-u</c>.
     /// </summary>
     static Vector3 NormalizedGuideSigmaOpHeadForDrag(
         ElectronOrbitalFunction guideOp,
-        Vector3 guidePosW,
+        AtomFunction guideAtom,
         Vector3 nonGuidePosW)
     {
+        AtomFunction guideResolved = guideAtom;
+        if (guideResolved == null && guideOp != null && guideOp.transform.parent != null)
+            guideResolved = guideOp.transform.parent.GetComponent<AtomFunction>();
+
+        Vector3 guidePosW;
+        if (guideResolved != null)
+            guidePosW = guideResolved.transform.position;
+        else if (guideOp != null && guideOp.transform.parent != null)
+        {
+            var p = guideOp.transform.parent.GetComponent<AtomFunction>();
+            guidePosW = p != null ? p.transform.position : guideOp.transform.position;
+        }
+        else
+            guidePosW = guideOp != null ? guideOp.transform.position : Vector3.zero;
+
         Vector3 towardNg = nonGuidePosW - guidePosW;
         float towardMag2 = towardNg.sqrMagnitude;
         if (guideOp != null)
         {
-            Vector3 gh = OrbitalAngleUtility.GetOrbitalDirectionWorld(guideOp.transform);
+            Vector3 gh = SigmaLobeUnitDirectionFromAtom(guideOp, guideResolved);
             if (gh.sqrMagnitude > 1e-10f)
-            {
-                gh.Normalize();
-                if (towardMag2 > 1e-10f && Vector3.Dot(gh, towardNg) < 0f)
-                    gh = -gh;
-                return gh;
-            }
+                return gh.normalized;
         }
         return towardMag2 > 1e-10f ? towardNg.normalized : Vector3.right;
     }
@@ -69,13 +96,13 @@ public static class ElectronRedistributionOrchestrator
     {
         Vector3 g = guide.transform.position;
         Vector3 n0 = nonGuide.transform.position;
-        Vector3 u = NormalizedGuideSigmaOpHeadForDrag(guideOp, g, n0);
+        Vector3 u = NormalizedGuideSigmaOpHeadForDrag(guideOp, guide, n0);
         return g + u * bondLength;
     }
 
     /// <summary>
-    /// Orbital-drag σ phase 1 (pre-bond): one world rigid rotation on the non-guide nucleus so the op head (+X) is opposite the guide op head;
-    /// the same δ applies to every nucleus-parented orbital on that atom.
+    /// Orbital-drag σ phase 1 (pre-bond): rigid world rotation on the non-guide nucleus so its in-op lobe axis
+    /// (nucleus→orbital) matches <c>−</c> the guide’s in-op axis; δ applies to every nucleus-parented orbital on that atom.
     /// </summary>
     public static void RunSigmaFormation12PrebondNonGuideHybridOnly(
         AtomFunction atomA,
@@ -95,10 +122,10 @@ public static class ElectronRedistributionOrchestrator
 
         Vector3 g = guide.transform.position;
         Vector3 nn = nonGuide.transform.position;
-        Vector3 guideHead = NormalizedGuideSigmaOpHeadForDrag(guideOp, g, nn);
+        Vector3 guideHead = NormalizedGuideSigmaOpHeadForDrag(guideOp, guide, nn);
         Vector3 desiredNonGuideHead = -guideHead;
 
-        Vector3 currentHead = OrbitalAngleUtility.GetOrbitalDirectionWorld(nonGuideOp.transform);
+        Vector3 currentHead = SigmaLobeUnitDirectionFromAtom(nonGuideOp, nonGuide);
         if (currentHead.sqrMagnitude < 1e-10f)
         {
             Vector3 towardGuide = g - nn;
@@ -117,7 +144,8 @@ public static class ElectronRedistributionOrchestrator
     }
 
     /// <summary>
-    /// Orbital-drag σ phase 3 (post-bond): hybrid alignment on the <b>guide</b> center only (bond exists).
+    /// Post-bond σ-12 hybrid on the <b>guide</b> only. Prefer <see cref="RunElectronRedistributionForBondEvent"/> with
+    /// <see cref="CovalentBond.SkipNonGuideExecuteSigmaFormation12HybridPass"/> true (orbital-drag phase 3 / instant postbond).
     /// </summary>
     public static void RunSigmaFormation12PostbondGuideHybridOnly(
         AtomFunction atomA,
@@ -126,10 +154,21 @@ public static class ElectronRedistributionOrchestrator
         CovalentBond bond)
     {
         if (atomA == null || atomB == null || bond == null) return;
-        ElectronRedistributionGuide.ResolveGuideAtomForPair(
-            atomA, atomB, draggedOrbitalForGuideTieBreak, out var guide, out var nonGuide);
-        if (guide == null || nonGuide == null || guide.AtomicNumber <= 1) return;
-        guide.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(nonGuide, bond, null);
+        bool savedSkip = bond.SkipNonGuideExecuteSigmaFormation12HybridPass;
+        bond.SkipNonGuideExecuteSigmaFormation12HybridPass = true;
+        try
+        {
+            RunElectronRedistributionForBondEvent(
+                BondRedistributionEventId.SigmaFormation12,
+                atomA,
+                atomB,
+                draggedOrbitalForGuideTieBreak,
+                bond);
+        }
+        finally
+        {
+            bond.SkipNonGuideExecuteSigmaFormation12HybridPass = savedSkip;
+        }
     }
 
     /// <summary>
