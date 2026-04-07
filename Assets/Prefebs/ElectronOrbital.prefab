@@ -137,7 +137,8 @@ MonoBehaviour:
   drag3DElectronDepthInCapFraction: 0.32
   debugDraw3DElectronDrag: 0
   apexPadding: 0.3
-  bondAnimStep1Duration: 1
-  bondAnimStep2Duration: 1
-  bondAnimStep3Duration: 1
+  sigmaFormationPhase1PrebondSeconds: 2
+  sigmaFormationPhase2CylinderSeconds: 0
+  sigmaFormationPhase2OrbitalToLineSeconds: 1
+  sigmaFormationPhase3PostbondGuideSeconds: 1
   orbitalColliderSize: {x: 1, y: 0.15}

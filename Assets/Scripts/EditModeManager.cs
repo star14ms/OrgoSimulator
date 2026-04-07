@@ -1,8 +1,9 @@
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
-using System.Collections.Generic;
-using System.Linq;
 
 /// <summary>
 /// Manages edit mode: selection (click atom to select, background to deselect), add-atom-to-selected,
@@ -675,7 +676,15 @@ public class EditModeManager : MonoBehaviour
                 if (backbone != null)
                     pinAnchorSigmaRelax = new HashSet<AtomFunction>(anchor.GetAtomsOnSideOfSigmaBond(backbone));
             }
-            FormSigmaBondInstant(anchor, newAtom, orb, newOrb, redistributeAtomA: redistributeAnchor, redistributeAtomB: true, pinSigmaRelaxForAtomA: pinAnchorSigmaRelax, pinSigmaRelaxForAtomB: pinChildSigmaRelax);
+            FormSigmaBondInstant(
+                anchor,
+                newAtom,
+                orb,
+                newOrb,
+                redistributeAtomA: false,
+                redistributeAtomB: false,
+                pinSigmaRelaxForAtomA: pinAnchorSigmaRelax,
+                pinSigmaRelaxForAtomB: pinChildSigmaRelax);
 
             if (atomicNumber == 1 && anchor.AtomicNumber > 1)
                 anchor.TryPlaceTetrahedralHydrogenSubstituentsAboutSingleHeavyNeighbor(GetBondLength());
@@ -806,7 +815,14 @@ public class EditModeManager : MonoBehaviour
         {
             // Do not σ-relax or re-snap the parent: keep its electron/orbital layout as-is; the added atom redistributes (and H-auto / Newman stagger only affect the new center).
             var pinFramework = new HashSet<AtomFunction>(newAtom.GetAtomsOnSideOfSigmaBond(parentAtom));
-            FormSigmaBondInstant(parentAtom, newAtom, parentOrb, newOrb, redistributeAtomA: false, redistributeAtomB: true, pinSigmaRelaxForAtomB: pinFramework);
+            FormSigmaBondInstant(
+                parentAtom,
+                newAtom,
+                parentOrb,
+                newOrb,
+                redistributeAtomA: false,
+                redistributeAtomB: false,
+                pinSigmaRelaxForAtomB: pinFramework);
 
             selectedAtom = newAtom;
             selectedOrbital = newAtom.GetOrbitalClosestToAngle(0f);
@@ -835,8 +851,49 @@ public class EditModeManager : MonoBehaviour
         }
     }
 
-    void FormSigmaBondInstant(AtomFunction atomA, AtomFunction atomB, ElectronOrbitalFunction orbA, ElectronOrbitalFunction orbB, bool redistributeAtomA = true, bool redistributeAtomB = true, HashSet<AtomFunction> pinSigmaRelaxForAtomA = null, HashSet<AtomFunction> pinSigmaRelaxForAtomB = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
+    /// <summary>Instant σ bond from toolbar / add-atom (no orbital-drag timeline). Orbital drag uses <see cref="SigmaBondFormation"/>.</summary>
+    public void FormSigmaBondInstant(
+        AtomFunction atomA,
+        AtomFunction atomB,
+        ElectronOrbitalFunction orbA,
+        ElectronOrbitalFunction orbB,
+        bool redistributeAtomA = true,
+        bool redistributeAtomB = true,
+        HashSet<AtomFunction> pinSigmaRelaxForAtomA = null,
+        HashSet<AtomFunction> pinSigmaRelaxForAtomB = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
     {
+        FormSigmaBondInstantBody(
+            atomA,
+            atomB,
+            orbA,
+            orbB,
+            redistributeAtomA,
+            redistributeAtomB,
+            pinSigmaRelaxForAtomA,
+            pinSigmaRelaxForAtomB,
+            freezeSigmaNeighborSubtreeRoot,
+            orbitalDragPostbondGuideHybridLerp: false,
+            redistributionGuideTieBreakDraggedOrbital: null,
+            phase3GuideLerpSecondsOverride: null);
+    }
+
+    /// <summary>Shared σ bond creation body — also used by <see cref="SigmaBondFormation"/> for degenerate guide/non-guide.</summary>
+    public void FormSigmaBondInstantBody(
+        AtomFunction atomA,
+        AtomFunction atomB,
+        ElectronOrbitalFunction orbA,
+        ElectronOrbitalFunction orbB,
+        bool redistributeAtomA,
+        bool redistributeAtomB,
+        HashSet<AtomFunction> pinSigmaRelaxForAtomA,
+        HashSet<AtomFunction> pinSigmaRelaxForAtomB,
+        AtomFunction freezeSigmaNeighborSubtreeRoot,
+        bool orbitalDragPostbondGuideHybridLerp,
+        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital,
+        float? phase3GuideLerpSecondsOverride)
+    {
+        _ = freezeSigmaNeighborSubtreeRoot;
         int merged = orbA.ElectronCount + orbB.ElectronCount;
         int sigmaBeforeA = atomA.GetDistinctSigmaNeighborCount();
         int sigmaBeforeB = atomB.GetDistinctSigmaNeighborCount();
@@ -848,18 +905,68 @@ public class EditModeManager : MonoBehaviour
         {
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
-            _ = redistributeAtomA;
-            _ = redistributeAtomB;
             _ = sigmaBeforeA;
             _ = sigmaBeforeB;
             _ = pinSigmaRelaxForAtomA;
             _ = pinSigmaRelaxForAtomB;
-            _ = freezeSigmaNeighborSubtreeRoot;
             atomA.RefreshCharge();
             atomB.RefreshCharge();
+
+            if (orbitalDragPostbondGuideHybridLerp)
+            {
+                var guideOrb = redistributionGuideTieBreakDraggedOrbital != null ? redistributionGuideTieBreakDraggedOrbital : orbA;
+                float p3Guide = phase3GuideLerpSecondsOverride ?? orbA.SigmaFormationPhase3PostbondGuideSeconds;
+                if (p3Guide > 1e-5f)
+                {
+                    var snapBeforeA = new List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)>();
+                    var snapBeforeB = new List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)>();
+                    atomA.SnapshotNucleusParentedOrbitalLocalTransforms(snapBeforeA);
+                    atomB.SnapshotNucleusParentedOrbitalLocalTransforms(snapBeforeB);
+                    ElectronRedistributionOrchestrator.RunElectronRedistributionForBondEvent(
+                        ElectronRedistributionOrchestrator.BondRedistributionEventId.SigmaFormation12,
+                        atomA,
+                        atomB,
+                        guideOrb,
+                        bond);
+                    var snapAfterA = new List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)>();
+                    var snapAfterB = new List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)>();
+                    atomA.SnapshotNucleusParentedOrbitalLocalTransforms(snapAfterA);
+                    atomB.SnapshotNucleusParentedOrbitalLocalTransforms(snapAfterB);
+                    AtomFunction.RestoreNucleusParentedOrbitalLocalTransforms(snapBeforeA);
+                    AtomFunction.RestoreNucleusParentedOrbitalLocalTransforms(snapBeforeB);
+                    StartCoroutine(CoLerpSigmaFormationNucleusOrbitalLocals(
+                        snapBeforeA,
+                        snapAfterA,
+                        snapBeforeB,
+                        snapAfterB,
+                        p3Guide,
+                        () => FinishSigmaBondInstantTail(atomA, atomB)));
+                    return;
+                }
+
+                ElectronRedistributionOrchestrator.RunElectronRedistributionForBondEvent(
+                    ElectronRedistributionOrchestrator.BondRedistributionEventId.SigmaFormation12,
+                    atomA,
+                    atomB,
+                    guideOrb,
+                    bond);
+            }
         }
 
         if (bond != null)
+            FinishSigmaBondInstantTail(atomA, atomB);
+    }
+
+    /// <param name="skipHydrogenSigmaNeighborSnapAfterOrbitalDragThreePhase">
+    /// Orbital-drag <see cref="SigmaBondFormation"/> already ran prebond shell alignment on the non-guide center; snapping σ→H axes here
+    /// would call <see cref="SnapHydrogenSigmaNeighborsToBondOrbitalAxes"/> / hybrid refresh on the heavy end and repack lone pairs (visible teleport).
+    /// </param>
+    public void FinishSigmaBondInstantTail(
+        AtomFunction atomA,
+        AtomFunction atomB,
+        bool skipHydrogenSigmaNeighborSnapAfterOrbitalDragThreePhase = false)
+    {
+        if (!skipHydrogenSigmaNeighborSnapAfterOrbitalDragThreePhase)
         {
             float bl = GetBondLength();
             if (atomA != null && atomA.AtomicNumber > 1 && atomB != null && atomB.AtomicNumber == 1)
@@ -867,8 +974,57 @@ public class EditModeManager : MonoBehaviour
             else if (atomB != null && atomB.AtomicNumber > 1 && atomA != null && atomA.AtomicNumber == 1)
                 atomB.SnapHydrogenSigmaNeighborsToBondOrbitalAxes(bl);
         }
-
         RefreshSelectedMoleculeAfterBondChange();
+    }
+
+    public IEnumerator CoLerpSigmaFormationNucleusOrbitalLocals(
+        List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)> beforeA,
+        List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)> afterA,
+        List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)> beforeB,
+        List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)> afterB,
+        float duration,
+        System.Action onComplete)
+    {
+        var endByIdA = new Dictionary<int, (Vector3 lp, Quaternion lr)>(afterA.Count);
+        foreach (var e in afterA)
+            if (e.orb != null)
+                endByIdA[e.orb.GetInstanceID()] = (e.localPos, e.localRot);
+        var endByIdB = new Dictionary<int, (Vector3 lp, Quaternion lr)>(afterB.Count);
+        foreach (var e in afterB)
+            if (e.orb != null)
+                endByIdB[e.orb.GetInstanceID()] = (e.localPos, e.localRot);
+
+        float elapsed = 0f;
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float s = Mathf.Clamp01(elapsed / duration);
+            s = s * s * (3f - 2f * s);
+            ApplySigmaLerpStep(beforeA, endByIdA, s);
+            ApplySigmaLerpStep(beforeB, endByIdB, s);
+            yield return null;
+        }
+
+        AtomFunction.RestoreNucleusParentedOrbitalLocalTransforms(afterA);
+        AtomFunction.RestoreNucleusParentedOrbitalLocalTransforms(afterB);
+
+        onComplete?.Invoke();
+    }
+
+    static void ApplySigmaLerpStep(
+        List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)> startRows,
+        Dictionary<int, (Vector3 lp, Quaternion lr)> endById,
+        float s)
+    {
+        if (startRows == null) return;
+        for (int i = 0; i < startRows.Count; i++)
+        {
+            var row = startRows[i];
+            if (row.orb == null) continue;
+            if (!endById.TryGetValue(row.orb.GetInstanceID(), out var end)) continue;
+            row.orb.transform.localPosition = Vector3.Lerp(row.localPos, end.lp, s);
+            row.orb.transform.localRotation = Quaternion.Slerp(row.localRot, end.lr, s);
+        }
     }
 
     /// <summary>Pins everything on the framework side of <paramref name="heavyCenter"/>'s σ bond to a heavy neighbor (same as H-auto saturating a terminal C).</summary>

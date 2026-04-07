@@ -92,7 +92,7 @@ public class BondFormationDebugHud : MonoBehaviour
         var nextLe = nextGo.AddComponent<LayoutElement>();
         nextLe.preferredHeight = rowH;
         nextLe.flexibleWidth = 1f;
-        nextGo.AddComponent<RectTransform>();
+        // LayoutElement (and subsequent UI components) attach RectTransform; do not AddComponent<RectTransform> again.
         var nextImg = nextGo.AddComponent<Image>();
         var nextBase = new Color(0.28f, 0.42f, 0.32f, 0.94f);
         nextImg.color = nextBase;
@@ -129,7 +129,6 @@ public class BondFormationDebugHud : MonoBehaviour
         var toggleLe = toggleGo.AddComponent<LayoutElement>();
         toggleLe.preferredHeight = rowH;
         toggleLe.flexibleWidth = 1f;
-        toggleGo.AddComponent<RectTransform>();
         var toggleBg = toggleGo.AddComponent<Image>();
         toggleBg.color = SteppedToggleBgOff;
         var steppedT = toggleGo.AddComponent<Toggle>();

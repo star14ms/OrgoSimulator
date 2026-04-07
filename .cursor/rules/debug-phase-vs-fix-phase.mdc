@@ -12,6 +12,10 @@ alwaysApply: true
 
 **Gate:** Do **not** enter the fix phase until the user gives explicit permission in chat to **fix** (or equivalent, e.g. “go ahead and implement the fix”). Until then, limit changes to debugging/triage.
 
+**Keyword (narrow gate):** Treat **debug phase** as the default while investigating. Do **not** implement behavioral / production fixes until the user clearly authorizes the **fix phase** — a message that includes **`fix`** as that authorization (e.g. “fix”, “you can fix”, “enter fix phase”, “implement the fix”) is sufficient. Phrases like “proceed”, “continue”, or “issue reproduced” **without** **`fix`** mean: keep **debugging** (more logs, read logs, hypotheses), not ship a fix.
+
+**Debug instrumentation:** During debug phase, you may **add or expand debug logging** (including NDJSON, `Debug.Log`, flags) **freely** without waiting for **`fix`**. Do not use “need permission to add logs” as a blocker during debug phase.
+
 **After a fix phase:** Treat the next work as **debug phase** again. A production change is **not** proof the issue is resolved. Do **not** chain a **second** fix (another behavioral change) in the same line of work until you have: (1) runtime logs or NDJSON from a verification run, (2) comparison to the contrasting case if the bug is “works in A, fails in B”, and (3) a hypothesis that explains **why** A and B differ (e.g. different reparent order, not only different symptoms at a downstream callsite). **Do not** patch a downstream function to paper over a difference that should be fixed at the true divergence point (e.g. joint math vs **why** the guide orbital is bond-parented in one run and nucleus-parented in another) without that evidence.
 
 **User phrasing:** If the user says something like **“issue reproduced, please proceed”** (or clearly equivalent), interpret it as: the problem **still happens** — **not** verification success. Proceed with **debugging** (read logs, refine hypotheses). Another **fix** still requires explicit fix permission after analysis.

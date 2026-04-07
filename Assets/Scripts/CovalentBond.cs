@@ -25,13 +25,24 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     ElectronOrbitalFunction orbitalBeingFadedForCharge; // During bond formation: the orbital being faded; use its electrons for charge until destroyed
 
     bool orbitalVisible;
+
     bool forwardedPressToOrbital;
     float orbitalToLineAnimProgress = -1f; // -1 = done, 0..1 = animating
-    internal bool animatingOrbitalToBondPosition; // Step 2: orbital moving from atom to bond
-    /// <summary>Step 2 σ-relax only: existing σ line orbitals would re-snap every frame as neighbor H moves — freezes world rot until <see cref="EndSigmaFormationStep2PeripheralOrbitalWorldRotFreeze"/> + full snap.</summary>
-    bool sigmaFormationStep2FreezePeripheralOrbitalWorldRotation;
-    Quaternion sigmaFormationStep2FrozenOrbitalWorldRotation;
+    internal bool animatingOrbitalToBondPosition; // σ/π post-Create: orbital moving from atom to bond before snap
     internal bool orbitalRotationFlipped; // Sigma: flip when source opposite to bond so electrons don't overlap
+
+    /// <summary>
+    /// When set by orbital-drag σ phase 1, <see cref="LateUpdate"/> and bond-frame snap helpers must not overwrite
+    /// <see cref="orbital"/> world pose — <see cref="SigmaBondFormation"/> drives the unified shell that frame.
+    /// </summary>
+    internal bool suppressSigmaPrebondBondFrameOrbitalPose;
+
+    /// <summary>
+    /// Set for σ created by <see cref="SigmaBondFormation"/> orbital-drag three-phase: <see cref="ElectronRedistributionOrchestrator.ExecuteSigmaFormation12HybridAlignment"/>
+    /// must not re-run <c>nonGuide_first</c> TryMatch (phase 1 already aligned the non-guide shell; duplicate refresh teleports lone pairs).
+    /// </summary>
+    internal bool SkipNonGuideExecuteSigmaFormation12HybridPass;
+
     /// <summary>Left-multiplies base σ-orbital world rotation after <see cref="AtomFunction.RedistributeOrbitals3D"/> so +X tracks VSEPR hybrid on the authoritative nucleus.</summary>
     Quaternion orbitalRedistributionWorldDelta = Quaternion.identity;
     PointerEventData storedPressData;
@@ -71,18 +82,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         orbitalRedistributionWorldDelta = delta;
         orbitalRotationFlipped = flipped;
-    }
-
-    internal void BeginSigmaFormationStep2PeripheralOrbitalWorldRotFreeze()
-    {
-        if (!IsSigmaBondLine() || orbital == null) return;
-        sigmaFormationStep2FrozenOrbitalWorldRotation = orbital.transform.rotation;
-        sigmaFormationStep2FreezePeripheralOrbitalWorldRotation = true;
-    }
-
-    internal void EndSigmaFormationStep2PeripheralOrbitalWorldRotFreeze()
-    {
-        sigmaFormationStep2FreezePeripheralOrbitalWorldRotation = false;
     }
 
     /// <summary>Returns how many bond electrons count toward the given atom for charge calculation. Uses electronegativity; when equal EN and odd count, orbital contributor gets the extra electron.</summary>
@@ -130,11 +129,12 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         transform.rotation = BondFrameRotation(delta, useCylinderBondVisual);
     }
 
-    /// <summary>Snaps the bond orbital to the exact world position that matches lineVisual (center + perpendicular * offset). Call at end of step 2 to prevent teleport into step 3. Call UpdateBondTransformToCurrentAtoms first.</summary>
+    /// <summary>Snaps the bond orbital to the exact world position that matches lineVisual (center + perpendicular * offset). Call at end of post-Create formation to prevent teleport into orbital-to-line. Call UpdateBondTransformToCurrentAtoms first.</summary>
     /// <param name="preserveWorldRollFrom">Optional σ-formation: world rot after step-2 lerp (often matches cylinder +X but not bond cylinder roll). When set in 3D σ line, applies swing to match cylinder +X and writes <see cref="orbitalRedistributionWorldDelta"/> so <see cref="LateUpdate"/> agrees.</param>
     public void SnapOrbitalToBondPosition(Quaternion? preserveWorldRollFrom = null)
     {
         if (orbital == null || atomA == null || atomB == null) return;
+        if (suppressSigmaPrebondBondFrameOrbitalPose) return;
         var (worldPos, worldRot) = GetOrbitalTargetWorldState();
         orbital.transform.position = worldPos;
         Quaternion appliedRot = worldRot;
@@ -156,7 +156,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <summary>
-    /// π bond end of step 2: redistribution/animation sets the shared orbital world rotation, but
+    /// π bond end of post-Create formation: redistribution/animation sets the shared orbital world rotation, but
     /// <see cref="GetOrbitalTargetWorldState"/> uses <see cref="orbitalRedistributionWorldDelta"/>·baseR.
     /// Set δ from the current orbital world rotation after <see cref="UpdateBondTransformToCurrentAtoms"/> so
     /// <see cref="SnapOrbitalToBondPosition"/> does not swing the π tip away from the post-redist pose (runtime: OL-3 triad 120 → OL-4 60 without this).
@@ -275,25 +275,14 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         orbitalRedistributionWorldDelta = orbitalWorldRotation * Quaternion.Inverse(baseR);
     }
 
-    /// <summary>Used by <see cref="AtomFunction.UpdateSigmaBondVisualsForAtoms"/>: same as <see cref="SnapOrbitalToBondPosition"/> except during step-2 pure σ-relax when peripheral σ line orbitals freeze world rotation.</summary>
+    /// <summary>Used by <see cref="AtomFunction.UpdateSigmaBondVisualsForAtoms"/>; same guards as LateUpdate σ pose.</summary>
     internal void UpdateSigmaBondVisualsAfterBondTransform()
     {
         if (orbital == null || atomA == null || atomB == null) return;
         bool userDragging = orbitalVisible && orbitalToLineAnimProgress < 0;
         if (userDragging) return;
-        // σ formation step 2: coroutine sets bonding world pose (gauge vs canonical). SnapOrbitalToBondPosition here
-        // would overwrite with δ·baseR while δ is still identity → 180° pop or fight every frame with pure σ-relax.
         if (animatingOrbitalToBondPosition) return;
-
-        if (sigmaFormationStep2FreezePeripheralOrbitalWorldRotation && IsSigmaBondLine())
-        {
-            var (worldPos, _) = GetOrbitalTargetWorldState();
-            orbital.transform.position = worldPos;
-            orbital.transform.rotation = sigmaFormationStep2FrozenOrbitalWorldRotation;
-            float orbScale = orbitalToLineAnimProgress < 0 ? 0.6f : 0.6f * (1f - orbitalToLineAnimProgress);
-            orbital.transform.localScale = Vector3.one * Mathf.Max(0.01f, orbScale);
-            return;
-        }
+        if (suppressSigmaPrebondBondFrameOrbitalPose) return;
         SnapOrbitalToBondPosition();
     }
 
@@ -308,6 +297,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (!IsSigmaBondLine()) return;
         bool userDragging = orbitalVisible && orbitalToLineAnimProgress < 0;
         if (userDragging) return;
+        if (suppressSigmaPrebondBondFrameOrbitalPose) return;
         if (!forceApplyPoseDuringBondToLineAnim && animatingOrbitalToBondPosition) return;
         UpdateBondTransformToCurrentAtoms();
         var (worldPos, worldRot) = GetOrbitalTargetWorldState();
@@ -317,7 +307,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         orbital.transform.localScale = Vector3.one * Mathf.Max(0.01f, orbScale);
     }
 
-    /// <summary>Returns the target world position and rotation for the bond orbital (for step 2 animation).</summary>
+    /// <summary>Returns the target world position and rotation for the bond orbital (post-Create formation animation).</summary>
     public (Vector3 worldPos, Quaternion worldRot) GetOrbitalTargetWorldState()
     {
         Quaternion BaseSigmaOrbitalWorldRotation(bool applyFlip)
@@ -611,7 +601,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         PositionBondTransform(); // Set bond position BEFORE reparenting so orbital keeps correct world pos
         if (!animateOrbitalToBond)
             orbital.transform.SetParent(transform);
-        // When animating: defer reparent until after step 2 so orbital keeps its current rotation and can animate to bond
+        // When animating: defer reparent until after post-Create formation so orbital keeps its current rotation and can animate to bond
         animatingOrbitalToBondPosition = animateOrbitalToBond;
 
         atomA.SetupIgnoreCollisions();
@@ -620,7 +610,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         CreateLineVisual();
         if (animateOrbitalToBond)
         {
-            orbitalVisible = true; // Start with orbital visible for step 3 animation
+            orbitalVisible = true; // Start with orbital visible for orbital-to-line animation
         }
         else
         {
@@ -824,21 +814,16 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         // Position bond orbital at same world position as lineVisual (center + perpendicular * offset)
-        // Skip when user is dragging or when animating orbital to bond (step 2)
+        // Skip when user is dragging or when animating orbital to bond (post-Create formation)
         bool userDragging = orbitalVisible && orbitalToLineAnimProgress < 0;
-        if (orbital != null && !userDragging && !animatingOrbitalToBondPosition)
+        if (orbital != null && !userDragging && !animatingOrbitalToBondPosition && !suppressSigmaPrebondBondFrameOrbitalPose)
         {
             var orbWorldPos = center + perpendicular * offset;
             orbital.transform.position = orbWorldPos;
-            if (sigmaFormationStep2FreezePeripheralOrbitalWorldRotation && IsSigmaBondLine())
-                orbital.transform.rotation = sigmaFormationStep2FrozenOrbitalWorldRotation;
-            else
-            {
-                var baseOrbRot = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
-                if (orbitalRotationFlipped) baseOrbRot = baseOrbRot * Quaternion.Euler(0f, 0f, 180f);
-                var orbRot = orbitalRedistributionWorldDelta * baseOrbRot;
-                orbital.transform.rotation = orbRot;
-            }
+            var baseOrbRot = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
+            if (orbitalRotationFlipped) baseOrbRot = baseOrbRot * Quaternion.Euler(0f, 0f, 180f);
+            var orbRot = orbitalRedistributionWorldDelta * baseOrbRot;
+            orbital.transform.rotation = orbRot;
             float orbScale = orbitalToLineAnimProgress < 0 ? 0.6f : 0.6f * (1f - orbitalToLineAnimProgress);
             orbital.transform.localScale = Vector3.one * Mathf.Max(0.01f, orbScale);
         }
@@ -852,7 +837,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbital.SetPointerBlocked(true);
         }
         bool animating = orbitalToLineAnimProgress >= 0 && orbitalToLineAnimProgress < 1f;
-        bool showLine = !orbitalVisible || animating; // Show line/cylinder from start of step 3 so it grows with orbital shrinking
+        bool showLine = !orbitalVisible || animating; // Show line/cylinder from start of orbital-to-line so it grows with orbital shrinking
         if (lineRenderer != null) lineRenderer.enabled = showLine;
         if (cylinderRenderer != null) cylinderRenderer.enabled = showLine;
         if (lineCollider != null) lineCollider.enabled = !orbitalVisible && orbitalToLineAnimProgress < 0;
@@ -1007,7 +992,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomA?.UnregisterBond(this);
         atomB?.UnregisterBond(this);
 
-        // Animated σ/π formation: shared bond orbital may not yet have merged ElectronCount (step 3 applies merged);
+        // Animated σ/π formation: shared bond orbital may not yet have merged ElectronCount (orbital-to-line applies merged);
         // partner lobe is still fading under bond with the remaining valence. Breaking mid-formation must count both.
         ElectronOrbitalFunction fadeOrbForBreak = orbitalBeingFadedForCharge;
         orbitalBeingFadedForCharge = null;
@@ -1135,7 +1120,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>Gates bond-break motion source logs on <see cref="AtomFunction.RedistributeOrbitals"/> entry. Default on for triage; set false for quiet runs.</summary>
     public static bool DebugLogBreakBondMotionSources = true;
 
-    /// <summary>σ-formation step 2: set redistribute target pose to current locals for occupied nucleus-parented lobes (still used by <see cref="ElectronOrbitalFunction"/> formation).</summary>
+    /// <summary>σ post-Create formation: set redistribute target pose to current locals for occupied nucleus-parented lobes (still used by <see cref="ElectronOrbitalFunction"/> formation).</summary>
     public static void NeutralizeOccupiedRedistTargetsToCurrentLocals(
         AtomFunction nucleus,
         List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> list)

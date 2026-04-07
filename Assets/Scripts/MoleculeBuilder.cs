@@ -353,8 +353,6 @@ public class MoleculeBuilder : MonoBehaviour
         if (atomA == null || atomB == null || orbA == null || orbB == null) return;
 
         int merged = orbA.ElectronCount + orbB.ElectronCount;
-        int sigmaBeforeA = atomA.GetDistinctSigmaNeighborCount();
-        int sigmaBeforeB = atomB.GetDistinctSigmaNeighborCount();
         atomA.UnbondOrbital(orbA);
         atomB.UnbondOrbital(orbB);
 
@@ -363,10 +361,18 @@ public class MoleculeBuilder : MonoBehaviour
         {
             orbA.ElectronCount = merged;
             Destroy(orbB.gameObject);
-            _ = redistributeAtomA;
-            _ = redistributeAtomB;
             atomA.RefreshCharge();
             atomB.RefreshCharge();
+
+            if (redistributeAtomA || redistributeAtomB)
+            {
+                ElectronRedistributionOrchestrator.RunElectronRedistributionForBondEvent(
+                    ElectronRedistributionOrchestrator.BondRedistributionEventId.SigmaFormation12,
+                    atomA,
+                    atomB,
+                    orbA,
+                    bond);
+            }
         }
     }
 
