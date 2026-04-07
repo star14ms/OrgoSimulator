@@ -1,4 +1,4 @@
 # Last compact
-- **When**: 2026-04-06
+- **When**: 2026-04-07
 - **Ref**: pending
-- **Note**: Working tree and untracks summarized vs `ab81d83`. Set **Ref** to `git rev-parse HEAD` after you commit this batch.
+- **Note**: Follow-up summary captured while working tree is uncommitted (current HEAD `f8690d9`).

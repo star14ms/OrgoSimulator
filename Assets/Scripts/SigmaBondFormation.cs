@@ -277,7 +277,9 @@ public class SigmaBondFormation : MonoBehaviour
             {
                 var snapBeforeG = new List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)>();
                 guide.SnapshotNucleusParentedOrbitalLocalTransforms(snapBeforeG);
-                ElectronRedistributionOrchestrator.RunSigmaFormation12PostbondGuideHybridOnly(atomA, atomB, guideOrb, bond);
+                // Keep phase-3 ownership from phase-1 latch; re-resolving after Create can swap guide/non-guide and rotate the wrong center.
+                if (guide != null && nonGuide != null && guide.AtomicNumber > 1)
+                    guide.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(nonGuide, bond, null);
                 var snapAfterG = new List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)>();
                 guide.SnapshotNucleusParentedOrbitalLocalTransforms(snapAfterG);
                 AtomFunction.RestoreNucleusParentedOrbitalLocalTransforms(snapBeforeG);

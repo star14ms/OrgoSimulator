@@ -8419,7 +8419,13 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         // Trigonal (3) and tetrahedral (4) electron domains: apply lone slots from TryMatch so nucleus lobes rotate
         // (domainCount 4 was σ-only via SyncSigma before; prebonding-only path then showed maxRotDeg=0 in NDJSON).
-        if ((domainCount == 3 || domainCount == 4) && bestMapping != null && bestMapping.Count > 0 && bestMapping.Count == loneOrbitals.Count)
+        // For post-bond σ phase-3 predictive refresh (operation bond is sigma), preserve existing guide non-op lone orientation:
+        // keep σ tip sync from bondIdealLocks, but do not remap lone slots (prevents guide lone teleport after step 2).
+        bool skipLoneApplyForPredictiveSigmaPostbond =
+            redistributionOperationBondForPredictive != null && redistributionOperationBondForPredictive.IsSigmaBondLine();
+        if (!skipLoneApplyForPredictiveSigmaPostbond
+            && (domainCount == 3 || domainCount == 4)
+            && bestMapping != null && bestMapping.Count > 0 && bestMapping.Count == loneOrbitals.Count)
         {
             for (int i = 0; i < bestMapping.Count; i++)
             {
