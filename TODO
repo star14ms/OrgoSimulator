@@ -1,1 +1,4 @@
+When you decide the guide orbital group, and sum of atomic mass is same, prioritize the one that was in op
+When bond breaking failed by dragging to atom which is less electronnegative, charge label highlight is not shown, if label is disabled. So make it visible while highlighting. Also highlight the charge label of opposite atom more electronegative with green color.
+
 Consider speical cases for electron redisribution: Cyclic molecules, when bonding formed, if you detect it's cyclic, you should rearrange the atoms except the two atoms in op, to form regular polygons, in that case the rest orbital groups of atoms not involed in cycle should under electron redisribution with special rule, heading opposite direction from center of the ring.

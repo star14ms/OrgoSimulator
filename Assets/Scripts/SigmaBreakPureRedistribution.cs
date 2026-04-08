@@ -434,7 +434,10 @@ public static class SigmaBreakPureRedistribution
         return plan;
     }
 
-    static void BuildSigmaNeighborTargetsWithFragmentRigidRotation(
+    /// <summary>
+    /// Orbital-drag σ phase 3: same rigid fragment step as σ break <see cref="BuildMotionPlanFromTips"/> (pivot = redistributing nucleus).
+    /// </summary>
+    internal static void BuildSigmaNeighborTargetsWithFragmentRigidRotation(
         Vector3 pivotWorld,
         IReadOnlyList<AtomFunction> sigmaNeighbors,
         IReadOnlyList<Vector3> oldUnitDirs,

@@ -1189,6 +1189,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <param name="pinLoneOrbitalForBondBreak">If set and in <paramref name="loneOrbitalsOccupied"/>, that lobe does not participate in permutation; one free ideal vertex is reserved for it.</param>
     /// <param name="pinReservedIdealDirection">When pin is active, the ideal local direction reserved for that lobe (caller applies to the orbital). π-break: tip may still lie along σ; we pick a lone-pair vertex least aligned with σ axes, not the vertex closest to the old π tip.</param>
     /// <param name="bondAxisIdealLocks">For each merged σ axis (parent local), the ideal polyhedron vertex it claimed; used to align shared σ orbitals on <see cref="CovalentBond"/> with the same hybrid frame.</param>
+    /// <param name="useMassWeightedConeAngleLonePermutation">When true (orbital-drag σ phase 3 regular guide), lone→free permutation minimizes Σ(mass × cone angle) with unity masses; otherwise use <see cref="FindBestOrbitalToTargetDirsPermutation"/>.</param>
     bool TryMatchLoneOrbitalsToFreeIdealDirections(
         Vector3 refLocal,
         int slotCount,
@@ -1198,7 +1199,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         out List<(Vector3 oldDir, Vector3 newDir)> mapping,
         out Vector3? pinReservedIdealDirection,
         out List<(Vector3 bondAxisLocal, Vector3 idealLocal)> bondAxisIdealLocks,
-        ElectronOrbitalFunction pinLoneOrbitalForBondBreak = null)
+        ElectronOrbitalFunction pinLoneOrbitalForBondBreak = null,
+        bool useMassWeightedConeAngleLonePermutation = false)
     {
         mapping = null;
         pinReservedIdealDirection = null;
@@ -1340,7 +1342,17 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         else if (loneMatch.Count >= 2 && free.Count == loneMatch.Count)
             MinimizeTargetDirsAzimuthForPermutationCostInPlace(loneMatch, free, refLocal.normalized, 36, 0.05f);
 
-        var permTm = FindBestOrbitalToTargetDirsPermutation(loneMatch, free, bondRadius);
+        int[] permTm;
+        if (useMassWeightedConeAngleLonePermutation)
+        {
+            var masses = new List<float>(loneMatch.Count);
+            for (int mi = 0; mi < loneMatch.Count; mi++)
+                masses.Add(1f);
+            permTm = FindBestOrbitalToTargetDirsPermutationMassWeightedConeOnly(loneMatch, free, masses, null);
+        }
+        else
+            permTm = FindBestOrbitalToTargetDirsPermutation(loneMatch, free, bondRadius);
+
         if (permTm == null)
         {
             LogVsepr3D($"TryMatch FindBestOrbitalToTargetDirsPermutation null: atom={name} Z={atomicNumber} loneMatch={loneMatch.Count}");
@@ -6817,6 +6829,53 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return bestPerm;
     }
 
+    /// <summary>
+    /// Orbital-drag σ phase 3 regular guide: minimize Σ(mass × cone angle) only (see <see cref="PiPermutationConeAngleTipToTargetDeg"/>).
+    /// Tie-break: <see cref="ComparePermutationLex"/>. No quaternion term.
+    /// </summary>
+    static int[] FindBestOrbitalToTargetDirsPermutationMassWeightedConeOnly(
+        List<ElectronOrbitalFunction> orbs,
+        List<Vector3> targetDirs,
+        IReadOnlyList<float> masses,
+        AtomFunction tipSpaceNucleus)
+    {
+        int n = orbs.Count;
+        if (n != targetDirs.Count || n == 0 || masses == null || masses.Count != n) return null;
+        int[] idx = Enumerable.Range(0, n).ToArray();
+        int[] bestPerm = null;
+        float bestCost = float.MaxValue;
+        const float eps = 1e-3f;
+
+        foreach (var perm in Permutations(idx))
+        {
+            float cost = 0f;
+            for (int i = 0; i < n; i++)
+            {
+                Vector3 ut = targetDirs[perm[i]];
+                if (ut.sqrMagnitude < 1e-14f) return null;
+                Vector3 td = ut.normalized;
+                Vector3 ot = tipSpaceNucleus != null
+                    ? tipSpaceNucleus.OrbitalTipDirectionInNucleusLocal(orbs[i])
+                    : OrbitalTipLocalDirection(orbs[i]);
+                if (ot.sqrMagnitude < 1e-14f) return null;
+                ot.Normalize();
+                float ang = PiPermutationConeAngleTipToTargetDeg(orbs[i], ot, td);
+                cost += masses[i] * ang;
+            }
+
+            bool better = bestPerm == null
+                || cost < bestCost - eps
+                || (Mathf.Abs(cost - bestCost) <= eps && ComparePermutationLex(perm, bestPerm) < 0);
+            if (better)
+            {
+                bestCost = cost;
+                bestPerm = (int[])perm.Clone();
+            }
+        }
+
+        return bestPerm;
+    }
+
 #if UNITY_EDITOR
     /// <summary>Editor sanity: rotation about axis preserves unit lengths. See Tools/OrgoSimulator menu.</summary>
     public static bool EditorSelfCheck_TemplateTwistRotationPreservesUnitDirs()
@@ -8371,14 +8430,84 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return new List<ElectronOrbitalFunction> { loneOccupied[bestI], loneOccupied[bestJ] };
     }
 
+    /// <summary>Pairwise domain–domain angle gate for σ hybrid refresh: skip full refresh when current directions already match ideal VSEPR shape.</summary>
+    const float SigmaHybridRefreshConformationPairwiseAngleToleranceDeg = 6f;
+
+    static void AppendSortedPairwiseAnglesForUnitDirections(IReadOnlyList<Vector3> unitDirs, List<float> destAngles)
+    {
+        destAngles.Clear();
+        int n = unitDirs.Count;
+        for (int i = 0; i < n; i++)
+        {
+            for (int j = i + 1; j < n; j++)
+                destAngles.Add(Vector3.Angle(unitDirs[i], unitDirs[j]));
+        }
+        destAngles.Sort();
+    }
+
+    /// <summary>
+    /// True when merged σ axes + occupied lone tips already realize the same pairwise angle multiset as <see cref="VseprLayout.GetIdealLocalDirections"/> for <paramref name="domainCount"/> (rotation-invariant check).
+    /// </summary>
+    bool TryElectronDomainConformationMatchesIdealVsepr(
+        int domainCount,
+        List<Vector3> bondAxesMerged,
+        List<ElectronOrbitalFunction> loneOrbitalsOccupied,
+        float angleToleranceDeg)
+    {
+        if (domainCount < 2) return false;
+        if (bondAxesMerged == null || loneOrbitalsOccupied == null) return false;
+        if (bondAxesMerged.Count + loneOrbitalsOccupied.Count != domainCount) return false;
+
+        var domainDirs = new List<Vector3>(domainCount);
+        foreach (var ax in bondAxesMerged)
+        {
+            if (ax.sqrMagnitude < 1e-14f) return false;
+            domainDirs.Add(ax.normalized);
+        }
+
+        foreach (var o in loneOrbitalsOccupied)
+        {
+            if (o == null) return false;
+            Vector3 t = OrbitalTipLocalDirection(o);
+            if (t.sqrMagnitude < 1e-14f) return false;
+            domainDirs.Add(t.normalized);
+        }
+
+        var currentPairwise = new List<float>();
+        AppendSortedPairwiseAnglesForUnitDirections(domainDirs, currentPairwise);
+
+        var idealArr = VseprLayout.GetIdealLocalDirections(domainCount);
+        if (idealArr == null || idealArr.Length != domainCount) return false;
+        var idealDirs = new List<Vector3>(domainCount);
+        foreach (var v in idealArr)
+        {
+            if (v.sqrMagnitude < 1e-14f) return false;
+            idealDirs.Add(v.normalized);
+        }
+
+        var idealPairwise = new List<float>();
+        AppendSortedPairwiseAnglesForUnitDirections(idealDirs, idealPairwise);
+
+        if (currentPairwise.Count != idealPairwise.Count) return false;
+        for (int i = 0; i < currentPairwise.Count; i++)
+        {
+            if (Mathf.Abs(currentPairwise[i] - idealPairwise[i]) > angleToleranceDeg)
+                return false;
+        }
+
+        return true;
+    }
+
     /// <summary>
     /// During σ bond formation, align shared σ lobes on <see cref="CovalentBond"/> and (for trigonal electron geometry) nucleus lone lobes to the same <see cref="TryMatchLoneOrbitalsToFreeIdealDirections"/> frame as full <see cref="GetRedistributeTargets3D"/>.
     /// Previously only σ received <see cref="SyncSigmaBondOrbitalTipsFromLocks"/>; lone pairs kept pre-hybrid directions so lone–σ angles could deviate from 120° on terminal O (e.g. O=C=O).</summary>
     /// <param name="redistributionOperationBondForPredictive">When set (e.g. π step), use the same predictive lone/axes model as <see cref="GetRedistributeTargets3DVseprTryMatch"/> so full-molecule hybrid refresh does not re-run tetrahedral TryMatch on a leg that already resolved trigonal.</param>
+    /// <param name="orbitalDragSigmaPhase3RegularGuide">Orbital-drag σ phase 3: guide-group <paramref name="refLocal"/> from operation σ internuclear axis; lone permutation uses Σ(mass×cone angle)+lex.</param>
     public void RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(
         AtomFunction partnerAlongNewSigmaBond,
         CovalentBond redistributionOperationBondForPredictive = null,
-        ElectronOrbitalFunction vseprDisappearingLoneForPredictive = null)
+        ElectronOrbitalFunction vseprDisappearingLoneForPredictive = null,
+        bool orbitalDragSigmaPhase3RegularGuide = false)
     {
         int maxSlots = GetOrbitalSlotCount();
         if (maxSlots <= 1)
@@ -8392,12 +8521,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         float mergeToleranceDeg = 360f / (2f * maxSlots);
-        var partnerForRef = partnerAlongNewSigmaBond ?? ResolvePredictiveVseprNewBondPartner(null, redistributionOperationBondForPredictive);
-        Vector3 refLocal = FormationReferenceDirectionLocalForPartner(partnerForRef);
-        if (refLocal.sqrMagnitude < 1e-8f) refLocal = Vector3.right;
-        else refLocal.Normalize();
-
-        ClearSigmaBondOrbitalRedistributionDeltaWhereAuthoritative();
 
         var loneRaw = bondedOrbitals.Where(orb => orb != null && orb.Bond == null && orb.ElectronCount > 0).ToList();
         bool applyPredictive = ShouldApplyPredictiveVseprDomainModelForTryMatch(false, partnerAlongNewSigmaBond, redistributionOperationBondForPredictive);
@@ -8428,11 +8551,41 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             return;
         }
 
+        if (TryElectronDomainConformationMatchesIdealVsepr(
+                domainCount,
+                bondAxes,
+                loneOrbitals,
+                SigmaHybridRefreshConformationPairwiseAngleToleranceDeg))
+            return;
+
+        Vector3 refLocal;
+        if (orbitalDragSigmaPhase3RegularGuide
+            && redistributionOperationBondForPredictive != null
+            && redistributionOperationBondForPredictive.IsSigmaBondLine())
+        {
+            refLocal = InternuclearSigmaAxisNucleusLocalForBond(redistributionOperationBondForPredictive);
+            if (refLocal.sqrMagnitude < 1e-8f)
+            {
+                var partnerForRef = partnerAlongNewSigmaBond ?? ResolvePredictiveVseprNewBondPartner(null, redistributionOperationBondForPredictive);
+                refLocal = FormationReferenceDirectionLocalForPartner(partnerForRef);
+            }
+        }
+        else
+        {
+            var partnerForRef = partnerAlongNewSigmaBond ?? ResolvePredictiveVseprNewBondPartner(null, redistributionOperationBondForPredictive);
+            refLocal = FormationReferenceDirectionLocalForPartner(partnerForRef);
+        }
+        if (refLocal.sqrMagnitude < 1e-8f) refLocal = Vector3.right;
+        else refLocal.Normalize();
+
+        ClearSigmaBondOrbitalRedistributionDeltaWhereAuthoritative();
+
         var idealRaw = VseprLayout.GetIdealLocalDirections(domainCount);
         var newDirs = new List<Vector3>(VseprLayout.AlignFirstDirectionTo(idealRaw, refLocal));
 
         if (!TryMatchLoneOrbitalsToFreeIdealDirections(
-                refLocal, domainCount, bondAxes, loneOrbitals, newDirs, out var bestMapping, out var pinReservedDir, out var bondIdealLocks, null))
+                refLocal, domainCount, bondAxes, loneOrbitals, newDirs, out var bestMapping, out var pinReservedDir, out var bondIdealLocks, null,
+                orbitalDragSigmaPhase3RegularGuide))
         {
             if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
                 && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
@@ -8449,14 +8602,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 (partnerAlongNewSigmaBond != null ? partnerAlongNewSigmaBond.name : "null") + " domainCount=" + domainCount +
                 " σAxesMerged=" + bondAxes.Count + " loneOcc=" + loneOrbitals.Count + " lockPairs=" + bondIdealLocks.Count);
 
-        // Trigonal (3) and tetrahedral (4) electron domains: apply lone slots from TryMatch so nucleus lobes rotate
-        // (domainCount 4 was σ-only via SyncSigma before; prebonding-only path then showed maxRotDeg=0 in NDJSON).
-        // For post-bond σ phase-3 predictive refresh (operation bond is sigma), preserve existing guide non-op lone orientation:
-        // keep σ tip sync from bondIdealLocks, but do not remap lone slots (prevents guide lone teleport after step 2).
-        bool skipLoneApplyForPredictiveSigmaPostbond =
-            redistributionOperationBondForPredictive != null && redistributionOperationBondForPredictive.IsSigmaBondLine();
-        if (!skipLoneApplyForPredictiveSigmaPostbond
-            && (domainCount == 3 || domainCount == 4)
+        if ((domainCount == 3 || domainCount == 4)
             && bestMapping != null && bestMapping.Count > 0 && bestMapping.Count == loneOrbitals.Count)
         {
             for (int i = 0; i < bestMapping.Count; i++)

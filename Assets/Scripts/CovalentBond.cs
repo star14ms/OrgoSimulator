@@ -75,6 +75,17 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>Diagnostics only — read <see cref="orbitalRedistributionWorldDelta"/> for σ-formation pose logs.</summary>
     internal Quaternion GetOrbitalRedistributionWorldDeltaForDiagnostics() => orbitalRedistributionWorldDelta;
 
+    /// <summary>
+    /// Orbital-drag σ phase 3: set δ and apply world pose so bond-parented σ animate with guide hybrid lerp (nucleus snapshots alone exclude bond children).
+    /// </summary>
+    internal void SetOrbitalRedistributionWorldDeltaForPhase3Lerp(Quaternion delta)
+    {
+        if (!IsSigmaBondLine() || orbital == null) return;
+        orbitalRedistributionWorldDelta = delta;
+        UpdateBondTransformToCurrentAtoms();
+        SyncSigmaOrbitalWorldPoseFromRedistribution(forceApplyPoseDuringBondToLineAnim: true);
+    }
+
     internal (Quaternion delta, bool flipped) CapturePiStep2RedistributionForBake() =>
         (orbitalRedistributionWorldDelta, orbitalRotationFlipped);
 
@@ -290,14 +301,23 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// Applies <see cref="GetOrbitalTargetWorldState"/> immediately after changing <see cref="orbitalRedistributionWorldDelta"/>
     /// so σ lobe +X and nucleus-local tip reads match before <c>LateUpdate</c>. Same guards as σ pose block in <c>LateUpdate</c>.
     /// </summary>
-    /// <param name="forceApplyPoseDuringBondToLineAnim">σ formation calls <see cref="ApplySigmaOrbitalTipFromRedistribution"/> while <see cref="animatingOrbitalToBondPosition"/> is still true; those updates must still push world pose to match δ/flip before snap.</param>
+    /// <param name="forceApplyPoseDuringBondToLineAnim">σ formation calls <see cref="ApplySigmaOrbitalTipFromRedistribution"/> while <see cref="animatingOrbitalToBondPosition"/> is still true; those updates must still push world pose to match δ/flip before snap. When true, suppress does not skip apply: phase 3 sets suppress so <see cref="LateUpdate"/> does not fight the lerp, but explicit δ updates must still write the orbital transform.</param>
     public void SyncSigmaOrbitalWorldPoseFromRedistribution(bool forceApplyPoseDuringBondToLineAnim = false)
     {
         if (orbital == null || atomA == null || atomB == null) return;
         if (!IsSigmaBondLine()) return;
         bool userDragging = orbitalVisible && orbitalToLineAnimProgress < 0;
         if (userDragging) return;
-        if (suppressSigmaPrebondBondFrameOrbitalPose) return;
+        if (suppressSigmaPrebondBondFrameOrbitalPose && !forceApplyPoseDuringBondToLineAnim)
+        {
+            #region agent log
+            if (SigmaBondFormation.Phase3GuideBondLerpActive && IsSigmaBondLine())
+                SigmaBondFormation.Phase3AppendNdjson(
+                    "phase3-sync-skipped",
+                    "{\"bondId\":" + GetInstanceID() + ",\"forceApply\":" + (forceApplyPoseDuringBondToLineAnim ? "true" : "false") + "}");
+            #endregion
+            return;
+        }
         if (!forceApplyPoseDuringBondToLineAnim && animatingOrbitalToBondPosition) return;
         UpdateBondTransformToCurrentAtoms();
         var (worldPos, worldRot) = GetOrbitalTargetWorldState();
@@ -818,6 +838,12 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         bool userDragging = orbitalVisible && orbitalToLineAnimProgress < 0;
         if (orbital != null && !userDragging && !animatingOrbitalToBondPosition && !suppressSigmaPrebondBondFrameOrbitalPose)
         {
+            #region agent log
+            if (SigmaBondFormation.Phase3GuideBondLerpActive && IsSigmaBondLine())
+                SigmaBondFormation.Phase3AppendNdjson(
+                    "phase3-lateupdate-applies-without-suppress",
+                    "{\"bondId\":" + GetInstanceID() + "}");
+            #endregion
             var orbWorldPos = center + perpendicular * offset;
             orbital.transform.position = orbWorldPos;
             var baseOrbRot = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
