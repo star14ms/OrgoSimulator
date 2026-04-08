@@ -309,15 +309,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         bool userDragging = orbitalVisible && orbitalToLineAnimProgress < 0;
         if (userDragging) return;
         if (suppressSigmaPrebondBondFrameOrbitalPose && !forceApplyPoseDuringBondToLineAnim)
-        {
-            #region agent log
-            if (SigmaBondFormation.Phase3GuideBondLerpActive && IsSigmaBondLine())
-                SigmaBondFormation.Phase3AppendNdjson(
-                    "phase3-sync-skipped",
-                    "{\"bondId\":" + GetInstanceID() + ",\"forceApply\":" + (forceApplyPoseDuringBondToLineAnim ? "true" : "false") + "}");
-            #endregion
             return;
-        }
         if (!forceApplyPoseDuringBondToLineAnim && animatingOrbitalToBondPosition) return;
         UpdateBondTransformToCurrentAtoms();
         var (worldPos, worldRot) = GetOrbitalTargetWorldState();
@@ -838,12 +830,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         bool userDragging = orbitalVisible && orbitalToLineAnimProgress < 0;
         if (orbital != null && !userDragging && !animatingOrbitalToBondPosition && !suppressSigmaPrebondBondFrameOrbitalPose)
         {
-            #region agent log
-            if (SigmaBondFormation.Phase3GuideBondLerpActive && IsSigmaBondLine())
-                SigmaBondFormation.Phase3AppendNdjson(
-                    "phase3-lateupdate-applies-without-suppress",
-                    "{\"bondId\":" + GetInstanceID() + "}");
-            #endregion
             var orbWorldPos = center + perpendicular * offset;
             orbital.transform.position = orbWorldPos;
             var baseOrbRot = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
