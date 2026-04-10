@@ -61,6 +61,9 @@ public static class ElectronRedistributionOrchestrator
     /// <summary>When true, resolve guide atoms and log only — no hybrid refresh. Default off so σ formation runs hybrid alignment.</summary>
     public static bool DryRunLogOnly = false;
 
+    /// <summary>σ orbital-drag prebond: log guide/non-guide head angles vs internuclear ray. Default off; set true for triage.</summary>
+    public static bool DebugLogSigmaPrebondHeadAngles = false;
+
     public enum BondRedistributionEventId
     {
         SigmaFormation12 = 12,
@@ -154,19 +157,59 @@ public static class ElectronRedistributionOrchestrator
         float alignCenterDeg = Vector3.Angle(currentHead, desiredNonGuideHead);
         float alignTipDeg = tipDirOk ? Vector3.Angle(tipWNorm, desiredNonGuideHead) : alignCenterDeg;
 
+        if (DebugLogSigmaPrebondHeadAngles)
+        {
+            Vector3 gToNn = nn - g;
+            bool gToNnOk = gToNn.sqrMagnitude > 1e-16f;
+            Vector3 gToNnN = gToNnOk ? gToNn.normalized : Vector3.zero;
+            float angGuideHeadVsInternucDeg = -1f;
+            float angNegGuideHeadVsInternucDeg = -1f;
+            if (gToNnOk && uGuideOpFromGuideNuc.sqrMagnitude > 1e-10f)
+            {
+                Vector3 uGn = uGuideOpFromGuideNuc.normalized;
+                angGuideHeadVsInternucDeg = Vector3.Angle(uGn, gToNnN);
+                angNegGuideHeadVsInternucDeg = Vector3.Angle(-uGn, gToNnN);
+            }
+
+            Debug.Log(
+                "[σ-prebond-angle] guideId=" + guide.GetInstanceID()
+                + " nonGuideId=" + nonGuide.GetInstanceID()
+                + " guideOpE=" + guideOp.ElectronCount
+                + " nonGuideOpE=" + nonGuideOp.ElectronCount);
+            Debug.Log(
+                "[σ-prebond-angle] angGuideNucToOpVsGtoNnDeg=" + angGuideHeadVsInternucDeg
+                + " angNegGuideHeadVsGtoNnDeg=" + angNegGuideHeadVsInternucDeg
+                + " alignNgCenterToDesiredDeg=" + alignCenterDeg
+                + " alignNgTipToDesiredDeg=" + alignTipDeg);
+        }
+
         if (alignTipDeg < prebondAlignEpsDeg && alignCenterDeg < prebondAlignEpsDeg)
+        {
+            if (DebugLogSigmaPrebondHeadAngles)
+                Debug.Log("[σ-prebond-angle] action=early_return_already_aligned");
+
             return;
+        }
 
         if (tipDirOk && alignCenterDeg < prebondAlignEpsDeg && alignTipDeg >= prebondAlignEpsDeg)
         {
+            if (DebugLogSigmaPrebondHeadAngles)
+                Debug.Log("[σ-prebond-angle] action=tip_only_FromToRotation");
             Quaternion qTip = Quaternion.FromToRotation(tipWNorm, desiredNonGuideHead);
             nonGuideOp.transform.rotation = qTip * nonGuideOp.transform.rotation;
         }
         else
         {
             if (alignCenterDeg < prebondAlignEpsDeg)
-                return;
+            {
+                if (DebugLogSigmaPrebondHeadAngles)
+                    Debug.Log("[σ-prebond-angle] action=early_return_center_ok_tip_not_tipPathSkipped");
 
+                return;
+            }
+
+            if (DebugLogSigmaPrebondHeadAngles)
+                Debug.Log("[σ-prebond-angle] action=rigid_shell_nucleus_parented");
             Quaternion delta = Quaternion.FromToRotation(currentHead, desiredNonGuideHead);
             nonGuide.ApplyRigidWorldRotationToNucleusParentedOrbitals(delta, nonGuideOp);
         }

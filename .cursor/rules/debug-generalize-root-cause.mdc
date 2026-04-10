@@ -1,0 +1,26 @@
+---
+description: Prefer generalizing shared domain/geometry logic over narrow conditionals that only silence a repro.
+alwaysApply: true
+---
+
+# Debugging: generalize the model, do not patch with ad hoc conditionals
+
+When a bug shows up as wrong counts, wrong axes, wrong parenting, or inconsistent geometry, **do not** ship a fix whose main mechanism is a **narrow conditional** at a downstream callsite whose only job is to undo or skip work for “this error case” (e.g. “if prebond and this orbital is 2e on nucleus, do not append axis X”).
+
+## Why
+
+That pattern **responds to symptoms** after the fact. It duplicates knowledge the **core path** should already encode (what counts as a domain, what counts as a framework direction, when two representations are the same thing). It tends to **accumulate**: each new repro adds another branch, and cases that share the same underlying rule stay inconsistent.
+
+## Prefer instead
+
+1. **Identify the invariant** in plain language (e.g. “an incipient σ must not be represented both as a lone domain and as an extra merged axis”).
+2. **Fix or extend the general path** so that invariant holds for a **class** of situations: one rule in the builder, clearer inputs to the helper, or a single place that decides domain vs axis membership—not a guard clause bolted on where the symptom appeared.
+3. If a condition is truly required, it should read as a **principled predicate** tied to that invariant (reusable, documented), not a one-off “if we are in σ prebond and these four fields match…” escape hatch.
+
+## Relation to other rules
+
+This aligns with **no narrow paper-over branches** in `debug-phase-vs-fix-phase.mdc`: temporary probes and gated logs are fine in debug phase; **production** fixes should converge on **one coherent mechanism**, not stacked special cases.
+
+## When unsure
+
+Stay in **debug phase**: use logs to prove **why** the general path double-counts or mis-classifies, then change that path (or its inputs) so the correct case needs **no** extra local `if`.

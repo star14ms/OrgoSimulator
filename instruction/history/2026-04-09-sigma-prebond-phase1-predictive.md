@@ -1,0 +1,5 @@
+# Compact summary — 2026-04-09
+
+## Summary (since last /compact)
+
+σ orbital-drag prebond: **predictive TryMatch** no longer appends `towardLocal` when the incipient σ is already a lone domain on the nucleus (0e exclusive lobe or **2e** nucleus-parented bondless operation lobe), avoiding double-count with `loneOccupiedRaw` and wrong VSEPR domain totals. **Phase 1** uses the same per-orbital path for **both** 0e/2e polarities on the forming pair; the first loop iteration renders **s = 0** so the animation does not jump on frame one; substituent fragment motion uses **`phase1FragmentStartWorld`** as the position baseline and drops redundant `pStart + off` passes that fought the main loop. **ElectronOrbital** prefab shortens phase 2/3 timing to 0.5s. **ElectronRedistributionOrchestrator** adds optional **`DebugLogSigmaPrebondHeadAngles`** (default off) with bracketed `Debug.Log` for internuclear vs guide head angles. **ProjectAgentDebugLog** gains a Cursor debug-session NDJSON append helper and `JsonFloatInvariant`. **TODO** gains notes on step-1 non-op group rotation vs distance and chain-redistribution parity with step 3.

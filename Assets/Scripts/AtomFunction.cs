@@ -1403,6 +1403,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     /// <summary>
     /// For π/σ formation TryMatch: optionally drop lobes merged out of the post-bond domain picture and augment merged σ axes with the internuclear vector (and best-aligned 0e tip). When <paramref name="applyPredictive"/> is false, copies <paramref name="loneOccupiedRaw"/> and raw merged σ axes only.
+    /// σ orbital-drag prebond: do not append <c>towardLocal</c> when the incipient σ is already one electron domain on this nucleus — the 0e operation lobe (<paramref name="sigmaFormationPrebondZeroEExclusiveLoneDomain"/>) or the 2e operation lobe (<paramref name="sigmaFormationPrebondOperationOrb"/> with 2e, no bond). Otherwise <c>towardLocal</c> plus that lobe in <paramref name="loneOccupiedRaw"/> double-counts (e.g. tetrahedral → five domains).
     /// </summary>
     void BuildPredictiveVseprTryMatchLoneOccupiedAndBondAxes(
         List<ElectronOrbitalFunction> loneOccupiedRaw,
@@ -1416,7 +1417,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         out int bondAxesMergedRawCount,
         out int fadeExcludeInstanceId,
         out int explicitExcludeInstanceId,
-        ElectronOrbitalFunction sigmaFormationPrebondZeroEExclusiveLoneDomain = null)
+        ElectronOrbitalFunction sigmaFormationPrebondZeroEExclusiveLoneDomain = null,
+        ElectronOrbitalFunction sigmaFormationPrebondOperationOrb = null)
     {
         fadeExcludeInstanceId = 0;
         explicitExcludeInstanceId = 0;
@@ -1457,11 +1459,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (towardLocal.sqrMagnitude < 1e-12f)
             return;
         towardLocal.Normalize();
-        // σ orbital-drag prebond: the 0e operation lobe is one electron domain; the incipient σ toward the guide is that
-        // domain, not an extra merged σ axis on top of it. Adding towardLocal here with a separate 0e lone produced one
-        // too many domains (e.g. 3 bonds + incipient + 0e → 5), wrong ideal geometry, or merges that looked like n=3.
-        if (sigmaFormationPrebondZeroEExclusiveLoneDomain == null)
-            AppendUniqueFrameworkDirection(bondAxesForFramework, towardLocal, mergeToleranceDeg);
 
         Vector3 towardNorm = towardLocal;
         ElectronOrbitalFunction bestEmpty = null;
@@ -8532,6 +8529,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         float mergeToleranceDeg = 360f / (2f * maxSlots);
 
         var loneRaw = bondedOrbitals.Where(orb => orb != null && orb.Bond == null && orb.ElectronCount > 0).ToList();
+
         bool applyPredictive = ShouldApplyPredictiveVseprDomainModelForTryMatch(false, partnerAlongNewSigmaBond, redistributionOperationBondForPredictive)
             || (sigmaFormationPrebond && partnerAlongNewSigmaBond != null);
         var partnerForBuild = ResolvePredictiveVseprNewBondPartner(partnerAlongNewSigmaBond, redistributionOperationBondForPredictive);
@@ -8553,14 +8551,42 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             out _,
             out _,
             out _,
-            prebondZeroEExclusive);
+            prebondZeroEExclusive,
+            sigmaFormationPrebond ? sigmaFormationPrebondZeroEOperationOrb : null);
+
+        int bondAxesAfterPredictive = bondAxes != null ? bondAxes.Count : 0;
+        int loneAfterPredictive = loneOrbitals != null ? loneOrbitals.Count : 0;
 
         if (prebondZeroEExclusive != null && !loneOrbitals.Contains(prebondZeroEExclusive))
             loneOrbitals.Add(prebondZeroEExclusive);
 
+        int loneAfterExclusiveAdd = loneOrbitals != null ? loneOrbitals.Count : 0;
+
         loneOrbitals = CollapseNucleusLoneDomainsForTerminalSp2OxoHybridIfNeeded(loneOrbitals, bondAxes, redistributionOperationBondForPredictive);
 
+        int loneAfterCollapse = loneOrbitals != null ? loneOrbitals.Count : 0;
+
         domainCount = GetVseprSlotCount3D(bondAxes.Count, loneOrbitals.Count);
+
+        if (sigmaFormationPrebond && ElectronRedistributionOrchestrator.DebugLogSigmaPrebondHeadAngles)
+        {
+            int opE = sigmaFormationPrebondZeroEOperationOrb != null ? sigmaFormationPrebondZeroEOperationOrb.ElectronCount : -1;
+            int opId = sigmaFormationPrebondZeroEOperationOrb != null ? sigmaFormationPrebondZeroEOperationOrb.GetInstanceID() : 0;
+            Debug.Log(
+                "[σ-prebond-domain] atomId=" + GetInstanceID() + " Z=" + AtomicNumber
+                + " domainCount=" + domainCount
+                + " bondAxes=" + bondAxes.Count
+                + " loneRaw=" + loneRaw.Count
+                + " applyPredictive=" + applyPredictive
+                + " prebondZeroEExclusive=" + (prebondZeroEExclusive != null));
+            Debug.Log(
+                "[σ-prebond-domain] bondAxesAfterPredictive=" + bondAxesAfterPredictive
+                + " loneAfterPredictive=" + loneAfterPredictive
+                + " loneAfterExclusiveAdd=" + loneAfterExclusiveAdd
+                + " loneAfterCollapse=" + loneAfterCollapse
+                + " opId=" + opId
+                + " opE=" + opE);
+        }
         if (domainCount < 1)
         {
             if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
@@ -8686,6 +8712,22 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
         if (refLocal.sqrMagnitude < 1e-8f) refLocal = Vector3.right;
         else refLocal.Normalize();
+
+        if (sigmaFormationPrebond
+            && sigmaFormationPrebondGuideOperationOrb != null
+            && partnerAlongNewSigmaBond != null
+            && ElectronRedistributionOrchestrator.DebugLogSigmaPrebondHeadAngles)
+        {
+            Vector3 partnerRefN = FormationReferenceDirectionLocalForPartner(partnerAlongNewSigmaBond);
+            float angGuideOpCenterVsInternucDeg = partnerRefN.sqrMagnitude > 1e-16f
+                ? Vector3.Angle(refLocal, partnerRefN.normalized)
+                : -1f;
+            Debug.Log(
+                "[σ-prebond-angle] predictiveAtomId=" + GetInstanceID()
+                + " partnerId=" + partnerAlongNewSigmaBond.GetInstanceID()
+                + " guideOpE=" + sigmaFormationPrebondGuideOperationOrb.ElectronCount
+                + " angRefLocalGuideOpCenterVsInternucDeg=" + angGuideOpCenterVsInternucDeg);
+        }
 
         Vector3 vseprTemplateFirst = refLocal;
         if (prebondPinZeroEForTryMatch != null)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using UnityEngine;
@@ -173,6 +174,53 @@ public static class ProjectAgentDebugLog
             Debug.LogWarning("[debug-mode-ndjson] append failed: " + e.Message);
         }
     }
+
+    /// <summary>When true, <see cref="AppendCursorDebugSessionC2019eNdjson"/> writes to <c>.cursor/debug-c2019e.log</c>. Default on for triage; set false for quiet runs.</summary>
+    public static bool WriteCursorDebugSessionC2019eFile = true;
+
+    static bool _loggedCursorDebugSessionC2019ePathOnce;
+
+    /// <summary>
+    /// Cursor Debug Mode: append one NDJSON line to <c>{project}/.cursor/debug-c2019e.log</c> with <c>sessionId=c2019e</c> for HTTP ingest correlation.
+    /// </summary>
+    public static void AppendCursorDebugSessionC2019eNdjson(
+        string hypothesisId,
+        string location,
+        string message,
+        string dataJsonObject = "{}",
+        string runId = "pre-fix")
+    {
+        if (!WriteCursorDebugSessionC2019eFile || string.IsNullOrEmpty(message)) return;
+        const string fileName = "debug-c2019e.log";
+        const string sessionIdLine = "c2019e";
+        long ts = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+        string line = BuildCursorWorkspaceNdjsonLine(
+            sessionIdLine, hypothesisId, location, message, dataJsonObject ?? "{}", runId, ts);
+        try
+        {
+            string root = Directory.GetParent(Application.dataPath)?.FullName;
+            if (string.IsNullOrEmpty(root)) return;
+            string path = Path.GetFullPath(Path.Combine(root, ".cursor", fileName));
+            string dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+            File.AppendAllText(path, line);
+#if UNITY_EDITOR
+            if (!_loggedCursorDebugSessionC2019ePathOnce)
+            {
+                _loggedCursorDebugSessionC2019ePathOnce = true;
+                Debug.Log("[debug-c2019e] writing NDJSON to " + path);
+            }
+#endif
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("[debug-c2019e] append failed: " + e.Message);
+        }
+    }
+
+    /// <summary>Format a numeric value for JSON <c>data</c> object literals (invariant, no locale comma).</summary>
+    public static string JsonFloatInvariant(float value) => value.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>
     /// One NDJSON line to <c>{project}/.cursor/</c><see cref="CursorDebugModeIngestNdjsonFileName"/> for Cursor Debug Mode ingest.
