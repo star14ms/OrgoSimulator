@@ -22,8 +22,10 @@ public static class ElectronRedistributionOrchestrator
     }
 
     /// <summary>
-    /// Unit axis for the guide atom’s in-operation σ lobe: <see cref="SigmaLobeUnitDirectionFromAtom"/> for that lobe.
-    /// Phase-1: non-guide nucleus at <c>guidePos + u × bondLength</c>; prebond non-guide lobe targets <c>-u</c>.
+    /// Unit axis along the guide’s σ lobe from the <b>guide</b> nucleus toward the operation orbital center
+    /// (<see cref="SigmaLobeUnitDirectionFromAtom"/>(guideOp, guide)). Used for <see cref="ComputeNonGuideNucleusTargetAlongGuideOpHead"/>
+    /// (<c>guidePos + u × bondLength</c>). <see cref="RunSigmaFormation12PrebondNonGuideHybridOnly"/> aligns the non-guide in-op 0e head to
+    /// the <b>negated</b> same ray: <c>-(guideOpWorld - guideNucleus)</c> (into the bond / toward guide), not non-guide→guideOp.
     /// </summary>
     static Vector3 NormalizedGuideSigmaOpHeadForDrag(
         ElectronOrbitalFunction guideOp,
@@ -101,8 +103,10 @@ public static class ElectronRedistributionOrchestrator
     }
 
     /// <summary>
-    /// Orbital-drag σ phase 1 (pre-bond): rigid world rotation on the non-guide nucleus so its in-op lobe axis
-    /// (nucleus→orbital) matches <c>−</c> the guide’s in-op axis; δ applies to every nucleus-parented orbital on that atom.
+    /// Orbital-drag σ phase 1 (pre-bond): make the non-guide in-op 0e lobe face the bond using
+    /// <c>-(guideOpWorld - guideNucleus)</c>. If the nucleus→orbital-<b>center</b> ray already matches but hybrid +X <b>tip</b>
+    /// is ~180° off (empty-lobe prefab), applies a world <see cref="Quaternion"/> on that orbital only; otherwise uses a rigid
+    /// shell rotation about the non-guide nucleus when the center ray needs alignment.
     /// </summary>
     public static void RunSigmaFormation12PrebondNonGuideHybridOnly(
         AtomFunction atomA,
@@ -122,8 +126,16 @@ public static class ElectronRedistributionOrchestrator
 
         Vector3 g = guide.transform.position;
         Vector3 nn = nonGuide.transform.position;
-        Vector3 guideHead = NormalizedGuideSigmaOpHeadForDrag(guideOp, guide, nn);
-        Vector3 desiredNonGuideHead = -guideHead;
+        Vector3 uGuideOpFromGuideNuc = SigmaLobeUnitDirectionFromAtom(guideOp, guide);
+        Vector3 desiredNonGuideHead;
+        if (uGuideOpFromGuideNuc.sqrMagnitude > 1e-10f)
+            desiredNonGuideHead = (-uGuideOpFromGuideNuc).normalized;
+        else
+        {
+            Vector3 towardGuide = g - nn;
+            if (towardGuide.sqrMagnitude < 1e-10f) return;
+            desiredNonGuideHead = towardGuide.normalized;
+        }
 
         Vector3 currentHead = SigmaLobeUnitDirectionFromAtom(nonGuideOp, nonGuide);
         if (currentHead.sqrMagnitude < 1e-10f)
@@ -135,12 +147,29 @@ public static class ElectronRedistributionOrchestrator
         else
             currentHead.Normalize();
 
-        float alignDeg = Vector3.Angle(currentHead, desiredNonGuideHead);
-        if (alignDeg < 0.02f)
+        const float prebondAlignEpsDeg = 0.02f;
+        Vector3 tipWRaw = nonGuideOp.transform.TransformDirection(Vector3.right);
+        bool tipDirOk = tipWRaw.sqrMagnitude > 1e-16f;
+        Vector3 tipWNorm = tipDirOk ? tipWRaw.normalized : Vector3.zero;
+        float alignCenterDeg = Vector3.Angle(currentHead, desiredNonGuideHead);
+        float alignTipDeg = tipDirOk ? Vector3.Angle(tipWNorm, desiredNonGuideHead) : alignCenterDeg;
+
+        if (alignTipDeg < prebondAlignEpsDeg && alignCenterDeg < prebondAlignEpsDeg)
             return;
 
-        Quaternion delta = Quaternion.FromToRotation(currentHead, desiredNonGuideHead);
-        nonGuide.ApplyRigidWorldRotationToNucleusParentedOrbitals(delta, nonGuideOp);
+        if (tipDirOk && alignCenterDeg < prebondAlignEpsDeg && alignTipDeg >= prebondAlignEpsDeg)
+        {
+            Quaternion qTip = Quaternion.FromToRotation(tipWNorm, desiredNonGuideHead);
+            nonGuideOp.transform.rotation = qTip * nonGuideOp.transform.rotation;
+        }
+        else
+        {
+            if (alignCenterDeg < prebondAlignEpsDeg)
+                return;
+
+            Quaternion delta = Quaternion.FromToRotation(currentHead, desiredNonGuideHead);
+            nonGuide.ApplyRigidWorldRotationToNucleusParentedOrbitals(delta, nonGuideOp);
+        }
     }
 
     /// <summary>

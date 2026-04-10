@@ -363,6 +363,17 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         orbitalRedistributionWorldDelta = Quaternion.identity;
     }
 
+    /// <summary>
+    /// Clears <see cref="orbitalRedistributionWorldDelta"/> without the InstanceID authority gate.
+    /// Used when the σ prebond pivot recomputes hybrid/VSEPR for its shell: stale δ from a prior formation
+    /// on substituent bonds must not survive when the pivot is not <see cref="AuthoritativeAtomForOrbitalRedistributionPose"/>.
+    /// </summary>
+    internal void ResetOrbitalRedistributionWorldDeltaIgnoringAuthority()
+    {
+        if (!IsSigmaBondLine()) return;
+        orbitalRedistributionWorldDelta = Quaternion.identity;
+    }
+
     /// <summary>Align shared σ lobe +X with hybrid direction expressed from <paramref name="fromAtom"/> (must be atom A or B). Uses bond axis from <paramref name="fromAtom"/> toward partner for sign.</summary>
     public void ApplySigmaOrbitalTipFromRedistribution(AtomFunction fromAtom, Vector3 hybridTipWorld)
     {

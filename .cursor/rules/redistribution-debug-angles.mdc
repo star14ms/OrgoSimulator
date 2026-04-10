@@ -1,0 +1,25 @@
+---
+description: Electron redistribution / σ debugging without Game view — log angles between orbital groups
+globs: "**/*.cs"
+alwaysApply: true
+---
+
+# Redistribution debugging: log angles between groups
+
+When debugging **electron redistribution**, **orbital-drag σ formation**, **prebond / phase-1 shell**, **joint redistribute**, or **hybrid tip vs template** issues, assume the person triaging may **not** see the Unity **Game** / Scene view (remote agent, log-only workflow, or headless run). **Visual misalignment must be recoverable from numbers in the Console / `.log`.**
+
+## What to log
+
+1. **Angles between directions**, not only booleans or branch names — use `Vector3.Angle(a, b)`, `Quaternion.Angle(q0, q1)`, or signed-axis checks when a reference normal is defined. Log **degrees** (and whether vectors were normalized) for:
+   - **Guide vs non-guide**: e.g. guide nucleus → guide σ op center vs non-guide nucleus → non-guide op center; **hybrid +X tip** vs **desired bond-facing** (center can match while tip is ~180° off).
+   - **Template vs world**: VSEPR / redistribute template vertex directions vs corresponding world hybrid tips or guide-cluster directions (especially **vertex 0** vs pin / multiply guide).
+   - **Joint / least-squares rows**: for each row contributing to a joint rotation, angle between **current** tip direction and **target** tip (before applying δ).
+   - **Phase boundaries**: same angles **before** and **after** `ApplyRigidWorldRotation…`, `CommitSigmaRedistributionDelta…`, or a coroutine step so deltas are visible.
+
+2. **One primary tag** for filtering — e.g. `[redist-angle]` at the **start** of each line (see `debug-log-bracket-single-line.mdc`). Pair with **short** identifiers: atom/orbital instance ids, bond id, phase name, `alignCenterDeg=…`, `alignTipDeg=…`.
+
+3. **Avoid log floods** — do not emit per-frame angle dumps from `Update`. For hot paths, gate behind a `static bool` default **off** with a comment (exception to `debug-flags-default-on.mdc` when spam risk is real). For one-shot redistribut steps, default **on** is acceptable.
+
+## Intent
+
+Angles make **group-level** orientation explicit when the viewport is unavailable; they complement (not replace) existing invariants such as `redistribution-joint-vertex0-fixed.mdc`.

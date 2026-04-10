@@ -1188,6 +1188,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <param name="loneOrbitalsOccupied">Non-bonded lobes with ElectronCount &gt; 0 (electron domains).</param>
     /// <param name="pinLoneOrbitalForBondBreak">If set and in <paramref name="loneOrbitalsOccupied"/>, that lobe does not participate in permutation; one free ideal vertex is reserved for it.</param>
     /// <param name="pinReservedIdealDirection">When pin is active, the ideal local direction reserved for that lobe (caller applies to the orbital). π-break: tip may still lie along σ; we pick a lone-pair vertex least aligned with σ axes, not the vertex closest to the old π tip.</param>
+    /// <param name="pinReserveFreeVertexClosestToPinTip">σ orbital-drag prebond 0e pin: empty lobe is intentionally along the incipient σ; always reserve the free ideal direction closest to <paramref name="pinLoneOrbitalForBondBreak"/>'s tip instead of the π-break σ-away heuristic.</param>
     /// <param name="bondAxisIdealLocks">For each merged σ axis (parent local), the ideal polyhedron vertex it claimed; used to align shared σ orbitals on <see cref="CovalentBond"/> with the same hybrid frame.</param>
     /// <param name="useMassWeightedConeAngleLonePermutation">When true (orbital-drag σ phase 3 regular guide), lone→free permutation minimizes Σ(mass × cone angle) with unity masses; otherwise use <see cref="FindBestOrbitalToTargetDirsPermutation"/>.</param>
     bool TryMatchLoneOrbitalsToFreeIdealDirections(
@@ -1200,7 +1201,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         out Vector3? pinReservedIdealDirection,
         out List<(Vector3 bondAxisLocal, Vector3 idealLocal)> bondAxisIdealLocks,
         ElectronOrbitalFunction pinLoneOrbitalForBondBreak = null,
-        bool useMassWeightedConeAngleLonePermutation = false)
+        bool useMassWeightedConeAngleLonePermutation = false,
+        bool pinReserveFreeVertexClosestToPinTip = false)
     {
         mapping = null;
         pinReservedIdealDirection = null;
@@ -1262,9 +1264,10 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             Vector3 pinTip = OrbitalTipLocalDirection(pinLoneOrbitalForBondBreak).normalized;
             int bestFree = -1;
             // π-bond break: former π lobe still points ~along σ; do not reserve the σ-like corner — pick the free vertex least aligned with any σ axis (proper lone-pair site in AX₃E / tetrahedral electron geometry).
+            // σ prebond 0e operation lobe: intentionally along incipient σ; closest-to-tip reservation keeps other lone domains in a consistent tetrahedral frame (runtime: pinReservedDotPinTip ~ -0.06 and ~95° lone swing when this branch was used for prebond pin).
             const float pinTipAlongSigmaTol = 0.82f;
             bool pinAlongSigmaFramework = false;
-            if (bondAxesMerged != null)
+            if (!pinReserveFreeVertexClosestToPinTip && bondAxesMerged != null)
             {
                 foreach (var b in bondAxesMerged)
                 {
@@ -1275,7 +1278,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     }
                 }
             }
-            if (pinAlongSigmaFramework && bondAxesMerged != null && bondAxesMerged.Count > 0)
+            if (!pinReserveFreeVertexClosestToPinTip && pinAlongSigmaFramework && bondAxesMerged != null && bondAxesMerged.Count > 0)
             {
                 float bestScore = float.MaxValue;
                 for (int i = 0; i < free.Count; i++)
@@ -1340,7 +1343,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 free[fi] = aligned3[freeSlotIndices[fi]];
         }
         else if (loneMatch.Count >= 2 && free.Count == loneMatch.Count)
+        {
             MinimizeTargetDirsAzimuthForPermutationCostInPlace(loneMatch, free, refLocal.normalized, 36, 0.05f);
+        }
 
         int[] permTm;
         if (useMassWeightedConeAngleLonePermutation)
@@ -1362,6 +1367,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         mapping = new List<(Vector3, Vector3)>();
         for (int i = 0; i < loneMatch.Count; i++)
             mapping.Add((oldLone[i], free[permTm[i]].normalized));
+
         return true;
     }
 
@@ -1409,7 +1415,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         out List<Vector3> bondAxesForFramework,
         out int bondAxesMergedRawCount,
         out int fadeExcludeInstanceId,
-        out int explicitExcludeInstanceId)
+        out int explicitExcludeInstanceId,
+        ElectronOrbitalFunction sigmaFormationPrebondZeroEExclusiveLoneDomain = null)
     {
         fadeExcludeInstanceId = 0;
         explicitExcludeInstanceId = 0;
@@ -1439,7 +1446,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         var partnerToward = ResolvePredictiveVseprNewBondPartner(newBondPartner, redistributionOperationBond);
-        if (partnerToward == null) return;
+        if (partnerToward == null)
+            return;
 
         Vector3 w = partnerToward.transform.position - transform.position;
         if (w.sqrMagnitude < 1e-12f)
@@ -1449,7 +1457,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (towardLocal.sqrMagnitude < 1e-12f)
             return;
         towardLocal.Normalize();
-        AppendUniqueFrameworkDirection(bondAxesForFramework, towardLocal, mergeToleranceDeg);
+        // σ orbital-drag prebond: the 0e operation lobe is one electron domain; the incipient σ toward the guide is that
+        // domain, not an extra merged σ axis on top of it. Adding towardLocal here with a separate 0e lone produced one
+        // too many domains (e.g. 3 bonds + incipient + 0e → 5), wrong ideal geometry, or merges that looked like n=3.
+        if (sigmaFormationPrebondZeroEExclusiveLoneDomain == null)
+            AppendUniqueFrameworkDirection(bondAxesForFramework, towardLocal, mergeToleranceDeg);
 
         Vector3 towardNorm = towardLocal;
         ElectronOrbitalFunction bestEmpty = null;
@@ -1477,9 +1489,17 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         if (bestEmpty != null)
         {
-            Vector3 emptyTip = OrbitalTipLocalDirection(bestEmpty);
-            if (emptyTip.sqrMagnitude >= 1e-12f)
-                AppendUniqueFrameworkDirection(bondAxesForFramework, emptyTip.normalized, mergeToleranceDeg);
+            if (sigmaFormationPrebondZeroEExclusiveLoneDomain != null
+                && ReferenceEquals(bestEmpty, sigmaFormationPrebondZeroEExclusiveLoneDomain))
+            {
+                // σ pre-bond: count this 0e as a lone-domain participant in TryMatch; do not also add its tip as a σ axis.
+            }
+            else
+            {
+                Vector3 emptyTip = OrbitalTipLocalDirection(bestEmpty);
+                if (emptyTip.sqrMagnitude >= 1e-12f)
+                    AppendUniqueFrameworkDirection(bondAxesForFramework, emptyTip.normalized, mergeToleranceDeg);
+            }
         }
     }
 
@@ -5413,12 +5433,20 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
     }
 
-    void ClearSigmaBondOrbitalRedistributionDeltaWhereAuthoritative()
+    void ClearSigmaBondOrbitalRedistributionDeltaWhereAuthoritative(bool sigmaFormationPrebond = false)
     {
         foreach (var b in covalentBonds)
         {
             if (b == null || !b.IsSigmaBondLine()) continue;
-            b.ResetOrbitalRedistributionDeltaIfAuthoritative(this);
+            float dBefore = Quaternion.Angle(Quaternion.identity, b.GetOrbitalRedistributionWorldDeltaForDiagnostics());
+            if (sigmaFormationPrebond)
+            {
+                b.ResetOrbitalRedistributionWorldDeltaIgnoringAuthority();
+                if (b.Orbital != null)
+                    b.SyncSigmaOrbitalWorldPoseFromRedistribution(forceApplyPoseDuringBondToLineAnim: true);
+            }
+            else
+                b.ResetOrbitalRedistributionDeltaIfAuthoritative(this);
         }
     }
 
@@ -5433,6 +5461,9 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         if (locks == null || locks.Count == 0)
             return;
+
+        const float minDot = 0.35f;
+        var bondAxes = new List<(CovalentBond bond, Vector3 axisLocal)>(covalentBonds.Count);
         foreach (var bond in covalentBonds)
         {
             if (bond == null || bond.Orbital == null || !bond.IsSigmaBondLine()) continue;
@@ -5446,26 +5477,58 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             if (axisLocal.sqrMagnitude < 1e-12f)
                 continue;
             axisLocal.Normalize();
+            bondAxes.Add((bond, axisLocal));
+        }
 
-            int bestK = -1;
-            float bestDot = -2f;
-            for (int k = 0; k < locks.Count; k++)
+        if (bondAxes.Count == 0)
+            return;
+
+        // Greedy maximum-weight matching so each TryMatch lock pair applies to at most one incident σ bond.
+        // The old per-bond "pick best lock" pass could assign the same ideal vertex to two bonds (e.g. hetero + H),
+        // leaving one σ hybrid stale and lone-pair directions inconsistent with tetrahedral σ lobes.
+        var scored = new List<(float score, int bi, int lk)>(bondAxes.Count * locks.Count);
+        for (int bi = 0; bi < bondAxes.Count; bi++)
+        {
+            Vector3 axisLocal = bondAxes[bi].axisLocal;
+            for (int lk = 0; lk < locks.Count; lk++)
             {
-                float d = Vector3.Dot(axisLocal, locks[k].bondAxisLocal);
-                if (d > bestDot)
-                {
-                    bestDot = d;
-                    bestK = k;
-                }
+                Vector3 bax = locks[lk].bondAxisLocal;
+                if (bax.sqrMagnitude < 1e-14f)
+                    continue;
+                float d = Vector3.Dot(axisLocal, bax.normalized);
+                scored.Add((d, bi, lk));
             }
-            if (bestK < 0 || bestDot < 0.35f)
-                continue;
+        }
 
-            Vector3 hybridWorld = transform.TransformDirection(locks[bestK].idealLocal);
+        scored.Sort((a, b) =>
+        {
+            int c = b.score.CompareTo(a.score);
+            if (c != 0) return c;
+            c = a.bi.CompareTo(b.bi);
+            if (c != 0) return c;
+            return a.lk.CompareTo(b.lk);
+        });
+
+        var bondUsed = new bool[bondAxes.Count];
+        var lockUsed = new bool[locks.Count];
+        int applied = 0;
+        for (int si = 0; si < scored.Count; si++)
+        {
+            var (score, bi, lk) = scored[si];
+            if (score < minDot)
+                break;
+            if (bondUsed[bi] || lockUsed[lk])
+                continue;
+            bondUsed[bi] = true;
+            lockUsed[lk] = true;
+
+            var bond = bondAxes[bi].bond;
+            Vector3 hybridWorld = transform.TransformDirection(locks[lk].idealLocal);
             if (hybridWorld.sqrMagnitude < 1e-12f)
                 continue;
             hybridWorld.Normalize();
             bond.ApplySigmaOrbitalTipFromRedistribution(this, hybridWorld);
+            applied++;
         }
     }
 
@@ -6333,22 +6396,47 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         (orb.transform.localRotation * Vector3.right).normalized;
 
     /// <summary>
+    /// Nucleus-parented lobes use the same radial line as hybrid +X (<see cref="ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection"/>).
+    /// Without this, skipped prebond pins and drift leave <c>localPosition</c> off-axis so pivot→orbital center ≠ tip (H25/H68 vs H50).
+    /// Preserves distance from pivot; uses 0.6× bond radius when magnitude is degenerate. Bond-parented σ skipped (parent ≠ nucleus).
+    /// </summary>
+    void AlignNucleusChildOrbitalLocalPositionToHybridTipAxis(ElectronOrbitalFunction orb)
+    {
+        if (orb == null || orb.transform.parent != transform) return;
+        Vector3 axis = orb.transform.localRotation * Vector3.right;
+        if (axis.sqrMagnitude < 1e-14f) return;
+        axis.Normalize();
+        float m = orb.transform.localPosition.magnitude;
+        const float kCanonicalSlotFrac = 0.6f; // keep in sync with ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection
+        if (m < 1e-6f)
+            m = bondRadius * kCanonicalSlotFrac;
+        orb.transform.localPosition = axis * m;
+    }
+
+    /// <summary>
     /// Unit direction in <b>this</b> reference nucleus’s local space from that nucleus’s pivot toward the orbital transform’s world position (“orbital center” used for placement).
     /// The vector is <b>not</b> absolute: it depends on which atom’s <see cref="AtomFunction"/> you call this on — the reference nucleus is always <c>this.transform</c>.
     /// For redistribution of a <b>bonding</b> orbital, use the pivot atom that is <b>undergoing redistribution</b> as <c>this</c> so directions stay in that atom’s VSEPR frame.
     /// When pivot→orbital offset is degenerate, falls back to the canonical hybrid +X lobe axis (same as historical behavior).
+    /// For <b>σ-line</b> bond orbitals, pivot→center follows the internuclear leg (often nearly ⊥ the 0e backside lobe); use hybrid +X in nucleus space so electron-domain angles match lone tips and TryMatch.
     /// </summary>
     Vector3 OrbitalTipDirectionInNucleusLocal(ElectronOrbitalFunction orb)
     {
         if (orb == null) return Vector3.right;
+        if (orb.Bond is CovalentBond cbSig && cbSig.Orbital == orb && cbSig.IsSigmaBondLine())
+        {
+            Vector3 sigmaHybridTipW = orb.transform.TransformDirection(Vector3.right);
+            if (sigmaHybridTipW.sqrMagnitude < 1e-10f) return Vector3.forward;
+            return transform.InverseTransformDirection(sigmaHybridTipW.normalized).normalized;
+        }
         Vector3 deltaWorld = orb.transform.position - transform.position;
         if (deltaWorld.sqrMagnitude > 1e-14f)
             return transform.InverseTransformVector(deltaWorld).normalized;
         if (orb.transform.parent == transform)
             return OrbitalTipLocalDirection(orb).normalized;
-        Vector3 tipW = orb.transform.TransformDirection(Vector3.right);
-        if (tipW.sqrMagnitude < 1e-10f) return Vector3.forward;
-        return transform.InverseTransformDirection(tipW.normalized).normalized;
+        Vector3 hybridTipWorld = orb.transform.TransformDirection(Vector3.right);
+        if (hybridTipWorld.sqrMagnitude < 1e-10f) return Vector3.forward;
+        return transform.InverseTransformDirection(hybridTipWorld.normalized).normalized;
     }
 
     /// <summary>
@@ -7175,130 +7263,48 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         for (int i = 0; i < targets.Count; i++)
         {
-            var (orb, pos, rot) = targets[i];
-            var (sp, sr) = (starts != null && i < starts.Count) ? starts[i] : (Vector3.zero, Quaternion.identity);
-            int orbIdRow = 0;
-            int bondIdRow = 0;
-            int parentIdRow = 0;
-            int bondTransIdRow = 0;
-            bool hasBondRow = false;
-            bool sigmaLineRow = false;
-            bool piLineRow = false;
-            string h6Outcome = "skip_unknown";
-
+            var (orb, _, rot) = targets[i];
+            var (_, sr) = (starts != null && i < starts.Count) ? starts[i] : (Vector3.zero, Quaternion.identity);
             if (orb == null)
-                h6Outcome = "skip_null_orb";
-            else
-            {
-                orbIdRow = orb.GetInstanceID();
-                if (orb.Bond is CovalentBond cb)
-                {
-                    hasBondRow = true;
-                    bondIdRow = cb.GetInstanceID();
-                    bondTransIdRow = cb.transform != null ? cb.transform.GetInstanceID() : 0;
-                    parentIdRow = orb.transform.parent != null ? orb.transform.parent.GetInstanceID() : 0;
-                    sigmaLineRow = cb.IsSigmaBondLine();
-                    piLineRow = !sigmaLineRow;
-                    if (sigmaLineRow
-                        && orb.transform.parent == cb.transform
-                        && (cb.AtomA == this || cb.AtomB == this))
-                    {
-                        Vector3 cur = orb.transform.parent.TransformDirection((sr * Vector3.right).normalized);
-                        if (cur.sqrMagnitude < 1e-16f)
-                            h6Outcome = "skip_sigma_bond_cur_tip_near_zero";
-                        else
-                        {
-                            cur.Normalize();
-                            Vector3 des = GetOrbitalHybridTipWorldFromLocalRotation(orb, rot);
-                            if (des.sqrMagnitude < 1e-16f)
-                                h6Outcome = "skip_sigma_bond_des_tip_near_zero";
-                            else
-                            {
-                                des.Normalize();
-                                currentTips.Add(cur);
-                                desiredTips.Add(des);
-                                h6Outcome = "added_sigma_bond_line";
-                            }
-                        }
-                    }
-                    else if (piLineRow)
-                        h6Outcome = "skip_pi_bond_joint_excluded";
-                    else
-                        h6Outcome = "skip_bonding_orb_joint_excluded";
-                }
-                else if (orb.Bond != null)
-                {
-                    hasBondRow = true;
-                    bondIdRow = orb.Bond.GetInstanceID();
-                    h6Outcome = "skip_bonding_orb_joint_excluded";
-                }
-                else if (orb.transform.parent == transform)
-                {
-                    parentIdRow = transform.GetInstanceID();
-                    if (jointTipsSigmaBondLineRowsOnly)
-                        h6Outcome = "skip_nucleus_nonbond_joint_sigma_formation_step2";
-                    else
-                    {
-                        Vector3 cur = transform.TransformDirection((sr * Vector3.right).normalized);
-                        if (cur.sqrMagnitude < 1e-16f)
-                            h6Outcome = "skip_nucleus_cur_tip_near_zero";
-                        else
-                        {
-                            cur.Normalize();
-                            Vector3 des = GetOrbitalHybridTipWorldFromLocalRotation(orb, rot);
-                            if (des.sqrMagnitude < 1e-16f)
-                                h6Outcome = "skip_nucleus_des_tip_near_zero";
-                            else
-                            {
-                                des.Normalize();
-                                currentTips.Add(cur);
-                                desiredTips.Add(des);
-                                h6Outcome = "added_nucleus_child_nonbond";
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    h6Outcome = "skip_has_bond_false_parent_not_this_nucleus";
-                    parentIdRow = orb.transform.parent != null ? orb.transform.parent.GetInstanceID() : 0;
-                }
-            }
+                continue;
 
-            // #region agent log
-            if (DebugLogJointTipPairRowNdjson)
+            if (orb.Bond is CovalentBond cb)
             {
-                try
+                bool sigmaLineRow = cb.IsSigmaBondLine();
+                if (sigmaLineRow
+                    && orb.transform.parent == cb.transform
+                    && (cb.AtomA == this || cb.AtomB == this))
                 {
-                    string d6 = "{\"pivotId\":" + GetInstanceID() + ",\"Z\":" + atomicNumber + ",\"row\":" + i
-                        + ",\"orbId\":" + orbIdRow + ",\"hasBond\":" + (hasBondRow ? "true" : "false") + ",\"bondId\":" + bondIdRow
-                        + ",\"sigmaLine\":" + (sigmaLineRow ? "true" : "false") + ",\"piLine\":" + (piLineRow ? "true" : "false")
-                        + ",\"parentId\":" + parentIdRow + ",\"bondTransId\":" + bondTransIdRow
-                        + ",\"parentEqBondTrans\":" + (hasBondRow && orb != null && orb.Bond != null && orb.transform.parent == orb.Bond.transform ? "true" : "false")
-                        + ",\"outcome\":\"" + h6Outcome + "\",\"frame\":" + Time.frameCount + "}";
-                    AppendOcoCaseDebugNdjson("H6", "ComputeJointRotationWorldFromOrbitalTuples", "joint_tip_row", d6);
-                }
-                catch
-                {
-                    /* optional */
+                    Vector3 cur = orb.transform.parent.TransformDirection((sr * Vector3.right).normalized);
+                    if (cur.sqrMagnitude < 1e-16f)
+                        continue;
+                    cur.Normalize();
+                    Vector3 des = GetOrbitalHybridTipWorldFromLocalRotation(orb, rot);
+                    if (des.sqrMagnitude < 1e-16f)
+                        continue;
+                    des.Normalize();
+                    currentTips.Add(cur);
+                    desiredTips.Add(des);
                 }
             }
-            // #endregion
+            else if (orb.Bond != null)
+                continue;
+            else if (orb.transform.parent == transform)
+            {
+                if (jointTipsSigmaBondLineRowsOnly)
+                    continue;
+                Vector3 cur = transform.TransformDirection((sr * Vector3.right).normalized);
+                if (cur.sqrMagnitude < 1e-16f)
+                    continue;
+                cur.Normalize();
+                Vector3 des = GetOrbitalHybridTipWorldFromLocalRotation(orb, rot);
+                if (des.sqrMagnitude < 1e-16f)
+                    continue;
+                des.Normalize();
+                currentTips.Add(cur);
+                desiredTips.Add(des);
+            }
         }
-        // #region agent log
-        try
-        {
-            string h5 = "{\"pivotId\":" + GetInstanceID() + ",\"Z\":" + atomicNumber + ",\"targetRows\":" + targets.Count
-                + ",\"startRows\":" + (starts != null ? starts.Count : 0) + ",\"jointTipPairs\":" + currentTips.Count
-                + ",\"sigmaBondLineRowsOnlyJoint\":" + (jointTipsSigmaBondLineRowsOnly ? "true" : "false")
-                + ",\"frame\":" + Time.frameCount + "}";
-            AppendOcoCaseDebugNdjson("H5", "ComputeJointRotationWorldFromOrbitalTuples", "tip_pairs_built", h5);
-        }
-        catch
-        {
-            /* optional */
-        }
-        // #endregion
         return ComputeJointRotationWorldFromTipDirections(currentTips, desiredTips);
     }
 
@@ -8498,17 +8504,20 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return true;
     }
 
-    /// <summary>
-    /// During σ bond formation, align shared σ lobes on <see cref="CovalentBond"/> and (for trigonal electron geometry) nucleus lone lobes to the same <see cref="TryMatchLoneOrbitalsToFreeIdealDirections"/> frame as full <see cref="GetRedistributeTargets3D"/>.
-    /// Previously only σ received <see cref="SyncSigmaBondOrbitalTipsFromLocks"/>; lone pairs kept pre-hybrid directions so lone–σ angles could deviate from 120° on terminal O (e.g. O=C=O).</summary>
-    /// <param name="redistributionOperationBondForPredictive">When set (e.g. π step), use the same predictive lone/axes model as <see cref="GetRedistributeTargets3DVseprTryMatch"/> so full-molecule hybrid refresh does not re-run tetrahedral TryMatch on a leg that already resolved trigonal.</param>
-    /// <param name="orbitalDragSigmaPhase3RegularGuide">Orbital-drag σ phase 3: guide-group <paramref name="refLocal"/> from operation σ internuclear axis; lone permutation uses Σ(mass×cone angle)+lex.</param>
-    public void RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(
+    /// <summary>σ hybrid refresh: build merged σ axes + occupied lone list (+ optional pre-bond 0e domain). False if maxSlots&lt;=1 or domainCount&lt;1.</summary>
+    bool TryBuildSigmaHybridRefreshDomains(
         AtomFunction partnerAlongNewSigmaBond,
-        CovalentBond redistributionOperationBondForPredictive = null,
-        ElectronOrbitalFunction vseprDisappearingLoneForPredictive = null,
-        bool orbitalDragSigmaPhase3RegularGuide = false)
+        CovalentBond redistributionOperationBondForPredictive,
+        ElectronOrbitalFunction vseprDisappearingLoneForPredictive,
+        bool sigmaFormationPrebond,
+        ElectronOrbitalFunction sigmaFormationPrebondZeroEOperationOrb,
+        out int domainCount,
+        out List<Vector3> bondAxes,
+        out List<ElectronOrbitalFunction> loneOrbitals)
     {
+        domainCount = 0;
+        bondAxes = null;
+        loneOrbitals = null;
         int maxSlots = GetOrbitalSlotCount();
         if (maxSlots <= 1)
         {
@@ -8517,14 +8526,21 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 Debug.Log(
                     "[σ-form-rot-hybrid] skip maxSlots<=1 atom=" + name + "(Z=" + AtomicNumber + ") partner=" +
                     (partnerAlongNewSigmaBond != null ? partnerAlongNewSigmaBond.name : "null"));
-            return;
+            return false;
         }
 
         float mergeToleranceDeg = 360f / (2f * maxSlots);
 
         var loneRaw = bondedOrbitals.Where(orb => orb != null && orb.Bond == null && orb.ElectronCount > 0).ToList();
-        bool applyPredictive = ShouldApplyPredictiveVseprDomainModelForTryMatch(false, partnerAlongNewSigmaBond, redistributionOperationBondForPredictive);
+        bool applyPredictive = ShouldApplyPredictiveVseprDomainModelForTryMatch(false, partnerAlongNewSigmaBond, redistributionOperationBondForPredictive)
+            || (sigmaFormationPrebond && partnerAlongNewSigmaBond != null);
         var partnerForBuild = ResolvePredictiveVseprNewBondPartner(partnerAlongNewSigmaBond, redistributionOperationBondForPredictive);
+        var prebondZeroEExclusive = sigmaFormationPrebond && sigmaFormationPrebondZeroEOperationOrb != null
+            && sigmaFormationPrebondZeroEOperationOrb.ElectronCount == 0
+            && sigmaFormationPrebondZeroEOperationOrb.Bond == null
+            && sigmaFormationPrebondZeroEOperationOrb.transform.parent == transform
+            ? sigmaFormationPrebondZeroEOperationOrb
+            : null;
         BuildPredictiveVseprTryMatchLoneOccupiedAndBondAxes(
             loneRaw,
             mergeToleranceDeg,
@@ -8532,15 +8548,19 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             partnerForBuild,
             redistributionOperationBondForPredictive,
             vseprDisappearingLoneForPredictive,
-            out var loneOrbitals,
-            out var bondAxes,
+            out loneOrbitals,
+            out bondAxes,
             out _,
             out _,
-            out _);
+            out _,
+            prebondZeroEExclusive);
+
+        if (prebondZeroEExclusive != null && !loneOrbitals.Contains(prebondZeroEExclusive))
+            loneOrbitals.Add(prebondZeroEExclusive);
 
         loneOrbitals = CollapseNucleusLoneDomainsForTerminalSp2OxoHybridIfNeeded(loneOrbitals, bondAxes, redistributionOperationBondForPredictive);
 
-        int domainCount = GetVseprSlotCount3D(bondAxes.Count, loneOrbitals.Count);
+        domainCount = GetVseprSlotCount3D(bondAxes.Count, loneOrbitals.Count);
         if (domainCount < 1)
         {
             if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
@@ -8548,15 +8568,90 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 Debug.Log(
                     "[σ-form-rot-hybrid] skip domainCount<1 atom=" + name + "(Z=" + AtomicNumber + ") σAxes=" + bondAxes.Count +
                     " loneOcc=" + loneOrbitals.Count + " partner=" + (partnerAlongNewSigmaBond != null ? partnerAlongNewSigmaBond.name : "null"));
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Orbital-drag σ phase 3 gate: true when guide electron domains already match ideal VSEPR (skip lerp).</summary>
+    public bool OrbitalDragSigmaGuidePhase3ConformationAlreadyIdeal(
+        AtomFunction partnerAlongNewSigmaBond,
+        CovalentBond formingSigmaBond)
+    {
+        if (!TryBuildSigmaHybridRefreshDomains(
+                partnerAlongNewSigmaBond,
+                formingSigmaBond,
+                null,
+                false,
+                null,
+                out var domainCount,
+                out var bondAxes,
+                out var loneOrbitals))
+            return false;
+
+        return TryElectronDomainConformationMatchesIdealVsepr(
+            domainCount,
+            bondAxes,
+            loneOrbitals,
+            SigmaHybridRefreshConformationPairwiseAngleToleranceDeg);
+    }
+
+    /// <summary>
+    /// During σ bond formation, align shared σ lobes on <see cref="CovalentBond"/> and (for trigonal electron geometry) nucleus lone lobes to the same <see cref="TryMatchLoneOrbitalsToFreeIdealDirections"/> frame as full <see cref="GetRedistributeTargets3D"/>.
+    /// Previously only σ received <see cref="SyncSigmaBondOrbitalTipsFromLocks"/>; lone pairs kept pre-hybrid directions so lone–σ angles could deviate from 120° on terminal O (e.g. O=C=O).</summary>
+    /// <param name="redistributionOperationBondForPredictive">When set (e.g. π step), use the same predictive lone/axes model as <see cref="GetRedistributeTargets3DVseprTryMatch"/> so full-molecule hybrid refresh does not re-run tetrahedral TryMatch on a leg that already resolved trigonal.</param>
+    /// <param name="orbitalDragSigmaPhase3RegularGuide">Orbital-drag σ phase 3: guide-group <paramref name="refLocal"/> from operation σ internuclear axis; lone permutation uses Σ(mass×cone angle)+lex.</param>
+    /// <param name="sigmaFormationPrebond">Orbital-drag σ phase 1: predictive internuclear partner without a <see cref="CovalentBond"/>; optional <paramref name="sigmaFormationPrebondZeroEOperationOrb"/> as extra lone domain.</param>
+    /// <param name="sigmaFormationPrebondGuideOperationOrb">When set with prebond + phase-3 regular guide, <paramref name="refLocal"/> uses pivot→guide operation orbital center in world (not nucleus–nucleus) so tetra vertex 0 matches the visible σ stem.</param>
+    public void RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(
+        AtomFunction partnerAlongNewSigmaBond,
+        CovalentBond redistributionOperationBondForPredictive = null,
+        ElectronOrbitalFunction vseprDisappearingLoneForPredictive = null,
+        bool orbitalDragSigmaPhase3RegularGuide = false,
+        bool sigmaFormationPrebond = false,
+        ElectronOrbitalFunction sigmaFormationPrebondZeroEOperationOrb = null,
+        ElectronOrbitalFunction sigmaFormationPrebondGuideOperationOrb = null)
+    {
+
+        // σ prebond: clear incident σ δ before TryBuild / refLocal / pin template — stale δ from prior formation
+        // must not affect domain build (authoritative partner previously blocked Clear at the old callsite).
+        if (sigmaFormationPrebond)
+            ClearSigmaBondOrbitalRedistributionDeltaWhereAuthoritative(sigmaFormationPrebond: true);
+
+        if (!TryBuildSigmaHybridRefreshDomains(
+                partnerAlongNewSigmaBond,
+                redistributionOperationBondForPredictive,
+                vseprDisappearingLoneForPredictive,
+                sigmaFormationPrebond,
+                sigmaFormationPrebondZeroEOperationOrb,
+                out var domainCount,
+                out var bondAxes,
+                out var loneOrbitals))
+        {
             return;
         }
 
-        if (TryElectronDomainConformationMatchesIdealVsepr(
+        ElectronOrbitalFunction prebondPinZeroEForTryMatch =
+            sigmaFormationPrebond && sigmaFormationPrebondZeroEOperationOrb != null
+            && sigmaFormationPrebondZeroEOperationOrb.ElectronCount == 0
+            && sigmaFormationPrebondZeroEOperationOrb.Bond == null
+            && sigmaFormationPrebondZeroEOperationOrb.transform.parent == transform
+            && loneOrbitals.Contains(sigmaFormationPrebondZeroEOperationOrb)
+            ? sigmaFormationPrebondZeroEOperationOrb
+            : null;
+
+        // σ orbital-drag prebond: must run TryMatch + refLocal alignment even when pairwise domain angles
+        // already match the ideal VSEPR multiset — that check is rotation-invariant and misses incipient-σ frame.
+        if (!sigmaFormationPrebond
+            && TryElectronDomainConformationMatchesIdealVsepr(
                 domainCount,
                 bondAxes,
                 loneOrbitals,
                 SigmaHybridRefreshConformationPairwiseAngleToleranceDeg))
+        {
             return;
+        }
 
         Vector3 refLocal;
         if (orbitalDragSigmaPhase3RegularGuide
@@ -8570,6 +8665,20 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 refLocal = FormationReferenceDirectionLocalForPartner(partnerForRef);
             }
         }
+        else if (orbitalDragSigmaPhase3RegularGuide && sigmaFormationPrebond && partnerAlongNewSigmaBond != null)
+        {
+            if (sigmaFormationPrebondGuideOperationOrb != null)
+            {
+                Vector3 wRefGuideOp =
+                    sigmaFormationPrebondGuideOperationOrb.transform.position - transform.position;
+                if (wRefGuideOp.sqrMagnitude > 1e-14f)
+                    refLocal = transform.InverseTransformDirection(wRefGuideOp.normalized);
+                else
+                    refLocal = FormationReferenceDirectionLocalForPartner(partnerAlongNewSigmaBond);
+            }
+            else
+                refLocal = FormationReferenceDirectionLocalForPartner(partnerAlongNewSigmaBond);
+        }
         else
         {
             var partnerForRef = partnerAlongNewSigmaBond ?? ResolvePredictiveVseprNewBondPartner(null, redistributionOperationBondForPredictive);
@@ -8578,14 +8687,41 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (refLocal.sqrMagnitude < 1e-8f) refLocal = Vector3.right;
         else refLocal.Normalize();
 
-        ClearSigmaBondOrbitalRedistributionDeltaWhereAuthoritative();
+        Vector3 vseprTemplateFirst = refLocal;
+        if (prebondPinZeroEForTryMatch != null)
+        {
+            Vector3 pin0 = OrbitalTipLocalDirection(prebondPinZeroEForTryMatch);
+            if (pin0.sqrMagnitude > 1e-12f)
+            {
+                pin0.Normalize();
+                // Anti-parallel empty lobe vs internuclear (e.g. H43 dotNg0eTipVsInternuc ≈ −1): refLocal-only tetra has no
+                // vertex along the pin (−refLocal is not a corner), so pin-reserve leaves a ~72° lone corner (H32). Align
+                // vertex 0 to the actual pin so the other three corners are tetrahedral w.r.t. the 0e lobe; skip when
+                // pin ≈ refLocal (second-created C cases, frame 2034) to avoid relabeling the frame.
+                if (Vector3.Dot(pin0, refLocal) < -0.25f)
+                    vseprTemplateFirst = pin0;
+            }
+        }
+
+        if (!sigmaFormationPrebond)
+            ClearSigmaBondOrbitalRedistributionDeltaWhereAuthoritative(sigmaFormationPrebond: false);
 
         var idealRaw = VseprLayout.GetIdealLocalDirections(domainCount);
-        var newDirs = new List<Vector3>(VseprLayout.AlignFirstDirectionTo(idealRaw, refLocal));
+        var newDirs = new List<Vector3>(VseprLayout.AlignFirstDirectionTo(idealRaw, vseprTemplateFirst));
+        float prebondAzimuthApplyDeg = 0f;
+
+        if (prebondPinZeroEForTryMatch != null && Mathf.Abs(prebondAzimuthApplyDeg) > 1e-4f)
+        {
+            Vector3 azAxis = refLocal.sqrMagnitude > 1e-12f ? refLocal.normalized : Vector3.right;
+            Quaternion qPrebondAz = Quaternion.AngleAxis(prebondAzimuthApplyDeg, azAxis);
+            for (int ni = 0; ni < newDirs.Count; ni++)
+                newDirs[ni] = (qPrebondAz * newDirs[ni]).normalized;
+        }
 
         if (!TryMatchLoneOrbitalsToFreeIdealDirections(
-                refLocal, domainCount, bondAxes, loneOrbitals, newDirs, out var bestMapping, out var pinReservedDir, out var bondIdealLocks, null,
-                orbitalDragSigmaPhase3RegularGuide))
+                refLocal, domainCount, bondAxes, loneOrbitals, newDirs, out var bestMapping, out var pinReservedDir, out var bondIdealLocks, prebondPinZeroEForTryMatch,
+                orbitalDragSigmaPhase3RegularGuide,
+                prebondPinZeroEForTryMatch != null))
         {
             if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
                 && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
@@ -8602,21 +8738,53 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 (partnerAlongNewSigmaBond != null ? partnerAlongNewSigmaBond.name : "null") + " domainCount=" + domainCount +
                 " σAxesMerged=" + bondAxes.Count + " loneOcc=" + loneOrbitals.Count + " lockPairs=" + bondIdealLocks.Count);
 
-        if ((domainCount == 3 || domainCount == 4)
-            && bestMapping != null && bestMapping.Count > 0 && bestMapping.Count == loneOrbitals.Count)
+        // Apply TryMatch lone targets. σ prebond: 0e operation lobe is pinned in TryMatch (skipped in the loop below);
+        // it receives the same GetCanonicalSlot… treatment as lones using pinReservedDir (reserved tetra vertex closest
+        // to pin tip), not refLocal/newDirs[0] alone — the latter could snap to the wrong corner.
+        if (bestMapping != null && bestMapping.Count > 0)
         {
-            for (int i = 0; i < bestMapping.Count; i++)
+            var loneApplyOrder = new List<ElectronOrbitalFunction>(loneOrbitals.Count);
+            foreach (var o in loneOrbitals)
             {
-                var orb = loneOrbitals[i];
-                if (orb == null) continue;
-                Vector3 newDir = bestMapping[i].newDir;
-                var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(newDir, bondRadius, orb.transform.localRotation);
-                orb.transform.localPosition = pos;
-                orb.transform.localRotation = rot;
+                if (o == null) continue;
+                if (prebondPinZeroEForTryMatch != null && ReferenceEquals(o, prebondPinZeroEForTryMatch))
+                    continue;
+                loneApplyOrder.Add(o);
+            }
+            if (bestMapping.Count == loneApplyOrder.Count)
+            {
+                for (int i = 0; i < loneApplyOrder.Count; i++)
+                {
+                    var orb = loneApplyOrder[i];
+                    Vector3 newDir = bestMapping[i].newDir;
+                    var (pos, rot) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(newDir, bondRadius, orb.transform.localRotation);
+                    orb.transform.localPosition = pos;
+                    orb.transform.localRotation = rot;
+                }
+
+                if (prebondPinZeroEForTryMatch != null && pinReservedDir.HasValue
+                    && prebondPinZeroEForTryMatch.transform.parent == transform)
+                {
+                    var pinO = prebondPinZeroEForTryMatch;
+                    Vector3 dPin = pinReservedDir.Value.sqrMagnitude > 1e-14f
+                        ? pinReservedDir.Value.normalized
+                        : Vector3.right;
+                    var (pPin, rPin) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(
+                        dPin, bondRadius, pinO.transform.localRotation);
+                    pinO.transform.localPosition = pPin;
+                    pinO.transform.localRotation = rPin;
+                }
             }
         }
 
         SyncSigmaBondOrbitalTipsFromLocks(bondIdealLocks);
+
+        for (int ci = 0; ci < transform.childCount; ci++)
+        {
+            var o = transform.GetChild(ci).GetComponent<ElectronOrbitalFunction>();
+            if (o != null)
+                AlignNucleusChildOrbitalLocalPositionToHybridTipAxis(o);
+        }
     }
 
     /// <summary>
