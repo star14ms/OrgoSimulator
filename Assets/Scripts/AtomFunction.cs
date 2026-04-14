@@ -5459,7 +5459,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
 
     /// <summary>
-    /// Bond-break: σ-line tracking delay + simultaneous pure redistribution on atoms that receive 0e anti-guide (see <see cref="SigmaBreakPureRedistribution"/>).
+    /// Bond-break: animate endpoint redistribution using <see cref="OrbitalRedistribution.BuildOrbitalRedistribution(AtomFunction, AtomFunction, ElectronOrbitalFunction, ElectronOrbitalFunction, ElectronOrbitalFunction, Vector3, System.Func{float, Vector3}, HashSet{AtomFunction})"/>.
     /// <paramref name="onComplete"/> runs electron sync and bond GO teardown.
     /// </summary>
     public IEnumerator CoLerpBondBreakRedistribution(
@@ -5475,8 +5475,18 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             yield break;
         }
 
-        var planThis = SigmaBreakPureRedistribution.TryBuildMotionPlan(this, antiGuideOnThis);
-        var planPartner = SigmaBreakPureRedistribution.TryBuildMotionPlan(partnerAtom, antiGuideOnPartner);
+        var animThis = OrbitalRedistribution.BuildOrbitalRedistribution(
+            this,
+            partnerAtom,
+            guideAtomOrbitalOp: null,
+            atomOrbitalOp: antiGuideOnThis,
+            isBondingEvent: false);
+        var animPartner = OrbitalRedistribution.BuildOrbitalRedistribution(
+            partnerAtom,
+            this,
+            guideAtomOrbitalOp: null,
+            atomOrbitalOp: antiGuideOnPartner,
+            isBondingEvent: false);
 
         float elapsed = 0f;
         while (elapsed < duration)
@@ -5484,49 +5494,21 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             elapsed += Time.deltaTime;
             float s = duration > 1e-6f ? Mathf.Clamp01(elapsed / duration) : 1f;
             float smooth = s * s * (3f - 2f * s);
-            ApplySigmaBreakPureMotionLerp(planThis, smooth);
-            ApplySigmaBreakPureMotionLerp(planPartner, smooth);
+            animThis?.Apply(smooth);
+            animPartner?.Apply(smooth);
             AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(new HashSet<AtomFunction> { this, partnerAtom });
             yield return null;
         }
 
-        ApplySigmaBreakPureMotionLerp(planThis, 1f);
-        ApplySigmaBreakPureMotionLerp(planPartner, 1f);
+        animThis?.Apply(1f);
+        animPartner?.Apply(1f);
         AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(new HashSet<AtomFunction> { this, partnerAtom });
 
-        RefreshChargesAfterSigmaBreakPurePlan(planThis);
-        RefreshChargesAfterSigmaBreakPurePlan(planPartner);
         RefreshCharge();
         partnerAtom.RefreshCharge();
         SetupGlobalIgnoreCollisions();
 
         onComplete?.Invoke();
-    }
-
-    static void RefreshChargesAfterSigmaBreakPurePlan(SigmaBreakPureRedistribution.MotionPlan plan)
-    {
-        if (plan == null) return;
-        foreach (var kv in plan.AtomWorldLerp)
-            kv.Key?.RefreshCharge();
-    }
-
-    static void ApplySigmaBreakPureMotionLerp(SigmaBreakPureRedistribution.MotionPlan plan, float s)
-    {
-        if (plan == null) return;
-        for (int i = 0; i < plan.NonBondLerp.Count; i++)
-        {
-            var (orb, lp0, lr0, lp1, lr1) = plan.NonBondLerp[i];
-            if (orb == null) continue;
-            orb.transform.localPosition = Vector3.Lerp(lp0, lp1, s);
-            orb.transform.localRotation = Quaternion.Slerp(lr0, lr1, s);
-        }
-        foreach (var kv in plan.AtomWorldLerp)
-        {
-            var a = kv.Key;
-            if (a == null) continue;
-            var (w0, w1) = kv.Value;
-            a.transform.position = Vector3.Lerp(w0, w1, s);
-        }
     }
 
     void ClearSigmaBondOrbitalRedistributionDeltaWhereAuthoritative(bool sigmaFormationPrebond = false)

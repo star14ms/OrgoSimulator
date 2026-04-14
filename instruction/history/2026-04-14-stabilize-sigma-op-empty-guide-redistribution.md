@@ -1,0 +1,5 @@
+Sigma orbital-drag formation and break redistribution were consolidated around `OrbitalRedistribution`, including replacing the old `SigmaPhase1OrbitalRedistribution` file with `OrbitalRedistribution` and wiring sigma break lerp to the same builder path. The guide/non-guide snap handoff in `ElectronOrbitalFunction` was fixed so only the actively dragged orbital snaps to pointer-down pose, preventing non-dragged counterpart recentering and guide-op degeneracy in phase 1.
+
+Phase 1/3 sigma flow in `SigmaBondFormation` was updated to call the generalized redistribution builder directly, and post-bond electron-sync refresh moved into `CovalentBond.Create` so bond creation paths are consistent. The permutation solver now pre-assigns the selected guide group to template vertex 0 during matching, which stabilizes op-empty rotation outcomes in the previously under-rotating edge case.
+
+Session-specific debug instrumentation for this investigation was cleaned back out after verification, leaving only production logic changes.

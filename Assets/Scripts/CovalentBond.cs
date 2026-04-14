@@ -798,6 +798,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var bondGo = new GameObject("CovalentBond");
         var bond = bondGo.AddComponent<CovalentBond>();
         bond.Initialize(atomA, atomB, sharedOrbital, orbitalContributor, animateOrbitalToBond);
+        atomA.RefreshElectronSyncOnBondedOrbitals();
+        atomB.RefreshElectronSyncOnBondedOrbitals();
         return bond;
     }
 

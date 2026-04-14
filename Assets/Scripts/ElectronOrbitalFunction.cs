@@ -1175,8 +1175,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         // σ drag: restore both lobes to pointer-down originals before any template / nTarget / coroutine reads transforms
         // (drop pose is mouseup; originals are set on mousedown for each orbital that was pressed).
         SnapToOriginal();
-        if (targetOrbital != null)
-            targetOrbital.SnapToOriginal();
+        // The drop target orbital is not the dragged lobe in this path; forcing SnapToOriginal here can
+        // incorrectly recenter it if its cached original pose is stale/uninitialized for this gesture.
 
         var sigmaFormation = SigmaBondFormation.EnsureRunnerInScene();
         if (sigmaFormation != null
@@ -1198,7 +1198,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     {
         _ = dropPosition;
         draggedOrbital.SnapToOriginal();
-        SnapToOriginal();
+        // In this branch, draggedOrbital is the lobe that was actively dragged; `this` is the counterpart.
+        // Do not snap `this` from potentially stale cached original pose.
         var sigmaFormation = SigmaBondFormation.EnsureRunnerInScene();
         if (sigmaFormation != null
             && sigmaFormation.TryBeginOrbitalDragSigmaFormation(
