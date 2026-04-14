@@ -1019,6 +1019,8 @@ public class AtomQuickAddUI : MonoBehaviour
         {
             atom.AtomicNumber = atomicNumber;
             atom.ForceInitialize();
+            if (atomicNumber == 6)
+                AtomPoseDirectionDebugLog.LogCarbonSpawn(atom, "AtomQuickAddUI.CreateAtomAtViewport");
             if (editModeManager != null && editModeManager.HAutoMode)
                 editModeManager.SaturateWithHydrogen(atom);
             if (editModeManager != null)

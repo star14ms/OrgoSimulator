@@ -103,32 +103,37 @@ public static class ElectronRedistributionGuide
             return;
         float massA = SumAtomicMassInConnectedMolecule(atomA);
         float massB = SumAtomicMassInConnectedMolecule(atomB);
+        string resolveBranch;
+        AtomFunction draggedParentAtom = draggedOrbital != null
+            ? (draggedOrbital.transform.parent != null
+                ? draggedOrbital.transform.parent.GetComponent<AtomFunction>()
+                : null)
+            : null;
         if (massA > massB + 1e-4f)
         {
             guideAtom = atomA;
             nonGuideAtom = atomB;
+            resolveBranch = "massA_heavier";
         }
         else if (massB > massA + 1e-4f)
         {
             guideAtom = atomB;
             nonGuideAtom = atomA;
+            resolveBranch = "massB_heavier";
         }
         else
         {
-            AtomFunction draggedAtom = draggedOrbital != null
-                ? (draggedOrbital.transform.parent != null
-                    ? draggedOrbital.transform.parent.GetComponent<AtomFunction>()
-                    : null)
-                : null;
-            if (draggedAtom == atomA)
+            if (draggedParentAtom == atomA)
             {
                 nonGuideAtom = atomA;
                 guideAtom = atomB;
+                resolveBranch = "tie_draggedParentIsAtomA";
             }
-            else if (draggedAtom == atomB)
+            else if (draggedParentAtom == atomB)
             {
                 nonGuideAtom = atomB;
                 guideAtom = atomA;
+                resolveBranch = "tie_draggedParentIsAtomB";
             }
             else
             {
@@ -136,8 +141,22 @@ public static class ElectronRedistributionGuide
                 int idB = atomB.GetInstanceID();
                 guideAtom = idA <= idB ? atomA : atomB;
                 nonGuideAtom = idA <= idB ? atomB : atomA;
+                resolveBranch = draggedParentAtom == null
+                    ? "tie_noDraggedParent_instanceId"
+                    : "tie_draggedParentMismatch_instanceId";
             }
         }
+
+        RedistributionTetraCompareDebugLog.LogGuideResolve(
+            atomA,
+            atomB,
+            draggedOrbital,
+            guideAtom,
+            nonGuideAtom,
+            massA,
+            massB,
+            resolveBranch,
+            draggedParentAtom);
     }
 
     /// <summary>Sum of atomic masses in the substituent beyond the σ edge (center, neighbor) — same as fragment used in σ-relax.</summary>

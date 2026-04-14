@@ -112,6 +112,9 @@ public static class ProjectAgentDebugLog
         return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
     }
 
+    /// <summary>Escape for embedding in JSON string literals (e.g. debug <c>data</c> blobs built manually).</summary>
+    public static string EscapeJsonString(string s) => EscapeJson(s);
+
     /// <summary>Single workspace debug log under <c>.cursor/</c>: Cursor ingest, orbital mirror lines, and <see cref="AtomFunction.AppendOcoCaseDebugNdjson"/> / session probes all append here as NDJSON.</summary>
     public const string CursorDebugModeIngestNdjsonFileName = "cursor-workspace-debug.ndjson";
 

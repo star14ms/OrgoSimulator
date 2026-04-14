@@ -352,6 +352,8 @@ public class MoleculeBuilder : MonoBehaviour
     {
         if (atomA == null || atomB == null || orbA == null || orbB == null) return;
 
+        AtomPoseDirectionDebugLog.LogCarbonCarbonSigmaBeforeBond(atomA, atomB, "MoleculeBuilder.FormSigmaBondInstant");
+
         int merged = orbA.ElectronCount + orbB.ElectronCount;
         atomA.UnbondOrbital(orbA);
         atomB.UnbondOrbital(orbB);

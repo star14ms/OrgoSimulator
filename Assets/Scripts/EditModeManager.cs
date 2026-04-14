@@ -638,6 +638,8 @@ public class EditModeManager : MonoBehaviour
         }
         newAtom.AtomicNumber = atomicNumber;
         newAtom.ForceInitialize();
+        if (atomicNumber == 6)
+            AtomPoseDirectionDebugLog.LogCarbonSpawn(newAtom, "EditModeManager.TryAddAtomToSelected");
 
         if (anchorHasBondingLone)
         {
@@ -893,6 +895,7 @@ public class EditModeManager : MonoBehaviour
         ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital,
         float? phase3GuideLerpSecondsOverride)
     {
+        AtomPoseDirectionDebugLog.LogCarbonCarbonSigmaBeforeBond(atomA, atomB, "EditModeManager.FormSigmaBondInstantBody");
         _ = freezeSigmaNeighborSubtreeRoot;
         int merged = orbA.ElectronCount + orbB.ElectronCount;
         int sigmaBeforeA = atomA.GetDistinctSigmaNeighborCount();

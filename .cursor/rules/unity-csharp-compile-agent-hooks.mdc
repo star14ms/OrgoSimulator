@@ -1,0 +1,49 @@
+---
+description: Catch C# compile errors early when vibe-coding with the agent (Unity + hooks + dotnet)
+globs: Assets/**/*.cs
+alwaysApply: false
+---
+
+# Unity C# compile checks for AI-assisted edits
+
+## Why plain `dotnet` “sometimes works”
+
+Unity generates `*.sln` and `Assembly-CSharp*.csproj` at the project root **after** the project is opened (or refreshed) in the Unity Editor. This repo **gitignores** those files, so another machine may **lack** them until Unity has run there at least once.
+
+When `Assembly-CSharp.csproj` or the `.sln` is present, **`dotnet build` on that `.sln` (or `Assembly-CSharp.csproj`) catches the same compile-time errors as the Unity Console**, including:
+
+- `CS0122` (inaccessible member — wrong visibility / wrong access)
+- `CS0136` (duplicate local name in nested scope)
+- Most other **compile-time** diagnostics
+
+It does **not** replace Play Mode: runtime-only failures still need Unity tests or entering Play.
+
+## Recommended automation: Cursor hooks
+
+Use the **narrowest** hook that fits:
+
+| Goal | Event | Notes |
+|------|--------|--------|
+| After the agent writes a `.cs` file, run a compile check | `afterFileEdit` with a matcher for your edit tool, **or** `postToolUse` matcher on `Write` | Command hook runs a script; surface errors in Hooks output / log file |
+| Block risky shell | `beforeShellExecution` | Unrelated to compile, but pairs well with agent workflows |
+
+**Practical script behavior**
+
+1. If `*.sln` is missing, **exit 0** and optionally print one line: Unity has not generated the solution yet — open the project in Unity once.
+2. If present: `dotnet build <Solution.sln> -v minimal` (add `--no-restore` only if you know restore is cached). Unity-sized projects often take **tens of seconds** — use a generous hook `timeout`, or run checks on **`stop`** / **`beforeSubmitPrompt`** instead of every `Write` if latency hurts flow.
+3. On build failure: non-zero exit; set `failClosed: true` only if you accept that a slow or broken SDK can block edits.
+
+**Caveats**
+
+- Hook environment must have **`dotnet`** on `PATH` (same major as Unity expects where relevant).
+- Full **Unity** compile (including all packages / custom script defines) is what the Editor runs; `dotnet build` on generated projects is usually aligned but can differ in edge cases.
+- Hooks cannot fix **logic** bugs; they reduce **syntax / type / accessibility** surprises before you tab back to Unity.
+
+## Agent-side habits (no hooks)
+
+- After touching visibility (`private` / `internal`) or shared fields, **search call sites** for that symbol instead of assuming access.
+- Avoid reusing a local name like `refN` in a **nested** block if the outer scope already has `refN` (C# `CS0136`).
+
+## Optional: CI
+
+Mirror the same `dotnet build` step in CI **after** generating or checking in a buildable project layout (many teams use **GameCI** or a Unity `-batchmode` step to produce assets + compile). Align with however this repo already builds.

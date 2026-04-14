@@ -343,6 +343,20 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     Vector3 originalLocalPosition;
     Vector3 originalLocalScale;
     Quaternion originalLocalRotation;
+    bool pointerDownSnapshotCapturedFromInput;
+
+    /// <summary>Pointer-down snapshot in parent local space; σ phase-1 lerp start for the dragged forming lobe should match this after snap-back.</summary>
+    public void GetPointerDownOriginalLocalPose(out Vector3 localPosition, out Quaternion localRotation)
+    {
+        localPosition = originalLocalPosition;
+        localRotation = originalLocalRotation;
+    }
+
+    /// <summary>True only when the pointer-down snapshot was captured by input (not just Start seeding).</summary>
+    public bool HasPointerDownSnapshotFromInput()
+    {
+        return pointerDownSnapshotCapturedFromInput;
+    }
     Color originalColor;
     GameObject stretchVisual;
     bool stretchVisualIs3D;
@@ -678,6 +692,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             originalLocalPosition = transform.localPosition;
             originalLocalScale = transform.localScale;
             originalLocalRotation = transform.localRotation;
+            pointerDownSnapshotCapturedFromInput = true;
             return;
         }
 
@@ -687,6 +702,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         originalLocalPosition = transform.localPosition;
         originalLocalScale = transform.localScale;
         originalLocalRotation = transform.localRotation;
+        pointerDownSnapshotCapturedFromInput = true;
         var cam = Camera.main;
         var wp = MoleculeWorkPlane.Instance;
         if (cam != null && wp != null && wp.TryGetWorldPoint(cam, eventData.position, out var hit))
@@ -943,9 +959,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             Vector3 localDir = atom.transform.InverseTransformDirection(dNewW);
             if (localDir.sqrMagnitude < 1e-10f) continue;
             localDir.Normalize();
-            var (pos, rot) = GetCanonicalSlotPositionFromLocalDirection(localDir, atom.BondRadius);
-            orb.transform.localPosition = pos;
-            orb.transform.localRotation = rot;
+            var specDrag = NucleusLobeSpec.ForCanonicalSlotAlongTipNoRollHint(localDir, atom.BondRadius);
+            NucleusLobePose.ApplyToNucleusChild(atom, orb, specDrag);
         }
     }
 
@@ -980,9 +995,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             Vector3 localDir = atom.transform.InverseTransformDirection(dNewW);
             if (localDir.sqrMagnitude < 1e-10f) continue;
             localDir.Normalize();
-            var (pos, rot) = GetCanonicalSlotPositionFromLocalDirection(localDir, atom.BondRadius);
-            orb.transform.localPosition = pos;
-            orb.transform.localRotation = rot;
+            var specSpin = NucleusLobeSpec.ForCanonicalSlotAlongTipNoRollHint(localDir, atom.BondRadius);
+            NucleusLobePose.ApplyToNucleusChild(atom, orb, specSpin);
         }
         return true;
     }
@@ -1120,7 +1134,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         transform.localScale = originalLocalScale;
     }
 
-    [Tooltip("σ orbital drag phase 1 (pre-bond): non-guide fragment + unified shell lerp (1 s default).")]
+    [Tooltip("σ orbital-drag phase 1 (pre-bond): duration reserved for SigmaBondFormation placeholder / future pre-bond animation.")]
     [SerializeField] float sigmaFormationPhase1PrebondSeconds = 1f;
     [Tooltip("σ orbital-drag phase 2a (π step 2 cylinder lerp): lerp operation orbitals toward bond-cylinder pose (seconds).")]
     [SerializeField] float sigmaFormationPhase2CylinderSeconds = 1f;
@@ -1145,7 +1159,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             ? SigmaFormationPhase2OrbitalToLineSecondsResolved
             : sigmaFormationPhase3PostbondGuideSeconds;
 
-    /// <summary>σ bond from orbital drag: <see cref="SigmaBondFormation"/> runs the three-phase sequence (independent of edit mode).</summary>
+    /// <summary>σ bond from orbital drag: <see cref="SigmaBondFormation"/> runs phase 1 placeholder, bond animation, then post-bond guide lerp (independent of edit mode).</summary>
     bool FormCovalentBondSigmaStart(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition, bool alreadyFlipped = false)
     {
         _ = dropPosition;
@@ -1158,9 +1172,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             return targetOrbital.FormCovalentBondSigmaStartAsSource(targetAtom, sourceAtom, this, dropPosition);
         }
 
-        // σ drag: snap only the dragged lobe back to stored pre-drag locals. Do not snap the partner (often guide receptor):
-        // its canonical local pose can point opposite the incoming partner, breaking phase-1 approach (see dotGuideHeadTowardNonGuide).
+        // σ drag: restore both lobes to pointer-down originals before any template / nTarget / coroutine reads transforms
+        // (drop pose is mouseup; originals are set on mousedown for each orbital that was pressed).
         SnapToOriginal();
+        if (targetOrbital != null)
+            targetOrbital.SnapToOriginal();
 
         var sigmaFormation = SigmaBondFormation.EnsureRunnerInScene();
         if (sigmaFormation != null
@@ -1182,6 +1198,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     {
         _ = dropPosition;
         draggedOrbital.SnapToOriginal();
+        SnapToOriginal();
         var sigmaFormation = SigmaBondFormation.EnsureRunnerInScene();
         if (sigmaFormation != null
             && sigmaFormation.TryBeginOrbitalDragSigmaFormation(
@@ -1556,10 +1573,20 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     }
 
     public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPositionFromLocalDirection(Vector3 localDir, float bondRadius) =>
-        GetCanonicalSlotPositionFromLocalDirection(localDir, bondRadius, null);
+        GetCanonicalSlotPositionFromLocalDirection(localDir, bondRadius, null, null);
 
     /// <param name="preferClosestLocalRotation">When set, pick 0°/90°/… rolls about orbital +X after base align (<c>AngleAxis</c> uses <c>Vector3.right</c>, not <paramref name="localDir"/>, so hybrid +X stays along <paramref name="localDir"/>).</param>
-    public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPositionFromLocalDirection(Vector3 localDir, float bondRadius, Quaternion? preferClosestLocalRotation)
+    public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPositionFromLocalDirection(
+        Vector3 localDir, float bondRadius, Quaternion? preferClosestLocalRotation) =>
+        GetCanonicalSlotPositionFromLocalDirection(localDir, bondRadius, preferClosestLocalRotation, null);
+
+    /// <param name="continuityPreferLocalRotation">With <paramref name="preferClosestLocalRotation"/>, choose among 90° roll buckets by minimizing
+    /// <c>angle(hint,q) + 0.25·angle(continuity,q)</c>, with ties broken toward lower continuity distance (legacy continuity-first alone could lock a bucket far from <paramref name="preferClosestLocalRotation"/> when the prior frame was stale).</param>
+    public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPositionFromLocalDirection(
+        Vector3 localDir,
+        float bondRadius,
+        Quaternion? preferClosestLocalRotation,
+        Quaternion? continuityPreferLocalRotation)
     {
         if (localDir.sqrMagnitude < 1e-8f)
             localDir = Vector3.right;
@@ -1570,21 +1597,68 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (!preferClosestLocalRotation.HasValue)
             return (pos, qBase);
 
-        float bestAng = float.MaxValue;
-        int bestK = 0;
-        Quaternion bestQ = qBase;
+        // Roll buckets satisfy hybrid +X = localDir. Map hint/continuity into that same +X coset so
+        // Quaternion.Angle measures roll residual, not vector-slerp vs quat-slerp axis drift (σ phase-1 H116).
+        static Quaternion AlignHybridPlusXToTipDir(Quaternion rot, Vector3 tipDirNucleusLocal)
+        {
+            Vector3 xAxis = (rot * Vector3.right).normalized;
+            if (xAxis.sqrMagnitude < 1e-16f)
+                return rot;
+            if (Vector3.Angle(xAxis, tipDirNucleusLocal) < 0.02f)
+                return rot;
+            return Quaternion.FromToRotation(xAxis, tipDirNucleusLocal) * rot;
+        }
+
+        Quaternion hintAligned = AlignHybridPlusXToTipDir(preferClosestLocalRotation.Value, localDir);
+
+        if (!continuityPreferLocalRotation.HasValue)
+        {
+            float bestAng = float.MaxValue;
+            int bestK = 0;
+            Quaternion bestQ = qBase;
+            for (int k = 0; k < 4; k++)
+            {
+                var q = qBase * Quaternion.AngleAxis(k * 90f, Vector3.right);
+                float a = Quaternion.Angle(hintAligned, q);
+                if (a < bestAng - 0.02f || (Mathf.Abs(a - bestAng) <= 0.02f && k < bestK))
+                {
+                    bestAng = a;
+                    bestK = k;
+                    bestQ = q;
+                }
+            }
+            return (pos, bestQ);
+        }
+
+        Quaternion contAligned = AlignHybridPlusXToTipDir(continuityPreferLocalRotation.Value, localDir);
+
+        // Prefer the 90° roll bucket that tracks the structural hint (e.g. phase-1 slerp target)
+        // while still penalizing jumps from the prior frame. Pure lexicographic continuity-first
+        // picks a bucket arbitrarily close in dCont but far in dHint when restore/snap left the
+        // live rotation stale vs the current lerp quaternion (σ prebond phase-1 triage H112).
+        const float kRollContinuityWeight = 0.25f;
+        float bestScoreCont = float.MaxValue;
+        float bestDContAtScore = float.MaxValue;
+        int bestKCont = 0;
+        Quaternion bestQCont = qBase;
         for (int k = 0; k < 4; k++)
         {
             var q = qBase * Quaternion.AngleAxis(k * 90f, Vector3.right);
-            float a = Quaternion.Angle(preferClosestLocalRotation.Value, q);
-            if (a < bestAng - 0.02f || (Mathf.Abs(a - bestAng) <= 0.02f && k < bestK))
+            float dCont = Quaternion.Angle(contAligned, q);
+            float dHint = Quaternion.Angle(hintAligned, q);
+            float score = dHint + kRollContinuityWeight * dCont;
+            bool better = score < bestScoreCont - 0.02f
+                || (Mathf.Abs(score - bestScoreCont) <= 0.02f && dCont < bestDContAtScore - 0.02f)
+                || (Mathf.Abs(score - bestScoreCont) <= 0.02f && Mathf.Abs(dCont - bestDContAtScore) <= 0.02f && k < bestKCont);
+            if (better)
             {
-                bestAng = a;
-                bestK = k;
-                bestQ = q;
+                bestScoreCont = score;
+                bestDContAtScore = dCont;
+                bestKCont = k;
+                bestQCont = q;
             }
         }
-        return (pos, bestQ);
+        return (pos, bestQCont);
     }
 
     public static (Vector3 position, Quaternion rotation) GetCanonicalSlotPosition(float angleDeg, float bondRadius)
@@ -1955,6 +2029,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
     void Start()
     {
+        // Partner lobe in σ drag may never get OnPointerDown; seed originals from layout so SnapToOriginal() is safe.
+        originalLocalPosition = transform.localPosition;
+        originalLocalRotation = transform.localRotation;
         if (originalLocalScale.sqrMagnitude < 0.01f) originalLocalScale = transform.localScale;
         var sr = GetComponent<SpriteRenderer>();
         var mr = GetComponent<MeshRenderer>();

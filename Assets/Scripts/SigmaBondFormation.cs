@@ -3,7 +3,8 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// σ formation from <b>orbital drag</b>: three-phase pre-bond / bonding / post-bond-guide timeline.
+/// σ formation from <b>orbital drag</b>: phase 1 pre-bond (placeholder — reimplement in <see cref="CoOrbitalDragSigmaPhase1PrebondPlaceholder"/>),
+/// then bond formation (cylinder + orbital→line), then post-bond guide hybrid lerp.
 /// Independent of edit mode; add this component to the scene (e.g. next to <see cref="EditModeManager"/>).
 /// Timings are read from the gesture <see cref="ElectronOrbitalFunction"/> (the dragged lobe when available).
 /// </summary>
@@ -12,41 +13,14 @@ public class SigmaBondFormation : MonoBehaviour
 {
     [SerializeField] EditModeManager editModeManager;
 
-    /// <summary>
-    /// σ phase 1: bond σ are children of <see cref="CovalentBond"/> transforms that move in <c>LateUpdate</c>.
-    /// Shell world poses must be applied after bond frames (see <see cref="LateUpdate"/>); applying in the coroutine runs too early.
-    /// </summary>
-    bool phase1ApplyShellPosesInLateUpdate;
-    List<(ElectronOrbitalFunction orb, Vector3 worldPos, Quaternion worldRot)> phase1WorldBeforeShell;
-    Vector3 phase1Pivot0W;
-    Vector3 phase1Off;
-    Quaternion phase1QS;
-
-    bool phase1ApplyPerOrbitalLocalShell;
-
     void Awake()
     {
         if (editModeManager == null)
             editModeManager = UnityEngine.Object.FindFirstObjectByType<EditModeManager>();
     }
 
-    void LateUpdate()
-    {
-        if (phase1ApplyShellPosesInLateUpdate && phase1WorldBeforeShell != null && !phase1ApplyPerOrbitalLocalShell)
-        {
-            foreach (var w in phase1WorldBeforeShell)
-            {
-                if (w.orb == null) continue;
-                w.orb.transform.SetPositionAndRotation(
-                    phase1Pivot0W + phase1Off + phase1QS * (w.worldPos - phase1Pivot0W),
-                    phase1QS * w.worldRot);
-            }
-        }
-
-    }
-
     /// <summary>
-    /// Ensures a scene runner exists for orbital-drag σ (three-phase). If none, adds this component to the
+    /// Ensures a scene runner exists for orbital-drag σ (pre-bond placeholder + bond + post-bond guide). If none, adds this component to the
     /// <see cref="EditModeManager"/> GameObject when present; otherwise creates a dedicated GameObject.
     /// Call before <see cref="TryBeginOrbitalDragSigmaFormation"/> from gesture code so scenes without a manual runner still animate.
     /// </summary>
@@ -122,74 +96,19 @@ public class SigmaBondFormation : MonoBehaviour
     }
 
     /// <summary>
-    /// Along the great circle from <paramref name="v0"/> to <paramref name="v1"/>, find a blend parameter <c>t</c> so the angle
-    /// from <paramref name="refTipParentLocal"/> to <c>Slerp(v0,v1,t)</c> matches <c>Lerp(∠(ref,v0), ∠(ref,v1), s)</c> (linear in gesture progress).
-    /// Used when a pinned 0e lobe stays fixed: plain <c>Slerp(v0,v1,s)</c> on tips does not linearize that inter-domain angle in <c>s</c>.
-    /// </summary>
-    static float PrebondShellTipSlerpTForLinearAngleToRef(
-        Vector3 refTipParentLocal, Vector3 v0, Vector3 v1, float s)
-    {
-        float a0 = Vector3.Angle(refTipParentLocal, v0);
-        float a1 = Vector3.Angle(refTipParentLocal, v1);
-        float targetAng = Mathf.Lerp(a0, a1, s);
-        const int steps = 48;
-        float bestT = s;
-        float bestErr = float.MaxValue;
-        for (int k = 0; k <= steps; k++)
-        {
-            float t = k / (float)steps;
-            Vector3 w = Vector3.Slerp(v0, v1, t);
-            if (w.sqrMagnitude < 1e-14f) continue;
-            w.Normalize();
-            float err = Mathf.Abs(Vector3.Angle(refTipParentLocal, w) - targetAng);
-            if (err < bestErr)
-            {
-                bestErr = err;
-                bestT = t;
-            }
-        }
-        return bestT;
-    }
-
-    /// <summary>
-    /// Nucleus-parented lerp for guide redistribution (matches σ-break <see cref="SigmaBreakPureRedistribution.MotionPlan.NonBondLerp"/>).
+    /// Nucleus-parented lerp for guide post-bond redistribution (matches σ-break <see cref="SigmaBreakPureRedistribution.MotionPlan.NonBondLerp"/>).
     /// For lone orbitals on a nucleus: slerp hybrid +X directions in parent space (not quaternion slerp * right, which diverges under roll),
     /// rebuild rotation via <see cref="ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection"/> for twist continuity,
     /// and place centroid on the same axis with magnitude lerped from start/end and start hemisphere sign (± vs +X) for back-side 0e pins.
-    /// Orbital-drag phase-1 prebond: when <paramref name="prebondShellPinnedZeroEForLinearInterTipAngle"/> and guide/non-guide are set,
-    /// bond-parented σ orbitals on other bonds (substituents) keep the pre-phase snapshot local pose so only nucleus lone lobes tween toward the predictive shell end.
     /// </summary>
     static void ApplySigmaLerpStepPhase3(
         List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)> startRows,
         Dictionary<int, (Vector3 lp, Quaternion lr)> endById,
-        float s,
-        ElectronOrbitalFunction prebondShellPinnedZeroEForLinearInterTipAngle = null,
-        AtomFunction sigmaFormationPrebondGuideAtom = null,
-        AtomFunction sigmaFormationPrebondNonGuideAtom = null)
+        float s)
     {
         if (startRows == null) return;
         const float epsMag = 1e-8f;
         const float epsTip = 1e-12f;
-        bool freezeNonFormingBondSigmaInOrbitalDragPrebond =
-            prebondShellPinnedZeroEForLinearInterTipAngle != null
-            && sigmaFormationPrebondGuideAtom != null
-            && sigmaFormationPrebondNonGuideAtom != null;
-        Vector3 refPinnedZeroETip = default;
-        bool useLinearInterTipToPinnedZeroE = false;
-        if (prebondShellPinnedZeroEForLinearInterTipAngle != null)
-        {
-            for (int j = 0; j < startRows.Count; j++)
-            {
-                if (startRows[j].orb != prebondShellPinnedZeroEForLinearInterTipAngle) continue;
-                Vector3 rj = startRows[j].localRot * Vector3.right;
-                if (rj.sqrMagnitude > epsTip)
-                {
-                    refPinnedZeroETip = rj.normalized;
-                    useLinearInterTipToPinnedZeroE = true;
-                }
-                break;
-            }
-        }
 
         for (int i = 0; i < startRows.Count; i++)
         {
@@ -223,18 +142,7 @@ public class SigmaBondFormation : MonoBehaviour
                     }
                     else
                     {
-                        Vector3 tipS;
-                        if (useLinearInterTipToPinnedZeroE
-                            && prebondShellPinnedZeroEForLinearInterTipAngle != null
-                            && row.orb != prebondShellPinnedZeroEForLinearInterTipAngle
-                            && refPinnedZeroETip.sqrMagnitude > epsTip)
-                        {
-                            float tArc = PrebondShellTipSlerpTForLinearAngleToRef(
-                                refPinnedZeroETip, tipStart, tipEnd, s);
-                            tipS = Vector3.Slerp(tipStart, tipEnd, tArc);
-                        }
-                        else
-                            tipS = Vector3.Slerp(tipStart, tipEnd, s);
+                        Vector3 tipS = Vector3.Slerp(tipStart, tipEnd, s);
                         if (tipS.sqrMagnitude < epsTip)
                             tipS = tipEnd;
                         else
@@ -248,8 +156,6 @@ public class SigmaBondFormation : MonoBehaviour
                         if (m0 > epsMag && tipStart.sqrMagnitude > epsTip
                             && Vector3.Dot(row.localPos.normalized, tipStart) < 0f)
                             radialSign = -1f;
-                        // Obtuse offset vs target (e.g. prebond 0e snap vs shell end ~180° in H31): tip×m would hug +tip while
-                        // centroids lie on opposite hemispheres — blend offset on the sphere + magnitude (see LerpOrbitalLocalOffsetAvoidThroughNucleus).
                         if (m0 > epsMag && m1 > epsMag
                             && Vector3.Dot(row.localPos.normalized, end.lp.normalized) < 0f)
                             row.orb.transform.localPosition = LerpOrbitalLocalOffsetAvoidThroughNucleus(row.localPos, end.lp, s);
@@ -260,25 +166,9 @@ public class SigmaBondFormation : MonoBehaviour
             }
             else
             {
-                bool freezeSubstituentSigmaBondOrb =
-                    freezeNonFormingBondSigmaInOrbitalDragPrebond
-                    && row.orb.Bond is CovalentBond cbSigma
-                    && row.orb.transform.parent == cbSigma.transform
-                    && !((cbSigma.AtomA == sigmaFormationPrebondGuideAtom
-                            && cbSigma.AtomB == sigmaFormationPrebondNonGuideAtom)
-                        || (cbSigma.AtomA == sigmaFormationPrebondNonGuideAtom
-                            && cbSigma.AtomB == sigmaFormationPrebondGuideAtom));
-                if (freezeSubstituentSigmaBondOrb)
-                {
-                    row.orb.transform.localRotation = row.localRot;
-                    row.orb.transform.localPosition = row.localPos;
-                }
-                else
-                {
-                    Quaternion lerpedRot = Quaternion.Slerp(row.localRot, end.lr, s);
-                    row.orb.transform.localRotation = lerpedRot;
-                    row.orb.transform.localPosition = Vector3.Lerp(row.localPos, end.lp, s);
-                }
+                Quaternion lerpedRot = Quaternion.Slerp(row.localRot, end.lr, s);
+                row.orb.transform.localRotation = lerpedRot;
+                row.orb.transform.localPosition = Vector3.Lerp(row.localPos, end.lp, s);
             }
         }
     }
@@ -294,7 +184,34 @@ public class SigmaBondFormation : MonoBehaviour
     }
 
     /// <summary>
-    /// True if the three-phase coroutine was started. When <see cref="editModeManager"/> is null, returns false.
+    /// Orbital-drag σ <b>phase 1</b> (pre-bond): empty placeholder — implement non-guide approach / shell / fragment motion here incrementally.
+    /// <paramref name="phase1Sec"/> is read from the gesture orbital; use it when you add timed pre-bond animation.
+    /// </summary>
+    IEnumerator CoOrbitalDragSigmaPhase1PrebondPlaceholder(
+        AtomFunction atomA,
+        AtomFunction atomB,
+        ElectronOrbitalFunction orbA,
+        ElectronOrbitalFunction orbB,
+        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital,
+        AtomFunction guide,
+        AtomFunction nonGuide,
+        ElectronOrbitalFunction guideOrb,
+        float phase1Sec)
+    {
+        if (atomA == null || atomB == null || guide == null || nonGuide == null)
+            yield break;
+
+        _ = orbA;
+        _ = orbB;
+        _ = redistributionGuideTieBreakDraggedOrbital;
+        _ = guideOrb;
+        _ = phase1Sec;
+
+        yield break;
+    }
+
+    /// <summary>
+    /// True if the orbital-drag σ coroutine was started. When <see cref="editModeManager"/> is null, returns false.
     /// </summary>
     public bool TryBeginOrbitalDragSigmaFormation(
         AtomFunction atomA,
@@ -317,7 +234,9 @@ public class SigmaBondFormation : MonoBehaviour
         return true;
     }
 
-    /// <summary>Orbital-drag σ: (1) pre-bond — translate non-guide + unified shell lerp; (2) bond — cylinder + orbital→line; (3) post-bond — guide hybrid lerp.</summary>
+    /// <summary>
+    /// Orbital-drag σ: phase 1 pre-bond (see <see cref="CoOrbitalDragSigmaPhase1PrebondPlaceholder"/>), bond animation, then post-bond guide lerp.
+    /// </summary>
     IEnumerator CoOrbitalDragSigmaFormationThreePhase(
         AtomFunction atomA,
         AtomFunction atomB,
@@ -342,7 +261,7 @@ public class SigmaBondFormation : MonoBehaviour
         try
         {
             // Pointer-up can still leave the dragged lobe at the drop world pose in the same frame StartCoroutine runs.
-            // Snap to pre-drag locals, then wait one frame so placement / prebond read +X and nuclei from the restored configuration.
+            // Snap to pre-drag locals, then wait one frame so bond animation reads nuclei and orbitals from the restored configuration.
             var draggedLobeToRestore = redistributionGuideTieBreakDraggedOrbital != null
                 ? redistributionGuideTieBreakDraggedOrbital
                 : orbA;
@@ -375,473 +294,18 @@ public class SigmaBondFormation : MonoBehaviour
             int sigmaDragSavedNonGuideOpElectrons = nonGuide == atomA ? orbA.ElectronCount : orbB.ElectronCount;
             int sigmaDragSavedGuideOpElectrons = guide == atomA ? orbA.ElectronCount : orbB.ElectronCount;
 
-            Vector3 n0 = nonGuide.transform.position;
-            Vector3 pivot0W = n0;
-            float bl = DefaultSigmaBondLengthForPair(guide, nonGuide);
-            ElectronOrbitalFunction guideOpForPlacement = guide == atomA ? orbA : orbB;
-            Vector3 nTarget = ElectronRedistributionOrchestrator.ComputeNonGuideNucleusTargetAlongGuideOpHead(
-                guide, nonGuide, guideOpForPlacement, bl);
-            Vector3 deltaTotal = nTarget - n0;
+            yield return StartCoroutine(CoOrbitalDragSigmaPhase1PrebondPlaceholder(
+                atomA,
+                atomB,
+                orbA,
+                orbB,
+                redistributionGuideTieBreakDraggedOrbital,
+                guide,
+                nonGuide,
+                guideOrb,
+                phase1Sec));
 
-            // σ phase-1 (per-orbital / predictive) bond δ + tip dirs — mirror guide phase 3 prelude; set after refresh below.
-            List<CovalentBond> phase1NgSigmaBonds = null;
-            Quaternion[] phase1NgD0 = null, phase1NgD1 = null, phase1NgWr0 = null, phase1NgWr1 = null;
-            int phase1NSig = 0;
-            bool phase1SubstituentFragmentMotion = false;
-            List<AtomFunction> phase1SigmaNeighbors = null;
-            Vector3[] phase1OldSigmaDirWorld = null;
-            Vector3[] phase1NewSigmaDirWorld = null;
-            Vector3[] phase1InterpDirs = null;
-            HashSet<AtomFunction> phase1FragAtoms = null;
-            Dictionary<AtomFunction, Vector3> phase1FragmentStartWorld = null;
-            float phase1MaxSigmaBondDeltaDegLog = 0f;
-            // Pre-Refresh σ δ / world rot (before hybrid refresh + rebaseline). Rebaseline keeps phase1NgD0 for phase-3 lerp;
-            // substituent fragment span uses this vs post-shell D1/Wr1 (rebaseline zeros Angle(rebaselineD0,D1)).
-            Quaternion[] phase1NgD0ForFragmentSpan = null;
-            Quaternion[] phase1NgWr0ForFragmentSpan = null;
-
-            var toMove = BuildNonGuideFragmentAtomsForApproach(guide, nonGuide);
-            var initialWorld = new Dictionary<AtomFunction, Vector3>(toMove.Count);
-            var initialWorldRot = new Dictionary<AtomFunction, Quaternion>(toMove.Count);
-            foreach (var a in toMove)
-            {
-                if (a == null) continue;
-                initialWorld[a] = a.transform.position;
-                initialWorldRot[a] = a.transform.rotation;
-            }
-
-            ElectronOrbitalFunction nonGuideOpForAnim = nonGuide == atomA ? orbA : orbB;
-
-            var snapBeforeNG = new List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)>();
-            nonGuide.SnapshotAllBondedOrbitalLocalTransforms(snapBeforeNG, nonGuideOpForAnim);
-
-            // Phase 1 pre-bond: non-guide shell. One 0e and one 2e on the forming pair (either side): same predictive path — rigid prebond,
-            // re-snapshot, RefreshSigmaBond with guide op refLocal + per-orbital lerp. If only one polarity ran before, the other fell through
-            // to unified shell and wrong template (logs: usePerOrbitalPhase1 false when guide 0e / non-guide 2e).
-            var worldBeforeNG = new List<(ElectronOrbitalFunction orb, Vector3 worldPos, Quaternion worldRot)>();
-            nonGuide.CaptureAllBondedOrbitalWorldTransforms(worldBeforeNG, nonGuideOpForAnim);
-
-            Quaternion wrotBeforeOp = Quaternion.identity;
-            bool foundWrotBeforeOp = false;
-            foreach (var w in worldBeforeNG)
-            {
-                if (w.orb == nonGuideOpForAnim)
-                {
-                    wrotBeforeOp = w.worldRot;
-                    foundWrotBeforeOp = true;
-                    break;
-                }
-            }
-            if (!foundWrotBeforeOp && nonGuideOpForAnim != null)
-                wrotBeforeOp = nonGuideOpForAnim.transform.rotation;
-
-            bool usePerOrbitalPhase1 = nonGuideOpForAnim != null && guideOpForPlacement != null
-                && nonGuide.AtomicNumber > 1
-                && ((nonGuideOpForAnim.ElectronCount == 0 && guideOpForPlacement.ElectronCount == 2)
-                    || (nonGuideOpForAnim.ElectronCount == 2 && guideOpForPlacement.ElectronCount == 0));
-
-            Quaternion qFullShell;
-            Dictionary<int, (Vector3 lp, Quaternion lr)> shellEndById = null;
-
-            if (usePerOrbitalPhase1)
-            {
-                phase1NgSigmaBonds = new List<CovalentBond>();
-                foreach (var cb in nonGuide.CovalentBonds)
-                {
-                    if (cb != null && cb.IsSigmaBondLine() && cb.Orbital != null)
-                        phase1NgSigmaBonds.Add(cb);
-                }
-                int nNgSig = phase1NgSigmaBonds.Count;
-
-                ElectronRedistributionOrchestrator.RunSigmaFormation12PrebondNonGuideHybridOnly(
-                    atomA, atomB, orbA, orbB, guideOrb);
-                snapBeforeNG.Clear();
-                nonGuide.SnapshotAllBondedOrbitalLocalTransforms(snapBeforeNG, nonGuideOpForAnim);
-                worldBeforeNG.Clear();
-                nonGuide.CaptureAllBondedOrbitalWorldTransforms(worldBeforeNG, nonGuideOpForAnim);
-                if (nonGuideOpForAnim != null)
-                {
-                    wrotBeforeOp = nonGuideOpForAnim.transform.rotation;
-                    foundWrotBeforeOp = true;
-                }
-
-                phase1NgD0 = new Quaternion[nNgSig];
-                phase1NgD1 = new Quaternion[nNgSig];
-                phase1NgWr0 = new Quaternion[nNgSig];
-                phase1NgWr1 = new Quaternion[nNgSig];
-                for (int bi = 0; bi < nNgSig; bi++)
-                {
-                    var cb = phase1NgSigmaBonds[bi];
-                    cb.CommitSigmaRedistributionDeltaFromWorldOrbitalRotation(cb.Orbital.transform.rotation);
-                    phase1NgD0[bi] = cb.GetOrbitalRedistributionWorldDeltaForDiagnostics();
-                    phase1NgWr0[bi] = cb.Orbital.transform.rotation;
-                }
-
-                phase1NgD0ForFragmentSpan = new Quaternion[nNgSig];
-                phase1NgWr0ForFragmentSpan = new Quaternion[nNgSig];
-                for (int bi = 0; bi < nNgSig; bi++)
-                {
-                    phase1NgD0ForFragmentSpan[bi] = phase1NgD0[bi];
-                    phase1NgWr0ForFragmentSpan[bi] = phase1NgWr0[bi];
-                }
-
-                nonGuide.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(
-                    guide,
-                    null,
-                    null,
-                    orbitalDragSigmaPhase3RegularGuide: true,
-                    sigmaFormationPrebond: true,
-                    sigmaFormationPrebondZeroEOperationOrb: nonGuideOpForAnim,
-                    sigmaFormationPrebondGuideOperationOrb: guideOpForPlacement);
-
-                // Re-baseline phase-1 σ δ/world tip from post–prebond-refresh poses. Initial Commit above ran before
-                // Refresh; Restore+SetOrbitalRedistributionWorldDeltaForPhase3Lerp(phase1NgD0) must not reapply that
-                // stale ~160° δ after TryMatch/Sync.
-                for (int bi = 0; bi < nNgSig; bi++)
-                {
-                    var cb = phase1NgSigmaBonds[bi];
-                    if (cb?.Orbital == null) continue;
-                    cb.CommitSigmaRedistributionDeltaFromWorldOrbitalRotation(cb.Orbital.transform.rotation);
-                    phase1NgD0[bi] = cb.GetOrbitalRedistributionWorldDeltaForDiagnostics();
-                    phase1NgWr0[bi] = cb.Orbital.transform.rotation;
-                }
-
-                var snapEndNG = new List<(ElectronOrbitalFunction orb, Vector3 localPos, Quaternion localRot)>();
-                nonGuide.SnapshotAllBondedOrbitalLocalTransforms(snapEndNG, nonGuideOpForAnim);
-                shellEndById = new Dictionary<int, (Vector3, Quaternion)>(snapEndNG.Count);
-                foreach (var row in snapEndNG)
-                {
-                    if (row.orb == null) continue;
-                    shellEndById[row.orb.GetInstanceID()] = (row.localPos, row.localRot);
-                }
-
-                // 0e shell end stays snapEndNG (post–RefreshSigmaBondOrbitalHybridAlignment, pinReservedDir + canonical slot).
-                // Overwriting shellEnd with snapBeforeNG left localPosition off hybrid axis vs lones (H54 pos≠tip) while H25 was correct.
-
-                for (int bi = 0; bi < nNgSig; bi++)
-                {
-                    var cb = phase1NgSigmaBonds[bi];
-                    if (cb?.Orbital == null) continue;
-                    phase1NgD1[bi] = cb.GetOrbitalRedistributionWorldDeltaForDiagnostics();
-                    phase1NgWr1[bi] = cb.Orbital.transform.rotation;
-                }
-
-                // Same motion paradigm as guide phase 3: no qFullShell on atoms; substituents + cylinders follow tip/dir rigid step.
-                qFullShell = Quaternion.identity;
-
-                AtomFunction.RestoreNucleusParentedOrbitalLocalTransforms(snapBeforeNG);
-                for (int bi = 0; bi < nNgSig; bi++)
-                {
-                    var cb = phase1NgSigmaBonds[bi];
-                    if (cb?.Orbital == null) continue;
-                    cb.UpdateBondTransformToCurrentAtoms();
-                    cb.SetOrbitalRedistributionWorldDeltaForPhase3Lerp(phase1NgD0[bi]);
-                }
-
-                // Guide phase 3 analog: fixed initial σ directions from pre-approach layout; σ-tip / δ spans drive substituent rigid rotation about the (moving) non-guide pivot.
-                if (phase1NgSigmaBonds.Count > 0)
-                {
-                    phase1NSig = phase1NgSigmaBonds.Count;
-                    phase1SigmaNeighbors = new List<AtomFunction>(phase1NSig);
-                    phase1OldSigmaDirWorld = new Vector3[phase1NSig];
-                    phase1NewSigmaDirWorld = new Vector3[phase1NSig];
-                    var phase1FullTipRotDirWorld = new Vector3[phase1NSig];
-                    phase1InterpDirs = new Vector3[phase1NSig];
-                    var deltaSpanDeg = new float[phase1NSig];
-                    var includeForFragment = new bool[phase1NSig];
-                    float maxDeltaDeg = -1f;
-                    Vector3 ngpos0 = n0;
-                    const int formingBondIdPhase1 = 0;
-                    for (int i = 0; i < phase1NSig; i++)
-                    {
-                        var cb = phase1NgSigmaBonds[i];
-                        var nbr = cb != null ? (cb.AtomA == nonGuide ? cb.AtomB : cb.AtomA) : null;
-                        phase1SigmaNeighbors.Add(nbr);
-                        phase1OldSigmaDirWorld[i] = nbr != null && initialWorld.TryGetValue(nbr, out var pn)
-                            ? (pn - ngpos0).normalized
-                            : Vector3.right;
-                        deltaSpanDeg[i] = Quaternion.Angle(phase1NgD0ForFragmentSpan[i], phase1NgD1[i]);
-                        if (deltaSpanDeg[i] > maxDeltaDeg)
-                            maxDeltaDeg = deltaSpanDeg[i];
-                        phase1FullTipRotDirWorld[i] = phase1OldSigmaDirWorld[i];
-                        phase1NewSigmaDirWorld[i] = phase1OldSigmaDirWorld[i];
-                    }
-                    phase1MaxSigmaBondDeltaDegLog = maxDeltaDeg >= 0f ? maxDeltaDeg : 0f;
-
-                    const float minDeltaForFragmentDeg = 0.75f;
-                    const float deltaTieEpsDeg = 0.15f;
-                    for (int i = 0; i < phase1NSig; i++)
-                    {
-                        bool isForming = phase1NgSigmaBonds[i] != null
-                            && phase1NgSigmaBonds[i].GetInstanceID() == formingBondIdPhase1;
-                        bool tiesMaxDelta = maxDeltaDeg >= minDeltaForFragmentDeg
-                            && deltaSpanDeg[i] >= minDeltaForFragmentDeg
-                            && Mathf.Abs(deltaSpanDeg[i] - maxDeltaDeg) <= deltaTieEpsDeg;
-                        includeForFragment[i] = tiesMaxDelta
-                            || (isForming && deltaSpanDeg[i] >= minDeltaForFragmentDeg)
-                            || (deltaSpanDeg[i] >= minDeltaForFragmentDeg);
-
-                        Vector3 tip0w = (phase1NgWr0ForFragmentSpan[i] * Vector3.right).normalized;
-                        Vector3 tip1w = (phase1NgWr1[i] * Vector3.right).normalized;
-                        if (tip0w.sqrMagnitude < 1e-12f || tip1w.sqrMagnitude < 1e-12f)
-                        {
-                            phase1FullTipRotDirWorld[i] = phase1OldSigmaDirWorld[i];
-                            phase1NewSigmaDirWorld[i] = phase1OldSigmaDirWorld[i];
-                        }
-                        else
-                        {
-                            Vector3 towardTip1 = Vector3.Dot(tip1w, phase1OldSigmaDirWorld[i]) < 0f
-                                ? (-tip1w).normalized
-                                : tip1w.normalized;
-                            phase1FullTipRotDirWorld[i] = towardTip1;
-                            float angFull = includeForFragment[i]
-                                ? Vector3.Angle(phase1OldSigmaDirWorld[i], phase1FullTipRotDirWorld[i])
-                                : 0f;
-                            float angCap = Mathf.Min(angFull, deltaSpanDeg[i]);
-                            if (angFull < 1e-3f || angCap < 1e-3f)
-                                phase1NewSigmaDirWorld[i] = phase1OldSigmaDirWorld[i];
-                            else
-                            {
-                                phase1NewSigmaDirWorld[i] = Vector3.RotateTowards(
-                                    phase1OldSigmaDirWorld[i],
-                                    phase1FullTipRotDirWorld[i],
-                                    angCap * Mathf.Deg2Rad,
-                                    0f).normalized;
-                            }
-                        }
-                    }
-
-                    for (int i = 0; i < phase1NSig; i++)
-                    {
-                        if (Vector3.Angle(phase1OldSigmaDirWorld[i], phase1NewSigmaDirWorld[i]) >= 0.75f)
-                        {
-                            phase1SubstituentFragmentMotion = true;
-                            break;
-                        }
-                    }
-
-                    if (phase1SubstituentFragmentMotion && nonGuide != null)
-                    {
-                        phase1FragAtoms = new HashSet<AtomFunction>();
-                        phase1FragmentStartWorld = new Dictionary<AtomFunction, Vector3>();
-                        for (int i = 0; i < phase1NSig; i++)
-                        {
-                            var nbr = phase1SigmaNeighbors[i];
-                            if (nbr == null) continue;
-                            foreach (var a in nonGuide.GetAtomsOnSideOfSigmaBond(nbr))
-                            {
-                                if (a == null || a == nonGuide) continue;
-                                if (phase1FragAtoms.Add(a))
-                                    phase1FragmentStartWorld[a] = a.transform.position;
-                            }
-                        }
-                    }
-                }
-            }
-            else
-            {
-                ElectronRedistributionOrchestrator.RunSigmaFormation12PrebondNonGuideHybridOnly(atomA, atomB, orbA, orbB, guideOrb);
-                Quaternion wrotAfterOp = nonGuideOpForAnim != null ? nonGuideOpForAnim.transform.rotation : Quaternion.identity;
-                qFullShell = wrotAfterOp * Quaternion.Inverse(wrotBeforeOp);
-                AtomFunction.RestoreNucleusParentedOrbitalLocalTransforms(snapBeforeNG);
-            }
-
-            SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, true);
-            try
-            {
-                phase1WorldBeforeShell = worldBeforeNG;
-                phase1ApplyShellPosesInLateUpdate = true;
-                phase1ApplyPerOrbitalLocalShell = usePerOrbitalPhase1;
-                float p1 = Mathf.Max(1e-5f, phase1Sec);
-                float e1 = 0f;
-                // First loop iteration uses s=0 without consuming time so the visible pose matches the t=0
-                // shell (same as snapBeforeNG / approach start). Otherwise e1+=dt runs first and the first
-                // rendered frame is already at smoothstep(dt/p1)>0 — reads as a teleport at animation start.
-                bool phase1NeedInitialSZeroFrame = true;
-                while (e1 < p1)
-                {
-                    float s;
-                    if (phase1NeedInitialSZeroFrame)
-                    {
-                        phase1NeedInitialSZeroFrame = false;
-                        s = 0f;
-                    }
-                    else
-                    {
-                        e1 += Time.deltaTime;
-                        float u = Mathf.Clamp01(e1 / p1);
-                        s = u * u * (3f - 2f * u);
-                    }
-                    Vector3 off = deltaTotal * s;
-                    Quaternion qS = Quaternion.Slerp(Quaternion.identity, qFullShell, s);
-
-                    if (usePerOrbitalPhase1 && shellEndById != null)
-                    {
-                        foreach (var a in toMove)
-                        {
-                            if (a == null || !initialWorld.TryGetValue(a, out var p0)) continue;
-                            if (!initialWorldRot.TryGetValue(a, out var r0))
-                                r0 = a.transform.rotation;
-                            // Substituent fragment atoms: baseline after prebond refresh (phase1FragmentStartWorld),
-                            // not initialWorld from before RunSigmaFormation12 / hybrid refresh — mismatch caused a
-                            // per-frame snap when the loop overwrote p0+off with pStart+off before rigid targets.
-                            Vector3 baseW = p0;
-                            if (phase1SubstituentFragmentMotion && phase1FragmentStartWorld != null
-                                && phase1FragmentStartWorld.TryGetValue(a, out var pFrag))
-                                baseW = pFrag;
-                            a.transform.SetPositionAndRotation(baseW + off, r0);
-                        }
-
-                        ApplySigmaLerpStepPhase3(
-                            snapBeforeNG,
-                            shellEndById,
-                            s,
-                            nonGuideOpForAnim,
-                            guide,
-                            nonGuide);
-
-                        if (phase1SubstituentFragmentMotion && nonGuide != null && phase1FragAtoms != null
-                            && phase1FragmentStartWorld != null && phase1NSig > 0 && phase1InterpDirs != null
-                            && phase1OldSigmaDirWorld != null && phase1NewSigmaDirWorld != null
-                            && phase1SigmaNeighbors != null)
-                        {
-                            Vector3 pivotW = nonGuide.transform.position;
-                            for (int i = 0; i < phase1NSig; i++)
-                                phase1InterpDirs[i] = Vector3
-                                    .Slerp(phase1OldSigmaDirWorld[i], phase1NewSigmaDirWorld[i], s).normalized;
-
-                            SigmaBreakPureRedistribution.BuildSigmaNeighborTargetsWithFragmentRigidRotation(
-                                pivotW,
-                                phase1SigmaNeighbors,
-                                phase1OldSigmaDirWorld,
-                                phase1InterpDirs,
-                                nonGuide,
-                                out var targets);
-                            if (targets != null)
-                            {
-                                foreach (var (a, tw) in targets)
-                                {
-                                    if (a != null) a.transform.position = tw;
-                                }
-                            }
-                        }
-
-                        if (nonGuide != null)
-                        {
-                            var molPhase1 = nonGuide.GetConnectedMolecule();
-                            if (molPhase1 != null && molPhase1.Count > 0)
-                                AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(molPhase1);
-                        }
-                    }
-                    else
-                    {
-                        foreach (var a in toMove)
-                        {
-                            if (a == null || !initialWorld.TryGetValue(a, out var p0)) continue;
-                            if (!initialWorldRot.TryGetValue(a, out var r0))
-                                r0 = a.transform.rotation;
-                            a.transform.SetPositionAndRotation(
-                                pivot0W + off + qS * (p0 - pivot0W),
-                                qS * r0);
-                        }
-                    }
-
-                    phase1Pivot0W = pivot0W;
-                    phase1Off = off;
-                    phase1QS = usePerOrbitalPhase1 && shellEndById != null ? Quaternion.identity : qS;
-                    yield return null;
-                }
-
-                if (usePerOrbitalPhase1 && shellEndById != null)
-                {
-                    foreach (var a in toMove)
-                    {
-                        if (a == null || !initialWorld.TryGetValue(a, out var p0)) continue;
-                        if (!initialWorldRot.TryGetValue(a, out var r0End))
-                            r0End = a.transform.rotation;
-                        Vector3 baseEndW = p0;
-                        if (phase1SubstituentFragmentMotion && phase1FragmentStartWorld != null
-                            && phase1FragmentStartWorld.TryGetValue(a, out var pFragEnd))
-                            baseEndW = pFragEnd;
-                        a.transform.SetPositionAndRotation(baseEndW + deltaTotal, r0End);
-                    }
-
-                    ApplySigmaLerpStepPhase3(
-                        snapBeforeNG,
-                        shellEndById,
-                        1f,
-                        nonGuideOpForAnim,
-                        guide,
-                        nonGuide);
-
-                    if (phase1SubstituentFragmentMotion && nonGuide != null && phase1FragAtoms != null
-                        && phase1FragmentStartWorld != null && phase1NSig > 0 && phase1InterpDirs != null
-                        && phase1OldSigmaDirWorld != null && phase1NewSigmaDirWorld != null
-                        && phase1SigmaNeighbors != null)
-                    {
-                        Vector3 pivotW = nonGuide.transform.position;
-                        for (int i = 0; i < phase1NSig; i++)
-                            phase1InterpDirs[i] = phase1NewSigmaDirWorld[i];
-
-                        SigmaBreakPureRedistribution.BuildSigmaNeighborTargetsWithFragmentRigidRotation(
-                            pivotW,
-                            phase1SigmaNeighbors,
-                            phase1OldSigmaDirWorld,
-                            phase1InterpDirs,
-                            nonGuide,
-                            out var targetsFinal);
-                        if (targetsFinal != null)
-                        {
-                            foreach (var (a, tw) in targetsFinal)
-                            {
-                                if (a != null) a.transform.position = tw;
-                            }
-                        }
-                    }
-
-                    if (nonGuide != null)
-                    {
-                        var molEndPhase1 = nonGuide.GetConnectedMolecule();
-                        if (molEndPhase1 != null && molEndPhase1.Count > 0)
-                            AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(molEndPhase1);
-                    }
-
-                    if (phase1NgSigmaBonds != null && phase1NgD1 != null)
-                    {
-                        for (int bi = 0; bi < phase1NgSigmaBonds.Count; bi++)
-                        {
-                            var cb = phase1NgSigmaBonds[bi];
-                            if (cb?.Orbital == null || bi >= phase1NgD1.Length) continue;
-                            cb.SetOrbitalRedistributionWorldDeltaForPhase3Lerp(phase1NgD1[bi]);
-                        }
-                        var molD1 = nonGuide != null ? nonGuide.GetConnectedMolecule() : null;
-                        if (molD1 != null && molD1.Count > 0)
-                            AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(molD1);
-                    }
-                }
-                else
-                {
-                    foreach (var a in toMove)
-                    {
-                        if (a == null || !initialWorld.TryGetValue(a, out var p0)) continue;
-                        if (!initialWorldRot.TryGetValue(a, out var r0End))
-                            r0End = a.transform.rotation;
-                        a.transform.SetPositionAndRotation(
-                            pivot0W + deltaTotal + qFullShell * (p0 - pivot0W),
-                            qFullShell * r0End);
-                    }
-                }
-            }
-            finally
-            {
-                phase1ApplyShellPosesInLateUpdate = false;
-                phase1WorldBeforeShell = null;
-                phase1ApplyPerOrbitalLocalShell = false;
-                SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, false);
-            }
-
-            // Phase 2 starts in this same coroutine tick (no WaitForSeconds inserted above). Durations are
-            // sigmaFormationPhase2CylinderSeconds and sigmaFormationPhase2OrbitalToLineSeconds (resolved, non-negative).
+            // Phase 2: bond creation + cylinder + orbital→line. Durations from sigmaFormationPhase2* (resolved, non-negative).
 
             atomA.UnbondOrbital(orbA);
             atomB.UnbondOrbital(orbB);
@@ -1196,7 +660,7 @@ public class SigmaBondFormation : MonoBehaviour
     }
 
     /// <summary>
-    /// Lets orbital-drag σ phase 1 animate bond GO σ world pose; otherwise <see cref="CovalentBond.LateUpdate"/> overwrites it every frame.
+    /// While the guide post-bond hybrid lerp runs, suppress bond-frame σ orbital pose snaps so animation owns world pose.
     /// </summary>
     static void SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(AtomFunction atom, bool suppress)
     {
@@ -1207,44 +671,5 @@ public class SigmaBondFormation : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Atoms that move in σ phase 1. If the guide is not in the same molecule, the whole connected component moves.
-    /// If it is σ formation in one molecule, move the non-guide <b>branch</b> (reachable without crossing the guide atom)
-    /// so bond cylinders and substituents rigidly follow the same rotation as the unified shell.
-    /// </summary>
-    static List<AtomFunction> BuildNonGuideFragmentAtomsForApproach(AtomFunction guide, AtomFunction nonGuide)
-    {
-        var mol = nonGuide.GetConnectedMolecule();
-        if (mol == null || mol.Count == 0)
-            return new List<AtomFunction> { nonGuide };
-        bool guideInMol = false;
-        foreach (var a in mol)
-        {
-            if (a != null && a == guide) { guideInMol = true; break; }
-        }
-        if (!guideInMol)
-            return new List<AtomFunction>(mol);
-
-        var fragment = new List<AtomFunction>();
-        var visited = new HashSet<AtomFunction>();
-        var queue = new Queue<AtomFunction>();
-        queue.Enqueue(nonGuide);
-        visited.Add(nonGuide);
-        while (queue.Count > 0)
-        {
-            var a = queue.Dequeue();
-            fragment.Add(a);
-            for (int bi = 0; bi < a.CovalentBonds.Count; bi++)
-            {
-                var cb = a.CovalentBonds[bi];
-                if (cb == null) continue;
-                var other = cb.AtomA == a ? cb.AtomB : cb.AtomA;
-                if (other == null || other == guide) continue;
-                if (visited.Add(other))
-                    queue.Enqueue(other);
-            }
-        }
-        return fragment;
-    }
 
 }

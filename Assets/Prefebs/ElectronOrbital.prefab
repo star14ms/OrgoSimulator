@@ -139,6 +139,6 @@ MonoBehaviour:
   apexPadding: 0.3
   sigmaFormationPhase1PrebondSeconds: 1
   sigmaFormationPhase2CylinderSeconds: 0
-  sigmaFormationPhase2OrbitalToLineSeconds: 1
-  sigmaFormationPhase3PostbondGuideSeconds: 1
+  sigmaFormationPhase2OrbitalToLineSeconds: 0.5
+  sigmaFormationPhase3PostbondGuideSeconds: 0.5
   orbitalColliderSize: {x: 1, y: 0.15}

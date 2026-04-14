@@ -476,6 +476,8 @@ public class PeriodicTableUI : MonoBehaviour
         {
             atom.AtomicNumber = atomicNumber;
             atom.ForceInitialize();
+            if (atomicNumber == 6)
+                AtomPoseDirectionDebugLog.LogCarbonSpawn(atom, "PeriodicTableUI.CreateAtom");
             if (editMode != null && editMode.HAutoMode)
                 editMode.SaturateWithHydrogen(atom);
             if (editMode != null)

@@ -24,8 +24,8 @@ public static class ElectronRedistributionOrchestrator
     /// <summary>
     /// Unit axis along the guide’s σ lobe from the <b>guide</b> nucleus toward the operation orbital center
     /// (<see cref="SigmaLobeUnitDirectionFromAtom"/>(guideOp, guide)). Used for <see cref="ComputeNonGuideNucleusTargetAlongGuideOpHead"/>
-    /// (<c>guidePos + u × bondLength</c>). <see cref="RunSigmaFormation12PrebondNonGuideHybridOnly"/> aligns the non-guide in-op 0e head to
-    /// the <b>negated</b> same ray: <c>-(guideOpWorld - guideNucleus)</c> (into the bond / toward guide), not non-guide→guideOp.
+    /// (<c>guidePos + u × bondLength</c>). Prebond hybrid <see cref="NonGuideSigmaApproachDirectionWorld"/> uses
+    /// <c>guideOp.position − nonGuide.position</c> (orbital group − redistributing nucleus), not the negated guide nucleus→lobe axis.
     /// </summary>
     static Vector3 NormalizedGuideSigmaOpHeadForDrag(
         ElectronOrbitalFunction guideOp,
@@ -63,6 +63,33 @@ public static class ElectronRedistributionOrchestrator
 
     /// <summary>σ orbital-drag prebond: log guide/non-guide head angles vs internuclear ray. Default off; set true for triage.</summary>
     public static bool DebugLogSigmaPrebondHeadAngles = false;
+
+    /// <summary>σ phase 1: append NDJSON triage for non–op shell / fragment rotation (overlap path, σ-axis rows, dir sanity). Default on; set false for quiet runs.</summary>
+    public static bool DebugLogSigmaPhase1NonOpRotationNdjson = true;
+
+    /// <summary>σ phase 2→3: NDJSON per nucleus/substituent σ orbital tip before vs after non-guide RefreshSigmaBond (line snap → phase 3). Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogPhase23NucleusOrbitalTeleportNdjson = true;
+
+    /// <summary>Cursor debug session 8de5d1: NDJSON to <c>.cursor/debug-8de5d1.log</c> — non-bond / group tip dirs + pairwise angles at σ phase boundaries. Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLog8de5d1NonBondRedistDirections = true;
+
+    /// <summary>H54: σ refresh — log when <see cref="CovalentBond.ApplySigmaOrbitalTipFromRedistribution"/> early-exits because +X already matches geometric bond axis (vs lone TryMatch snap). Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogSigmaBondRefreshGeomAlignedEarlyExitNdjson = true;
+
+    /// <summary>H55: orbital-drag σ — NDJSON probe <c>refLocal</c> / <c>vseprTemplateFirst</c> / <c>newDirs[0]</c> vs pure internuclear and negated (invert hunt). Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogRefLocalGuideInvertProbeNdjson = true;
+
+    /// <summary>H49/H50: NDJSON in ApplySigmaOrbitalTip and SyncSigmaBondOrbitalTipsFromLocks (auth vs caller internuclear ray, lock vs axis). Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogApplySigmaTipInternuclearNdjson = true;
+
+    /// <summary>H51/H52: lone TryMatch snap vs tip before/after AlignNucleusChildOrbitalLocalRotationToHybridTipFromLocalPosition in RefreshSigmaBond. Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogLoneTeleportTryMatchNdjson = true;
+
+    /// <summary>H53: NDJSON at end of TryMatchLoneOrbitalsToFreeIdealDirections — permutation index per lone vs free ideal. Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogTryMatchPermNdjson = true;
+
+    /// <summary>H60: TryMatch lone — pivot→orbital transform position vs hybrid +X vs assigned template <c>td</c> (nucleus local). Default on for triage; set false for quiet runs.</summary>
+    public static bool DebugLogRedistributionOrbGroupRayNdjson = true;
 
     public enum BondRedistributionEventId
     {
@@ -106,10 +133,89 @@ public static class ElectronRedistributionOrchestrator
     }
 
     /// <summary>
-    /// Orbital-drag σ phase 1 (pre-bond): make the non-guide in-op 0e lobe face the bond using
-    /// <c>-(guideOpWorld - guideNucleus)</c>. If the nucleus→orbital-<b>center</b> ray already matches but hybrid +X <b>tip</b>
-    /// is ~180° off (empty-lobe prefab), applies a world <see cref="Quaternion"/> on that orbital only; otherwise uses a rigid
-    /// shell rotation about the non-guide nucleus when the center ray needs alignment.
+    /// World unit direction fallback when guide-lobe vs guide-nucleus ray is degenerate: partner σ <b>position</b> minus
+    /// non-guide nucleus (<c>guideOp.position − nonGuide.position</c>), then internuclear toward guide. Primary prebond
+    /// ref in <see cref="AtomFunction.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute"/> is
+    /// <c>guideOp.position − guideNucleus.position</c> mapped into pivot local.
+    /// </summary>
+    public static Vector3 NonGuideSigmaApproachDirectionWorld(
+        AtomFunction guide,
+        AtomFunction nonGuide,
+        ElectronOrbitalFunction guideOp)
+    {
+        if (nonGuide == null)
+            return Vector3.right;
+
+        if (guideOp != null)
+        {
+            Vector3 w = guideOp.transform.position - nonGuide.transform.position;
+            if (w.sqrMagnitude > 1e-10f)
+                return w.normalized;
+        }
+
+        if (guide != null)
+        {
+            Vector3 towardGuide = guide.transform.position - nonGuide.transform.position;
+            if (towardGuide.sqrMagnitude > 1e-10f)
+                return towardGuide.normalized;
+        }
+
+        return Vector3.right;
+    }
+
+    /// <summary>
+    /// World unit direction from non-guide nucleus toward guide: <c>normalize(guideNucleus − nonGuideNucleus)</c>.
+    /// Used only to snap the <b>non-guide</b> forming σ after prebond refresh; the guide orbital group stays at drop pose.
+    /// </summary>
+    public static bool TryGetOrbitalDragSigmaSharedPlusXWorldFromGuideToNonGuide(
+        AtomFunction guide,
+        AtomFunction nonGuide,
+        out Vector3 plusXWorldUnit)
+    {
+        plusXWorldUnit = Vector3.right;
+        if (guide == null || nonGuide == null) return false;
+        Vector3 gMinusN = guide.transform.position - nonGuide.transform.position;
+        if (gMinusN.sqrMagnitude < 1e-16f) return false;
+        plusXWorldUnit = gMinusN.normalized;
+        return true;
+    }
+
+    /// <summary>
+    /// Orbital-drag σ phase 1: after non-guide <see cref="AtomFunction.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute"/>,
+    /// TryMatch/pin can leave the forming σ +X anti-parallel to <see cref="TryGetOrbitalDragSigmaSharedPlusXWorldFromGuideToNonGuide"/>.
+    /// Snap <b>only</b> the non-guide forming op; do not rotate the guide (phase 1 policy).
+    /// </summary>
+    public static bool SnapNonGuideFormingSigmaHybridPlusXForOrbitalDragPrebondSharedAxis(
+        AtomFunction guide,
+        AtomFunction nonGuide,
+        ElectronOrbitalFunction nonGuideFormingOp)
+    {
+        if (guide == null || nonGuide == null || nonGuideFormingOp == null) return false;
+        if (!TryGetOrbitalDragSigmaSharedPlusXWorldFromGuideToNonGuide(guide, nonGuide, out var desiredPlusX))
+            return false;
+        Vector3 plusX = nonGuideFormingOp.transform.rotation * Vector3.right;
+        if (plusX.sqrMagnitude < 1e-16f) return false;
+        plusX.Normalize();
+        float dot = Vector3.Dot(plusX, desiredPlusX);
+        if (dot > 1f - 1e-4f) return false;
+        Vector3 desiredNucLocal = nonGuide.transform.InverseTransformDirection(desiredPlusX);
+        if (desiredNucLocal.sqrMagnitude < 1e-16f) return false;
+        desiredNucLocal.Normalize();
+        float rMag = nonGuideFormingOp.transform.localPosition.sqrMagnitude > 1e-16f
+            ? nonGuideFormingOp.transform.localPosition.magnitude
+            : ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(
+                desiredNucLocal, nonGuide.BondRadius).position.magnitude;
+        var spec = NucleusLobeSpec.ForTryMatchSnap(desiredNucLocal, nonGuide.BondRadius, nonGuideFormingOp.transform.localRotation);
+        spec.Radius = rMag;
+        NucleusLobePose.ApplyToNucleusChild(nonGuide, nonGuideFormingOp, spec);
+        return true;
+    }
+
+    /// <summary>
+    /// Orbital-drag σ phase 1 (prebond, no <see cref="CovalentBond"/> yet): rigid world rotation of the non-guide
+    /// σ prebond unified shell about the non-guide nucleus so the forming lobe axis
+    /// (<see cref="SigmaLobeUnitDirectionFromAtom"/>(non-guide op, non-guide)) anti-aligns with the guide lobe axis
+    /// (negated guide head). No-op if already within ~0.02° or directions degenerate. Skips hydrogen non-guide.
     /// </summary>
     public static void RunSigmaFormation12PrebondNonGuideHybridOnly(
         AtomFunction atomA,
@@ -121,97 +227,41 @@ public static class ElectronRedistributionOrchestrator
         if (atomA == null || atomB == null || orbA == null || orbB == null) return;
         ElectronRedistributionGuide.ResolveGuideAtomForPair(
             atomA, atomB, draggedOrbitalForGuideTieBreak, out var guide, out var nonGuide);
-        if (nonGuide == null || guide == null) return;
+        if (guide == null || nonGuide == null || ReferenceEquals(guide, nonGuide)) return;
+        if (nonGuide.AtomicNumber <= 1) return;
 
-        ElectronOrbitalFunction nonGuideOp = nonGuide == atomA ? orbA : orbB;
         ElectronOrbitalFunction guideOp = guide == atomA ? orbA : orbB;
-        if (nonGuideOp == null || guideOp == null) return;
+        ElectronOrbitalFunction nonGuideOp = nonGuide == atomA ? orbA : orbB;
+        if (guideOp == null || nonGuideOp == null) return;
 
-        Vector3 g = guide.transform.position;
-        Vector3 nn = nonGuide.transform.position;
-        Vector3 uGuideOpFromGuideNuc = SigmaLobeUnitDirectionFromAtom(guideOp, guide);
-        Vector3 desiredNonGuideHead;
-        if (uGuideOpFromGuideNuc.sqrMagnitude > 1e-10f)
-            desiredNonGuideHead = (-uGuideOpFromGuideNuc).normalized;
-        else
-        {
-            Vector3 towardGuide = g - nn;
-            if (towardGuide.sqrMagnitude < 1e-10f) return;
-            desiredNonGuideHead = towardGuide.normalized;
-        }
+        if (DryRunLogOnly) return;
 
-        Vector3 currentHead = SigmaLobeUnitDirectionFromAtom(nonGuideOp, nonGuide);
-        if (currentHead.sqrMagnitude < 1e-10f)
-        {
-            Vector3 towardGuide = g - nn;
-            if (towardGuide.sqrMagnitude < 1e-10f) return;
-            currentHead = towardGuide.normalized;
-        }
-        else
-            currentHead.Normalize();
+        Vector3 guideHead = SigmaLobeUnitDirectionFromAtom(guideOp, guide);
+        if (guideHead.sqrMagnitude < 1e-12f) return;
+        guideHead.Normalize();
 
-        const float prebondAlignEpsDeg = 0.02f;
-        Vector3 tipWRaw = nonGuideOp.transform.TransformDirection(Vector3.right);
-        bool tipDirOk = tipWRaw.sqrMagnitude > 1e-16f;
-        Vector3 tipWNorm = tipDirOk ? tipWRaw.normalized : Vector3.zero;
-        float alignCenterDeg = Vector3.Angle(currentHead, desiredNonGuideHead);
-        float alignTipDeg = tipDirOk ? Vector3.Angle(tipWNorm, desiredNonGuideHead) : alignCenterDeg;
+        Vector3 desiredNonGuideHead = -guideHead;
+        Vector3 currentNonGuideHead = SigmaLobeUnitDirectionFromAtom(nonGuideOp, nonGuide);
+        if (currentNonGuideHead.sqrMagnitude < 1e-12f) return;
+        currentNonGuideHead.Normalize();
+
+        const float tolDot = 1f - 1e-4f;
+        if (Vector3.Dot(currentNonGuideHead, desiredNonGuideHead) >= tolDot)
+            return;
+
+        Quaternion worldDelta = Quaternion.FromToRotation(currentNonGuideHead, desiredNonGuideHead);
+        nonGuide.ApplyRigidWorldRotationToNucleusParentedOrbitals(worldDelta, nonGuideOp);
 
         if (DebugLogSigmaPrebondHeadAngles)
         {
-            Vector3 gToNn = nn - g;
-            bool gToNnOk = gToNn.sqrMagnitude > 1e-16f;
-            Vector3 gToNnN = gToNnOk ? gToNn.normalized : Vector3.zero;
-            float angGuideHeadVsInternucDeg = -1f;
-            float angNegGuideHeadVsInternucDeg = -1f;
-            if (gToNnOk && uGuideOpFromGuideNuc.sqrMagnitude > 1e-10f)
-            {
-                Vector3 uGn = uGuideOpFromGuideNuc.normalized;
-                angGuideHeadVsInternucDeg = Vector3.Angle(uGn, gToNnN);
-                angNegGuideHeadVsInternucDeg = Vector3.Angle(-uGn, gToNnN);
-            }
-
+            Vector3 after = SigmaLobeUnitDirectionFromAtom(nonGuideOp, nonGuide);
+            float angAfter = after.sqrMagnitude > 1e-12f
+                ? Vector3.Angle(after.normalized, desiredNonGuideHead)
+                : -1f;
             Debug.Log(
-                "[σ-prebond-angle] guideId=" + guide.GetInstanceID()
+                "[sigma-prebond-head] RunSigmaFormation12PrebondNonGuideHybridOnly guideId=" + guide.GetInstanceID()
                 + " nonGuideId=" + nonGuide.GetInstanceID()
-                + " guideOpE=" + guideOp.ElectronCount
-                + " nonGuideOpE=" + nonGuideOp.ElectronCount);
-            Debug.Log(
-                "[σ-prebond-angle] angGuideNucToOpVsGtoNnDeg=" + angGuideHeadVsInternucDeg
-                + " angNegGuideHeadVsGtoNnDeg=" + angNegGuideHeadVsInternucDeg
-                + " alignNgCenterToDesiredDeg=" + alignCenterDeg
-                + " alignNgTipToDesiredDeg=" + alignTipDeg);
-        }
-
-        if (alignTipDeg < prebondAlignEpsDeg && alignCenterDeg < prebondAlignEpsDeg)
-        {
-            if (DebugLogSigmaPrebondHeadAngles)
-                Debug.Log("[σ-prebond-angle] action=early_return_already_aligned");
-
-            return;
-        }
-
-        if (tipDirOk && alignCenterDeg < prebondAlignEpsDeg && alignTipDeg >= prebondAlignEpsDeg)
-        {
-            if (DebugLogSigmaPrebondHeadAngles)
-                Debug.Log("[σ-prebond-angle] action=tip_only_FromToRotation");
-            Quaternion qTip = Quaternion.FromToRotation(tipWNorm, desiredNonGuideHead);
-            nonGuideOp.transform.rotation = qTip * nonGuideOp.transform.rotation;
-        }
-        else
-        {
-            if (alignCenterDeg < prebondAlignEpsDeg)
-            {
-                if (DebugLogSigmaPrebondHeadAngles)
-                    Debug.Log("[σ-prebond-angle] action=early_return_center_ok_tip_not_tipPathSkipped");
-
-                return;
-            }
-
-            if (DebugLogSigmaPrebondHeadAngles)
-                Debug.Log("[σ-prebond-angle] action=rigid_shell_nucleus_parented");
-            Quaternion delta = Quaternion.FromToRotation(currentHead, desiredNonGuideHead);
-            nonGuide.ApplyRigidWorldRotationToNucleusParentedOrbitals(delta, nonGuideOp);
+                + " angNonGuideHeadVsDesiredAfterDeg=" + angAfter.ToString("F3", System.Globalization.CultureInfo.InvariantCulture));
         }
     }
 
@@ -252,6 +302,7 @@ public static class ElectronRedistributionOrchestrator
         AtomFunction guide,
         CovalentBond bond)
     {
+        RedistributionTetraCompareDebugLog.LogSigma12HybridPass(nonGuide, guide, bond);
         void RefreshIfHeavy(AtomFunction center, AtomFunction partner)
         {
             if (center == null || partner == null)

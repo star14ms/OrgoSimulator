@@ -470,6 +470,17 @@ public static class SigmaBreakPureRedistribution
 
         if (overlap)
         {
+            // #region agent log
+            if (ElectronRedistributionOrchestrator.DebugLogSigmaPhase1NonOpRotationNdjson)
+            {
+                ProjectAgentDebugLog.AppendCursorDebugSessionC2019eNdjson(
+                    "H2",
+                    "SigmaBreakPureRedistribution.cs:BuildSigmaNeighborTargetsWithFragmentRigidRotation",
+                    "fragment_overlap_fallback",
+                    "{\"overlap\":true,\"n\":" + n + ",\"pivotWorld\":\"" + pivotWorld.ToString("G9") + "\"}",
+                    "pre-fix");
+            }
+            // #endregion
             for (int i = 0; i < n; i++)
             {
                 var neighbor = sigmaNeighbors[i];

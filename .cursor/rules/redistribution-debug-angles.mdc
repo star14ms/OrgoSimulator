@@ -1,5 +1,5 @@
 ---
-description: Electron redistribution / σ debugging without Game view — log angles between orbital groups
+description: Electron redistribution / σ debugging without Game view — pivot→orbital-group rays, template dirs, pairwise angles
 globs: "**/*.cs"
 alwaysApply: true
 ---
@@ -8,18 +8,41 @@ alwaysApply: true
 
 When debugging **electron redistribution**, **orbital-drag σ formation**, **prebond / phase-1 shell**, **joint redistribute**, or **hybrid tip vs template** issues, assume the person triaging may **not** see the Unity **Game** / Scene view (remote agent, log-only workflow, or headless run). **Visual misalignment must be recoverable from numbers in the Console / `.log`.**
 
-## What to log
+## Canonical direction (always verify)
 
-1. **Angles between directions**, not only booleans or branch names — use `Vector3.Angle(a, b)`, `Quaternion.Angle(q0, q1)`, or signed-axis checks when a reference normal is defined. Log **degrees** (and whether vectors were normalized) for:
-   - **Guide vs non-guide**: e.g. guide nucleus → guide σ op center vs non-guide nucleus → non-guide op center; **hybrid +X tip** vs **desired bond-facing** (center can match while tip is ~180° off).
-   - **Template vs world**: VSEPR / redistribute template vertex directions vs corresponding world hybrid tips or guide-cluster directions (especially **vertex 0** vs pin / multiply guide).
-   - **Joint / least-squares rows**: for each row contributing to a joint rotation, angle between **current** tip direction and **target** tip (before applying δ).
-   - **Phase boundaries**: same angles **before** and **after** `ApplyRigidWorldRotation…`, `CommitSigmaRedistributionDelta…`, or a coroutine step so deltas are visible.
+When adding or interpreting debug math for **orbital redistribution**, **check** that each **orbital-group direction** used in comparisons is consistent with this **general formula**:
 
-2. **One primary tag** for filtering — e.g. `[redist-angle]` at the **start** of each line (see `debug-log-bracket-single-line.mdc`). Pair with **short** identifiers: atom/orbital instance ids, bond id, phase name, `alignCenterDeg=…`, `alignTipDeg=…`.
+- **Ray from the atom that is undergoing redistribution (pivot nucleus)** toward the **orbital group** (the orbital transform / lobe you are treating as one domain):
+  - **World:** `normalize(orbitalGroupWorldPosition - pivotNucleusWorldPosition)`
+  - **Pivot nucleus local:** `normalize` of `pivot.InverseTransformDirection(orbitalGroupWorldPosition - pivotNucleusWorldPosition)` when that offset is non-degenerate.
 
-3. **Avoid log floods** — do not emit per-frame angle dumps from `Update`. For hot paths, gate behind a `static bool` default **off** with a comment (exception to `debug-flags-default-on.mdc` when spam risk is real). For one-shot redistribut steps, default **on** is acceptable.
+**Do not** silently substitute **hybrid +X** (`localRotation * Vector3.right`) or **bond-axis** proxies for that ray unless the code path is **documented** to do so (e.g. σ-line bond orbitals where pivot→orbital **center** follows the internuclear leg and code uses hybrid +X in nucleus space on purpose). When an alternate is used, **log both** the geometric ray and the proxy and the **angle between them** so triage can see the mismatch.
+
+For **`Vector3.Angle(a, b)`**, **`a`** and **`b`** should each be **defined** in the log (or in NDJSON payload fields) as either:
+
+- derived from the formula above in a named frame, or
+- explicitly labeled as an alternate (template vertex, internuclear axis, etc.).
+
+For **`Quaternion.Angle(q0, q1)`**, the quaternions must correspond to **poses whose primary lobe directions** are still traceable to that definition (e.g. log the implied tip directions from each quaternion in the same frame, or log `Vector3.Angle` between those tips).
+
+## What to log (baseline bundle)
+
+1. **Template direction vectors** — the ideal / VSEPR / redistribute **target** directions used at that step (unit vectors, frame named: pivot local vs world).
+
+2. **Initial and final orbital-group vectors** — for **each** domain in scope at a phase boundary, the ray from **pivot nucleus → orbital group** per the formula above (same frame as template or document conversion), **before** and **after** the operation (`ApplyRigidWorldRotation…`, `CommitSigmaRedistributionDelta…`, `RefreshSigmaBond…`, coroutine step, etc.).
+
+3. **Pairwise angles between orbital groups** — for the **n** domains you are comparing at that snapshot, log **`Vector3.Angle`** for **every unordered pair** (**n choose 2** combinations), using **the same** direction convention for all pairs (e.g. all in pivot nucleus local). This is **basic** triage data alongside single target-vs-actual checks.
+
+4. **Angles between directions** (existing detail), not only booleans or branch names — also cover:
+   - **Guide vs non-guide**: e.g. guide nucleus → guide σ op center vs non-guide nucleus → non-guide op center; **hybrid +X** vs **pivot→orbital-center** when both matter.
+   - **Template vs orbital-group rays**: template vertices vs corresponding geometric rays (especially **vertex 0** vs pin / multiply guide).
+   - **Joint / least-squares rows**: angle between **current** and **target** tip per row before applying δ.
+   - **Phase boundaries**: repeat the baseline bundle **before** and **after** the step so deltas are visible.
+
+5. **One primary tag** for filtering — e.g. `[redist-angle]` at the **start** of each line (see `debug-log-bracket-single-line.mdc`). Pair with **short** identifiers: atom/orbital instance ids, bond id, phase name, `alignCenterDeg=…`, `alignTipDeg=…`. For NDJSON, use a stable `hypothesisId` / `runId` and include `nDomains`, `pairCount`, and explicit vector fields or rounded components.
+
+6. **Avoid log floods** — do not emit per-frame angle dumps from `Update`. For hot paths, gate behind a `static bool` default **off** with a comment (exception to `debug-flags-default-on.mdc` when spam risk is real). For one-shot redistribut steps, default **on** is acceptable; **nC2** grows as **O(n²)** — keep **n** small (cap and note truncation in the log if needed).
 
 ## Intent
 
-Angles make **group-level** orientation explicit when the viewport is unavailable; they complement (not replace) existing invariants such as `redistribution-joint-vertex0-fixed.mdc`.
+Angles and **explicit ray definitions** make **group-level** orientation reconstructable without the viewport; they complement (not replace) existing invariants such as `redistribution-joint-vertex0-fixed.mdc`.

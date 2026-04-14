@@ -1,5 +1,9 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Text;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Rendering;
@@ -12,6 +16,53 @@ using UnityEngine.Rendering;
 /// </summary>
 public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IPointerUpHandler
 {
+    const string AgentNdjsonPath = "Assets/../.cursor/debug-8de5d1.log";
+
+    static string Qf(Quaternion q)
+    {
+        return q.x.ToString("F4", CultureInfo.InvariantCulture) + ","
+            + q.y.ToString("F4", CultureInfo.InvariantCulture) + ","
+            + q.z.ToString("F4", CultureInfo.InvariantCulture) + ","
+            + q.w.ToString("F4", CultureInfo.InvariantCulture);
+    }
+
+    static void AppendH129FlipDecisionNdjson(
+        string location,
+        int bondId,
+        bool flipBefore,
+        float dotTip0VsWant,
+        float dotActualVsWant,
+        float angTip0VsWantDeg,
+        float angActualVsWantDeg,
+        string branch,
+        bool flipAfter,
+        Quaternion delta)
+    {
+#if UNITY_EDITOR
+        try
+        {
+            long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var sb = new StringBuilder(640);
+            sb.Append("{\"sessionId\":\"8de5d1\",\"timestamp\":").Append(ts)
+                .Append(",\"runId\":\"pre-fix\",\"hypothesisId\":\"H129\"")
+                .Append(",\"location\":\"CovalentBond.cs:").Append(location).Append("\"")
+                .Append(",\"message\":\"sigma_flip_decision_branch\",\"data\":{")
+                .Append("\"bondId\":").Append(bondId)
+                .Append(",\"flipBefore\":").Append(flipBefore ? "true" : "false")
+                .Append(",\"dotTip0VsWant\":").Append(dotTip0VsWant.ToString("F6", CultureInfo.InvariantCulture))
+                .Append(",\"dotActualVsWant\":").Append(dotActualVsWant.ToString("F6", CultureInfo.InvariantCulture))
+                .Append(",\"angTip0VsWantDeg\":").Append(angTip0VsWantDeg.ToString("F5", CultureInfo.InvariantCulture))
+                .Append(",\"angActualVsWantDeg\":").Append(angActualVsWantDeg.ToString("F5", CultureInfo.InvariantCulture))
+                .Append(",\"branch\":\"").Append(branch).Append("\"")
+                .Append(",\"flipAfter\":").Append(flipAfter ? "true" : "false")
+                .Append(",\"deltaQ\":\"").Append(Qf(delta)).Append("\"")
+                .Append("}}\n");
+            File.AppendAllText(AgentNdjsonPath, sb.ToString());
+        }
+        catch { }
+#endif
+    }
+
     public static void LogExBondOrbitalPose(string _, string __, ElectronOrbitalFunction ___, AtomFunction ____, AtomFunction _____ = null) { }
 
     public static void LogBreakGuideOrbitalsPose(string _, AtomFunction __, AtomFunction ___, ElectronOrbitalFunction ____, ElectronOrbitalFunction _____, AtomFunction ______, AtomFunction _______) { }
@@ -32,14 +83,14 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     internal bool orbitalRotationFlipped; // Sigma: flip when source opposite to bond so electrons don't overlap
 
     /// <summary>
-    /// When set by orbital-drag σ phase 1, <see cref="LateUpdate"/> and bond-frame snap helpers must not overwrite
-    /// <see cref="orbital"/> world pose — <see cref="SigmaBondFormation"/> drives the unified shell that frame.
+    /// When set during orbital-drag σ guide lerp, <see cref="LateUpdate"/> and bond-frame snap helpers must not overwrite
+    /// <see cref="orbital"/> world pose — <see cref="SigmaBondFormation"/> drives the shell that frame.
     /// </summary>
     internal bool suppressSigmaPrebondBondFrameOrbitalPose;
 
     /// <summary>
-    /// Set for σ created by <see cref="SigmaBondFormation"/> orbital-drag three-phase: <see cref="ElectronRedistributionOrchestrator.ExecuteSigmaFormation12HybridAlignment"/>
-    /// must not re-run <c>nonGuide_first</c> TryMatch (phase 1 already aligned the non-guide shell; duplicate refresh teleports lone pairs).
+    /// Set for σ created by <see cref="SigmaBondFormation"/> orbital-drag pipeline: <see cref="ElectronRedistributionOrchestrator.ExecuteSigmaFormation12HybridAlignment"/>
+    /// must not re-run <c>nonGuide_first</c> TryMatch before post-bond guide refresh (duplicate refresh can teleport lone pairs).
     /// </summary>
     internal bool SkipNonGuideExecuteSigmaFormation12HybridPass;
 
@@ -93,6 +144,19 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         orbitalRedistributionWorldDelta = delta;
         orbitalRotationFlipped = flipped;
+        // #region agent log
+        AppendH129FlipDecisionNdjson(
+            "RestorePiStep2RedistributionForBake",
+            GetInstanceID(),
+            flipped,
+            -2f,
+            -2f,
+            -1f,
+            -1f,
+            "restore_pi_step2",
+            orbitalRotationFlipped,
+            delta);
+        // #endregion
     }
 
     /// <summary>Returns how many bond electrons count toward the given atom for charge calculation. Uses electronegativity; when equal EN and odd count, orbital contributor gets the extra electron.</summary>
@@ -374,21 +438,53 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         orbitalRedistributionWorldDelta = Quaternion.identity;
     }
 
-    /// <summary>Align shared σ lobe +X with hybrid direction expressed from <paramref name="fromAtom"/> (must be atom A or B). Uses bond axis from <paramref name="fromAtom"/> toward partner for sign.</summary>
+    /// <summary>Align shared σ lobe +X with <paramref name="hybridTipWorld"/> (must be unit, usually nucleus→partner from <see cref="AtomFunction.SyncSigmaBondOrbitalTipsFromLocks"/>). Hemisphere uses <paramref name="fromAtom"/> → partner so the target matches the caller’s outward bond axis (hybrid locks are built in that frame). Lower-InstanceID authority is still used elsewhere for δ ownership; tip hemisphere follows the applying nucleus.</summary>
     public void ApplySigmaOrbitalTipFromRedistribution(AtomFunction fromAtom, Vector3 hybridTipWorld)
     {
         if (orbital == null) return;
         if (fromAtom == null || (fromAtom != atomA && fromAtom != atomB)) return;
         if (!IsSigmaBondLine()) return;
 
-        var partner = fromAtom == atomA ? atomB : atomA;
-        if (partner == null) return;
-
         UpdateBondTransformToCurrentAtoms();
 
         if (hybridTipWorld.sqrMagnitude < 1e-12f) return;
         hybridTipWorld.Normalize();
-        Vector3 geom = partner.transform.position - fromAtom.transform.position;
+
+        AtomFunction partnerFromCaller = fromAtom == atomA ? atomB : atomA;
+        if (partnerFromCaller == null) return;
+        Vector3 geom = partnerFromCaller.transform.position - fromAtom.transform.position;
+        // #region agent log
+        if (ElectronRedistributionOrchestrator.DebugLogApplySigmaTipInternuclearNdjson
+            && geom.sqrMagnitude > 1e-10f)
+        {
+            Vector3 geomN = geom.normalized;
+            float dotHybVsCallerGeom = Vector3.Dot(hybridTipWorld, geomN);
+            AtomFunction authAtom = AuthoritativeAtomForOrbitalRedistributionPose();
+            float dotHybVsLegacyAuthGeom = dotHybVsCallerGeom;
+            if (authAtom != null)
+            {
+                AtomFunction pAuth = authAtom == atomA ? atomB : atomA;
+                if (pAuth != null)
+                {
+                    Vector3 gAuth = pAuth.transform.position - authAtom.transform.position;
+                    if (gAuth.sqrMagnitude > 1e-10f)
+                        dotHybVsLegacyAuthGeom = Vector3.Dot(hybridTipWorld, gAuth.normalized);
+                }
+            }
+            bool willFlipCaller = dotHybVsCallerGeom < 0f;
+            ProjectAgentDebugLog.AppendCursorDebugSessionC2019eNdjson(
+                "H49",
+                "CovalentBond.cs:ApplySigmaOrbitalTip",
+                "hybrid_vs_caller_geom_before_flip",
+                "{\"bondId\":" + GetInstanceID()
+                + ",\"fromAtomId\":" + fromAtom.GetInstanceID()
+                + ",\"fromZ\":" + fromAtom.AtomicNumber
+                + ",\"dotHybridVsCallerInternucGeom\":" + ProjectAgentDebugLog.JsonFloatInvariant(dotHybVsCallerGeom)
+                + ",\"dotHybridVsLegacyAuthInternucGeom\":" + ProjectAgentDebugLog.JsonFloatInvariant(dotHybVsLegacyAuthGeom)
+                + ",\"flipHybridForCallerHemisphere\":" + (willFlipCaller ? "true" : "false") + "}",
+                "sigmaTipInternuc");
+        }
+        // #endregion
         if (geom.sqrMagnitude > 1e-10f)
         {
             geom.Normalize();
@@ -402,10 +498,55 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         Vector3 want = hybridTipWorld;
         if (tip0.sqrMagnitude < 1e-10f || want.sqrMagnitude < 1e-10f) return;
         float dot = Vector3.Dot(tip0, want);
+        Vector3 actualTipWForProbe = orbital != null ? orbital.transform.rotation * Vector3.right : Vector3.zero;
+        float angTip0VsWantDegProbe = tip0.sqrMagnitude > 1e-10f && want.sqrMagnitude > 1e-10f
+            ? Vector3.Angle(tip0, want)
+            : -1f;
+        float angActualVsWantDegProbe = -1f;
+        float dotActualVsWantProbe = -2f;
+        if (actualTipWForProbe.sqrMagnitude > 1e-10f && want.sqrMagnitude > 1e-10f)
+        {
+            actualTipWForProbe.Normalize();
+            dotActualVsWantProbe = Vector3.Dot(actualTipWForProbe, want);
+            angActualVsWantDegProbe = Vector3.Angle(actualTipWForProbe, want);
+        }
         if (dot > 0.9999f)
         {
+            // #region agent log
+            if (ElectronRedistributionOrchestrator.DebugLogSigmaBondRefreshGeomAlignedEarlyExitNdjson)
+            {
+                Vector3 actualTipW = orbital.transform.rotation * Vector3.right;
+                if (actualTipW.sqrMagnitude > 1e-10f) actualTipW.Normalize();
+                float angActualVsWantDeg = actualTipW.sqrMagnitude > 1e-10f
+                    ? Vector3.Angle(actualTipW, want)
+                    : -1f;
+                ProjectAgentDebugLog.AppendCursorDebugSessionC2019eNdjson(
+                    "H54",
+                    "CovalentBond.cs:ApplySigmaOrbitalTip",
+                    "bond_sigma_refresh_early_exit_tip_already_along_geom_axis",
+                    "{\"bondId\":" + GetInstanceID()
+                    + ",\"fromAtomId\":" + fromAtom.GetInstanceID()
+                    + ",\"dotTip0Want\":" + ProjectAgentDebugLog.JsonFloatInvariant(dot)
+                    + ",\"angActualTipWorldVsWantDeg\":" + ProjectAgentDebugLog.JsonFloatInvariant(angActualVsWantDeg)
+                    + ",\"note\":\"SyncSigmaBondOrbitalTipsFromLocks uses geometric nucleus-to-partner; TryMatch idealLocal is for lock matching only, not the apply target\"}",
+                    "bondRefreshExplain");
+            }
+            // #endregion
             orbitalRedistributionWorldDelta = Quaternion.identity;
             SyncSigmaOrbitalWorldPoseFromRedistribution(forceApplyPoseDuringBondToLineAnim: true);
+            // #region agent log
+            AppendH129FlipDecisionNdjson(
+                "ApplySigmaOrbitalTipFromRedistribution",
+                GetInstanceID(),
+                orbitalRotationFlipped,
+                dot,
+                dotActualVsWantProbe,
+                angTip0VsWantDegProbe,
+                angActualVsWantDegProbe,
+                "dot_gt_pos_threshold_identity_delta",
+                orbitalRotationFlipped,
+                orbitalRedistributionWorldDelta);
+            // #endregion
             return;
         }
 
@@ -422,6 +563,19 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 {
                     orbitalRedistributionWorldDelta = orbital.transform.rotation * Quaternion.Inverse(baseR);
                     SyncSigmaOrbitalWorldPoseFromRedistribution(forceApplyPoseDuringBondToLineAnim: true);
+                    // #region agent log
+                    AppendH129FlipDecisionNdjson(
+                        "ApplySigmaOrbitalTipFromRedistribution",
+                        GetInstanceID(),
+                        orbitalRotationFlipped,
+                        dot,
+                        dotActualVsWantProbe,
+                        angTip0VsWantDegProbe,
+                        angActualVsWantDegProbe,
+                        "dot_lt_neg_threshold_preserve_actual_tip",
+                        orbitalRotationFlipped,
+                        orbitalRedistributionWorldDelta);
+                    // #endregion
                     if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
                         && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
                     {
@@ -435,7 +589,34 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             // even when the lobe is already correct up to the cylinder convention / gauge freedom).
             orbitalRotationFlipped = !orbitalRotationFlipped;
             orbitalRedistributionWorldDelta = Quaternion.identity;
+            // #region agent log
+            AppendH129FlipDecisionNdjson(
+                "ApplySigmaOrbitalTipFromRedistribution",
+                GetInstanceID(),
+                !orbitalRotationFlipped,
+                dot,
+                dotActualVsWantProbe,
+                angTip0VsWantDegProbe,
+                angActualVsWantDegProbe,
+                "dot_lt_neg_threshold_toggle_flip",
+                orbitalRotationFlipped,
+                orbitalRedistributionWorldDelta);
+            // #endregion
             SyncSigmaOrbitalWorldPoseFromRedistribution(forceApplyPoseDuringBondToLineAnim: true);
+            // #region agent log
+            if (ElectronRedistributionOrchestrator.DebugLog8de5d1NonBondRedistDirections)
+            {
+                ProjectAgentDebugLog.AppendCursorDebugSessionC2019eNdjson(
+                    "H127",
+                    "CovalentBond.cs:ApplySigmaOrbitalTipFromRedistribution",
+                    "sigma_tip_apply_flip_branch_probe_exit",
+                    "{\"bondId\":" + GetInstanceID()
+                    + ",\"branch\":\"dot_lt_neg_threshold_toggle_flip\""
+                    + ",\"orbitalRotationFlippedAfter\":" + (orbitalRotationFlipped ? "true" : "false")
+                    + "}",
+                    "breakFlipProbe");
+            }
+            // #endregion
             if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
                 && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
             {
@@ -446,6 +627,19 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         Quaternion deltaQ = Quaternion.FromToRotation(tip0, want);
         orbitalRedistributionWorldDelta = deltaQ;
+        // #region agent log
+        AppendH129FlipDecisionNdjson(
+            "ApplySigmaOrbitalTipFromRedistribution",
+            GetInstanceID(),
+            orbitalRotationFlipped,
+            dot,
+            dotActualVsWantProbe,
+            angTip0VsWantDegProbe,
+            angActualVsWantDegProbe,
+            "from_to_rotation_delta",
+            orbitalRotationFlipped,
+            deltaQ);
+        // #endregion
         if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
             && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
         {
@@ -1005,6 +1199,30 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         // Bond-line pose for orbitals (must capture before UnregisterBond — GetOrbitalTargetWorldState uses bond topology).
         var (bondOrbitalWorldPos, bondOrbitalWorldRot) = GetOrbitalTargetWorldState();
+        // #region agent log
+        AtomPoseDirectionDebugLog.LogBondBreakCaptureTargetState(
+            "pre_unregister_capture_target_state",
+            GetInstanceID(),
+            atomA,
+            atomB,
+            orbital,
+            bondOrbitalWorldPos,
+            bondOrbitalWorldRot,
+            orbitalRotationFlipped,
+            GetOrbitalRedistributionWorldDeltaForDiagnostics());
+        // #endregion
+        AtomPoseDirectionDebugLog.LogBondBreakOrbitalPose(
+            "capture",
+            "H-break-capture",
+            GetInstanceID(),
+            atomA,
+            atomB,
+            orbital,
+            null,
+            bondOrbitalWorldPos,
+            bondOrbitalWorldRot,
+            userDragBondCylinderBreak,
+            instantRedistributionForDestroyPartner);
 
         atomA?.UnregisterBond(this);
         atomB?.UnregisterBond(this);
@@ -1064,6 +1282,27 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             otherAtom.BondOrbital(newOrbital);
         }
 
+        // #region agent log
+        AtomPoseDirectionDebugLog.LogBondBreakOtherSideSlotPick(
+            "post_slot_pick_pre_world_apply",
+            GetInstanceID(),
+            returnOrbitalTo,
+            otherAtom,
+            orbital,
+            newOrbital,
+            dirToReturn,
+            slotB.position,
+            slotB.rotation);
+        AtomPoseDirectionDebugLog.LogBondBreakTargetVsChosenSlot(
+            "post_slot_pick_pre_world_apply",
+            GetInstanceID(),
+            otherAtom,
+            returnOrbitalTo,
+            bondOrbitalWorldRot,
+            slotB.rotation,
+            orbitalRotationFlipped);
+        // #endregion
+
         if (fadeOrbForBreak != null && fadeOrbForBreak != orbital)
             Destroy(fadeOrbForBreak.gameObject);
 
@@ -1075,6 +1314,27 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         orbital.transform.SetPositionAndRotation(bondOrbitalWorldPos, bondOrbitalWorldRot);
         newOrbital.transform.SetPositionAndRotation(bondOrbitalWorldPos, bondOrbitalWorldRot);
+        AtomPoseDirectionDebugLog.LogBondBreakOrbitalPose(
+            "after_world_apply",
+            "H-break-apply",
+            GetInstanceID(),
+            atomA,
+            atomB,
+            orbital,
+            newOrbital,
+            bondOrbitalWorldPos,
+            bondOrbitalWorldRot,
+            userDragBondCylinderBreak,
+            instantRedistributionForDestroyPartner);
+        // #region agent log
+        AtomPoseDirectionDebugLog.LogBondBreakOtherSideOverwriteVsChosenSlot(
+            "after_world_apply",
+            GetInstanceID(),
+            otherAtom,
+            returnOrbitalTo,
+            newOrbital,
+            slotB.rotation);
+        // #endregion
 
         atomA?.RefreshCharge();
         atomB?.RefreshCharge();
@@ -1085,6 +1345,18 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         void FinishBreakBondTail()
         {
+            AtomPoseDirectionDebugLog.LogBondBreakOrbitalPose(
+                "finish_tail",
+                "H-break-final",
+                GetInstanceID(),
+                atomA,
+                atomB,
+                orbital,
+                newOrbital,
+                null,
+                null,
+                userDragBondCylinderBreak,
+                instantRedistributionForDestroyPartner);
             // UnityEngine.Object: ?. uses reference null only — destroyed AtomFunction still invokes and can touch stale orbitals.
             if (atomA != null) atomA.RefreshElectronSyncOnBondedOrbitals();
             if (atomB != null) atomB.RefreshElectronSyncOnBondedOrbitals();
