@@ -1134,7 +1134,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         transform.localScale = originalLocalScale;
     }
 
-    [Tooltip("σ orbital-drag phase 1 (pre-bond): duration reserved for SigmaBondFormation placeholder / future pre-bond animation.")]
+    [Tooltip("σ orbital-drag phase 1 (pre-bond): non-guide fragment approach toward guide op (seconds).")]
     [SerializeField] float sigmaFormationPhase1PrebondSeconds = 1f;
     [Tooltip("σ orbital-drag phase 2a (π step 2 cylinder lerp): lerp operation orbitals toward bond-cylinder pose (seconds).")]
     [SerializeField] float sigmaFormationPhase2CylinderSeconds = 1f;
@@ -1159,7 +1159,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             ? SigmaFormationPhase2OrbitalToLineSecondsResolved
             : sigmaFormationPhase3PostbondGuideSeconds;
 
-    /// <summary>σ bond from orbital drag: <see cref="SigmaBondFormation"/> runs phase 1 placeholder, bond animation, then post-bond guide lerp (independent of edit mode).</summary>
+    /// <summary>σ bond from orbital drag: <see cref="SigmaBondFormation"/> runs phase 1 approach, bond animation, then post-bond guide lerp (independent of edit mode).</summary>
     bool FormCovalentBondSigmaStart(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition, bool alreadyFlipped = false)
     {
         _ = dropPosition;

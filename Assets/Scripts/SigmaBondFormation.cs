@@ -1,9 +1,10 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// σ formation from <b>orbital drag</b>: phase 1 pre-bond (placeholder — reimplement in <see cref="CoOrbitalDragSigmaPhase1PrebondPlaceholder"/>),
+/// σ formation from <b>orbital drag</b>: phase 1 pre-bond (non-guide fragment translates toward guide op head target),
 /// then bond formation (cylinder + orbital→line), then post-bond guide hybrid lerp.
 /// Independent of edit mode; add this component to the scene (e.g. next to <see cref="EditModeManager"/>).
 /// Timings are read from the gesture <see cref="ElectronOrbitalFunction"/> (the dragged lobe when available).
@@ -20,7 +21,7 @@ public class SigmaBondFormation : MonoBehaviour
     }
 
     /// <summary>
-    /// Ensures a scene runner exists for orbital-drag σ (pre-bond placeholder + bond + post-bond guide). If none, adds this component to the
+    /// Ensures a scene runner exists for orbital-drag σ (pre-bond approach + bond + post-bond guide). If none, adds this component to the
     /// <see cref="EditModeManager"/> GameObject when present; otherwise creates a dedicated GameObject.
     /// Call before <see cref="TryBeginOrbitalDragSigmaFormation"/> from gesture code so scenes without a manual runner still animate.
     /// </summary>
@@ -129,7 +130,7 @@ public class SigmaBondFormation : MonoBehaviour
                 if (atom == null || (m0 < epsMag && m1 < epsMag))
                 {
                     row.orb.transform.localRotation = Quaternion.Slerp(row.localRot, end.lr, s);
-                    row.orb.transform.localPosition = Vector3.Lerp(row.localPos, end.lp, s);
+            row.orb.transform.localPosition = Vector3.Lerp(row.localPos, end.lp, s);
                 }
                 else
                 {
@@ -137,7 +138,7 @@ public class SigmaBondFormation : MonoBehaviour
                     Vector3 tipEnd = (end.lr * Vector3.right).normalized;
                     if (tipStart.sqrMagnitude < epsTip || tipEnd.sqrMagnitude < epsTip)
                     {
-                        row.orb.transform.localRotation = Quaternion.Slerp(row.localRot, end.lr, s);
+            row.orb.transform.localRotation = Quaternion.Slerp(row.localRot, end.lr, s);
                         row.orb.transform.localPosition = LerpLocalOrbitalOffsetSpherical(row.localPos, end.lp, s);
                     }
                     else
@@ -163,12 +164,12 @@ public class SigmaBondFormation : MonoBehaviour
                             row.orb.transform.localPosition = tipS * (m * radialSign);
                     }
                 }
-            }
-            else
-            {
-                Quaternion lerpedRot = Quaternion.Slerp(row.localRot, end.lr, s);
-                row.orb.transform.localRotation = lerpedRot;
-                row.orb.transform.localPosition = Vector3.Lerp(row.localPos, end.lp, s);
+                }
+                else
+                {
+                    Quaternion lerpedRot = Quaternion.Slerp(row.localRot, end.lr, s);
+                    row.orb.transform.localRotation = lerpedRot;
+                    row.orb.transform.localPosition = Vector3.Lerp(row.localPos, end.lp, s);
             }
         }
     }
@@ -184,30 +185,272 @@ public class SigmaBondFormation : MonoBehaviour
     }
 
     /// <summary>
-    /// Orbital-drag σ <b>phase 1</b> (pre-bond): empty placeholder — implement non-guide approach / shell / fragment motion here incrementally.
-    /// <paramref name="phase1Sec"/> is read from the gesture orbital; use it when you add timed pre-bond animation.
+    /// One parallel lane of phase 1: receives the same smoothstep <c>s</c> in <c>[0,1]</c> each frame as all other lanes.
     /// </summary>
+    sealed class Phase1ParallelTrack
+    {
+        /// <summary>In-progress pose from fractional progress; <paramref name="smoothS"/> is smoothstep of linear <c>u</c>.</summary>
+        public Action<float> ApplySmoothStep;
+
+        /// <summary>Called once after the shared timeline completes (e.g. residual snap).</summary>
+        public Action FinalizeAfterTimeline;
+    }
+
+    /// <summary>
+    /// Orbital-drag σ <b>phase 1</b> (pre-bond): builds parallel tracks (fragment translation + orbital redistribution placeholder) and runs them on one timeline.
+    /// </summary>
+    /// <param name="guide">Guide atom from <see cref="ElectronRedistributionGuide.ResolveGuideAtomForPair"/>.</param>
+    /// <param name="nonGuide">Non-guide (approaching) atom.</param>
+    /// <param name="guideOp">Guide atom’s σ operation orbital.</param>
+    /// <param name="nonGuideOp">Non-guide atom’s σ operation orbital.</param>
     IEnumerator CoOrbitalDragSigmaPhase1PrebondPlaceholder(
-        AtomFunction atomA,
-        AtomFunction atomB,
-        ElectronOrbitalFunction orbA,
-        ElectronOrbitalFunction orbB,
-        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital,
         AtomFunction guide,
         AtomFunction nonGuide,
-        ElectronOrbitalFunction guideOrb,
+        ElectronOrbitalFunction guideOp,
+        ElectronOrbitalFunction nonGuideOp,
         float phase1Sec)
     {
-        if (atomA == null || atomB == null || guide == null || nonGuide == null)
+        if (guide == null || nonGuide == null)
             yield break;
 
-        _ = orbA;
-        _ = orbB;
-        _ = redistributionGuideTieBreakDraggedOrbital;
-        _ = guideOrb;
-        _ = phase1Sec;
+        float bl = DefaultSigmaBondLengthForPair(guide, nonGuide);
+        Vector3 nTarget = Phase1NonGuideNucleusTargetOnGuideOpOutboundRay(guide, guideOp, bl);
+        Vector3 deltaTotal = nTarget - nonGuide.transform.position;
+        if (deltaTotal.sqrMagnitude < 1e-16f)
+            yield break;
 
-        yield break;
+        var toMove = BuildNonGuideFragmentAtomsForApproach(guide, nonGuide);
+        var initialWorld = new Dictionary<AtomFunction, Vector3>(toMove.Count);
+        foreach (var a in toMove)
+        {
+            if (a == null) continue;
+            initialWorld[a] = a.transform.position;
+        }
+
+        var mol = nonGuide.GetConnectedMolecule();
+        float dur = Mathf.Max(0f, phase1Sec);
+
+        IReadOnlyList<Phase1ParallelTrack> tracks = BuildPhase1ParallelAnimationList(
+            guide,
+            nonGuide,
+            guideOp,
+            nonGuideOp,
+            initialWorld,
+            toMove,
+            deltaTotal,
+            nTarget,
+            mol);
+
+        SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, true);
+        try
+        {
+            yield return StartCoroutine(
+                CoExecutePhase1ParallelAnimations(tracks, mol, dur));
+        }
+        finally
+        {
+            SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, false);
+        }
+    }
+
+    /// <summary>Assembles phase-1 parallel lanes: atom fragment approach + non-guide orbital redistribution (placeholder).</summary>
+    static List<Phase1ParallelTrack> BuildPhase1ParallelAnimationList(
+        AtomFunction guide,
+        AtomFunction nonGuide,
+        ElectronOrbitalFunction guideOp,
+        ElectronOrbitalFunction nonGuideOp,
+        Dictionary<AtomFunction, Vector3> initialWorld,
+        List<AtomFunction> toMove,
+        Vector3 deltaTotal,
+        Vector3 nTarget,
+        ICollection<AtomFunction> molForBondLines)
+    {
+        var list = new List<Phase1ParallelTrack>(2);
+        list.Add(BuildPhase1AtomFragmentApproachAnimation(
+            nonGuide, initialWorld, toMove, deltaTotal, nTarget, molForBondLines));
+        list.Add(BuildPhase1OrbitalRedistributeForSigmaFormationPhase1(
+            guide, nonGuide, guideOp, nonGuideOp));
+        return list;
+    }
+
+    /// <summary>
+    /// Non-guide fragment rigid translation toward <paramref name="nTarget"/> (see <see cref="ApplyPhase1ApproachFragmentOffset"/>).
+    /// </summary>
+    static Phase1ParallelTrack BuildPhase1AtomFragmentApproachAnimation(
+        AtomFunction nonGuide,
+        Dictionary<AtomFunction, Vector3> initialWorld,
+        List<AtomFunction> toMove,
+        Vector3 deltaTotal,
+        Vector3 nTarget,
+        ICollection<AtomFunction> molForBondLines)
+    {
+        return new Phase1ParallelTrack
+        {
+            ApplySmoothStep = s => ApplyPhase1ApproachFragmentOffset(initialWorld, toMove, deltaTotal, s),
+            FinalizeAfterTimeline = () =>
+            {
+                if (nonGuide == null) return;
+                Vector3 residual = nTarget - nonGuide.transform.position;
+                if (residual.sqrMagnitude > 1e-14f)
+                {
+                    foreach (var a in toMove)
+                    {
+                        if (a == null) continue;
+                        a.transform.position += residual;
+                    }
+                }
+                if (molForBondLines != null && molForBondLines.Count > 0)
+                    AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(molForBondLines);
+            }
+        };
+    }
+
+    /// <summary>Builds phase-1 orbital redistribution track on the moving non-guide atom.</summary>
+    static Phase1ParallelTrack BuildPhase1OrbitalRedistributeForSigmaFormationPhase1(
+        AtomFunction guideAtom,
+        AtomFunction nonGuideAtom,
+        ElectronOrbitalFunction guideOp,
+        ElectronOrbitalFunction nonGuideOp)
+    {
+       Vector3 finalDirectionForGuideOrbital = Vector3.zero;
+        if (guideAtom != null && guideOp != null)
+        {
+            Vector3 guideOpFromGuide = guideOp.transform.position - guideAtom.transform.position;
+            Vector3 invGuideOpWorld = (-guideOpFromGuide).normalized;
+            finalDirectionForGuideOrbital = nonGuideAtom.transform.InverseTransformDirection(invGuideOpWorld).normalized;
+        }
+
+        var animation = SigmaPhase1OrbitalRedistribution.BuildOrbitalRedistributionForSigmaBondFormation(
+            nonGuideAtom,
+            guideAtom,
+            finalDirectionForGuideOrbital,
+            guideOp,
+            nonGuideOp,
+            guideOrbitalPredetermined: null);
+        return new Phase1ParallelTrack
+        {
+            ApplySmoothStep = s => animation?.Apply(s),
+            FinalizeAfterTimeline = () => { }
+        };
+    }
+
+    /// <summary>Runs all <paramref name="tracks"/> with the same smoothstep timeline; updates σ line visuals once per frame after all applies.</summary>
+    static IEnumerator CoExecutePhase1ParallelAnimations(
+        IReadOnlyList<Phase1ParallelTrack> tracks,
+        ICollection<AtomFunction> molForBondLines,
+        float dur)
+    {
+        if (tracks == null || tracks.Count == 0)
+            yield break;
+
+        if (dur < 1e-5f)
+        {
+            for (int i = 0; i < tracks.Count; i++)
+                tracks[i].ApplySmoothStep?.Invoke(1f);
+            if (molForBondLines != null && molForBondLines.Count > 0)
+                AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(molForBondLines);
+            for (int i = 0; i < tracks.Count; i++)
+                tracks[i].FinalizeAfterTimeline?.Invoke();
+            yield break;
+        }
+
+        float t = 0f;
+        while (true)
+        {
+            float u = Mathf.Clamp01(t / dur);
+            float s = u * u * (3f - 2f * u);
+            for (int i = 0; i < tracks.Count; i++)
+                tracks[i].ApplySmoothStep?.Invoke(s);
+            if (molForBondLines != null && molForBondLines.Count > 0)
+                AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(molForBondLines);
+            yield return null;
+            if (u >= 1f - 1e-6f)
+                                break;
+            t += Time.deltaTime;
+        }
+
+        for (int i = 0; i < tracks.Count; i++)
+            tracks[i].FinalizeAfterTimeline?.Invoke();
+    }
+
+    /// <summary>
+    /// σ phase 1 target for the <b>non-guide</b> nucleus: guide nucleus + <paramref name="bondLength"/> along the guide σ op outbound axis
+    /// (from guide nucleus toward the op orbital’s world position; if that offset is degenerate, hybrid +X in world).
+    /// </summary>
+    static Vector3 Phase1NonGuideNucleusTargetOnGuideOpOutboundRay(
+        AtomFunction guide,
+        ElectronOrbitalFunction guideOp,
+        float bondLength)
+    {
+        if (guide == null)
+            return Vector3.zero;
+        Vector3 g = guide.transform.position;
+        if (guideOp == null)
+            return g + Vector3.right * bondLength;
+
+        Vector3 towardOpCenter = guideOp.transform.position - g;
+        if (towardOpCenter.sqrMagnitude > 1e-10f)
+            return g + towardOpCenter.normalized * bondLength;
+
+        Vector3 u = OrbitalAngleUtility.GetOrbitalDirectionWorld(guideOp.transform);
+        return g + u * bondLength;
+    }
+
+    static void ApplyPhase1ApproachFragmentOffset(
+        Dictionary<AtomFunction, Vector3> initialWorld,
+        List<AtomFunction> toMove,
+        Vector3 deltaTotal,
+        float s)
+    {
+                    Vector3 off = deltaTotal * s;
+                    foreach (var a in toMove)
+                    {
+                        if (a == null || !initialWorld.TryGetValue(a, out var p0)) continue;
+            a.transform.position = p0 + off;
+        }
+    }
+
+    /// <summary>
+    /// Atoms that move in σ phase 1 approach. If the guide is not in the same molecule as non-guide, the whole non-guide component moves.
+    /// If both are in one molecule, only the non-guide <b>branch</b> (reachable without crossing the guide atom) moves with the approach.
+    /// </summary>
+    static List<AtomFunction> BuildNonGuideFragmentAtomsForApproach(AtomFunction guide, AtomFunction nonGuide)
+    {
+        var mol = nonGuide.GetConnectedMolecule();
+        if (mol == null || mol.Count == 0)
+            return new List<AtomFunction> { nonGuide };
+        bool guideInMol = false;
+        foreach (var a in mol)
+        {
+            if (a != null && a == guide)
+            {
+                guideInMol = true;
+                break;
+            }
+        }
+        if (!guideInMol)
+            return new List<AtomFunction>(mol);
+
+        var fragment = new List<AtomFunction>();
+        var visited = new HashSet<AtomFunction>();
+        var queue = new Queue<AtomFunction>();
+        queue.Enqueue(nonGuide);
+        visited.Add(nonGuide);
+        while (queue.Count > 0)
+        {
+            var a = queue.Dequeue();
+            fragment.Add(a);
+            for (int bi = 0; bi < a.CovalentBonds.Count; bi++)
+            {
+                var cb = a.CovalentBonds[bi];
+                if (cb == null) continue;
+                var other = cb.AtomA == a ? cb.AtomB : cb.AtomA;
+                if (other == null || other == guide) continue;
+                if (visited.Add(other))
+                    queue.Enqueue(other);
+            }
+        }
+        return fragment;
     }
 
     /// <summary>
@@ -235,7 +478,7 @@ public class SigmaBondFormation : MonoBehaviour
     }
 
     /// <summary>
-    /// Orbital-drag σ: phase 1 pre-bond (see <see cref="CoOrbitalDragSigmaPhase1PrebondPlaceholder"/>), bond animation, then post-bond guide lerp.
+    /// Orbital-drag σ: phase 1 non-guide approach toward guide op target, bond animation, then post-bond guide lerp.
     /// </summary>
     IEnumerator CoOrbitalDragSigmaFormationThreePhase(
         AtomFunction atomA,
@@ -294,15 +537,13 @@ public class SigmaBondFormation : MonoBehaviour
             int sigmaDragSavedNonGuideOpElectrons = nonGuide == atomA ? orbA.ElectronCount : orbB.ElectronCount;
             int sigmaDragSavedGuideOpElectrons = guide == atomA ? orbA.ElectronCount : orbB.ElectronCount;
 
+            ElectronOrbitalFunction guideOpPhase1 = guide == atomA ? orbA : orbB;
+            ElectronOrbitalFunction nonGuideOpPhase1 = nonGuide == atomA ? orbA : orbB;
             yield return StartCoroutine(CoOrbitalDragSigmaPhase1PrebondPlaceholder(
-                atomA,
-                atomB,
-                orbA,
-                orbB,
-                redistributionGuideTieBreakDraggedOrbital,
                 guide,
                 nonGuide,
-                guideOrb,
+                guideOpPhase1,
+                nonGuideOpPhase1,
                 phase1Sec));
 
             // Phase 2: bond creation + cylinder + orbital→line. Durations from sigmaFormationPhase2* (resolved, non-negative).
