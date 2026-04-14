@@ -1,7 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
 using UnityEngine;
 
 /// <summary>
@@ -9,12 +7,6 @@ using UnityEngine;
 /// </summary>
 public static class OrbitalRedistribution
 {
-    /// <summary>Default on for triage; set false for quiet runs.</summary>
-    public static bool DebugLogSigmaPhase1OrbitalRedistribution = true;
-    /// <summary>Default on for triage; set false for quiet runs.</summary>
-    public static bool DebugLogEmptyOrbitalPositionNdjson = true;
-    static readonly string DebugLogPath = "/Users/minseo/Documents/Github/_star14ms/OrgoSimulator/.cursor/debug-8de5d1.log";
-
     /// <summary>
     /// Simple entry: build redistribution for <paramref name="nonGuideAtom"/> using <paramref name="guideAtom"/> as guide.
     /// </summary>
@@ -65,8 +57,6 @@ public static class OrbitalRedistribution
         readonly List<Assignment> assignments = new List<Assignment>();
         readonly AtomFunction atom;
         readonly List<RedistributionAnimation> childAnimations = new List<RedistributionAnimation>();
-        readonly HashSet<int> loggedFinalEmptyApply = new HashSet<int>();
-        readonly HashSet<int> loggedEmptyTotalMove = new HashSet<int>();
 
         public RedistributionAnimation(AtomFunction atomRef)
         {
@@ -87,23 +77,6 @@ public static class OrbitalRedistribution
         {
             if (orbital == null) return;
             Vector3 start = startDirWorld.sqrMagnitude > 1e-12f ? startDirWorld.normalized : Vector3.right;
-            // #region agent log
-            if (isEmptyGroup && DebugLogEmptyOrbitalPositionNdjson && atom != null)
-            {
-                Vector3 actualLocal = orbital.transform.localPosition;
-                Vector3 derivedLocal = atom.transform.InverseTransformDirection(start).normalized * Mathf.Max(0.01f, radius);
-                AppendDebugNdjson(
-                    "rebond-empty-origin",
-                    "H9",
-                    "OrbitalRedistribution.cs:89",
-                    "AddOrbitalTarget empty start source",
-                    "\"atomId\":" + atom.GetInstanceID()
-                    + ",\"orbId\":" + orbital.GetInstanceID()
-                    + ",\"actualLocal\":\"" + Vec3(actualLocal) + "\""
-                    + ",\"derivedFromStartDir\":\"" + Vec3(derivedLocal) + "\""
-                    + ",\"delta\":" + Vector3.Distance(actualLocal, derivedLocal).ToString("F4", CultureInfo.InvariantCulture));
-            }
-            // #endregion
             assignments.Add(new Assignment
             {
                 Group = new GroupEntry { Orbital = orbital },
@@ -143,47 +116,11 @@ public static class OrbitalRedistribution
                 ElectronOrbitalFunction orb = a.Group.Orbital;
                 if (orb.Bond == null && orb.transform.parent == atom.transform)
                 {
-                    Vector3 localPosBefore = orb.transform.localPosition;
                     Vector3 dirLocal = atom.transform.InverseTransformDirection(dirWorld).normalized;
                     var (_, rotLocal) = ElectronOrbitalFunction.GetCanonicalSlotPositionFromLocalDirection(
                         dirLocal, atom.BondRadius, orb.transform.localRotation);
                     orb.transform.localRotation = rotLocal;
                     orb.transform.localPosition = dirLocal * a.Radius;
-                    // #region agent log
-                    if (DebugLogEmptyOrbitalPositionNdjson && s >= 0.95f && loggedFinalEmptyApply.Add(orb.GetInstanceID()))
-                    {
-                        float movedDist = Vector3.Distance(localPosBefore, orb.transform.localPosition);
-                        AppendDebugNdjson(
-                            "empty-orb-pos",
-                            "H2",
-                            "OrbitalRedistribution.cs:124",
-                            "Empty orbital local pose updated in Apply",
-                            "\"atomId\":" + atom.GetInstanceID()
-                            + ",\"orbId\":" + orb.GetInstanceID()
-                            + ",\"radius\":" + a.Radius.ToString("F4", CultureInfo.InvariantCulture)
-                            + ",\"movedDist\":" + movedDist.ToString("F4", CultureInfo.InvariantCulture)
-                            + ",\"localPosAfter\":\"" + Vec3(orb.transform.localPosition) + "\"");
-                    }
-                    // #endregion
-                    // #region agent log
-                    if (a.IsEmptyGroup && DebugLogEmptyOrbitalPositionNdjson && s >= 0.999f && loggedEmptyTotalMove.Add(orb.GetInstanceID()))
-                    {
-                        float totalLocalDist = Vector3.Distance(a.StartLocalPos, orb.transform.localPosition);
-                        Vector3 startWorld = atom.transform.TransformPoint(a.StartLocalPos);
-                        float totalWorldDist = Vector3.Distance(startWorld, orb.transform.position);
-                        AppendDebugNdjson(
-                            "empty-orb-pos",
-                            "H6",
-                            "OrbitalRedistribution.cs:151",
-                            "Empty orbital total displacement at animation end",
-                            "\"atomId\":" + atom.GetInstanceID()
-                            + ",\"orbId\":" + orb.GetInstanceID()
-                            + ",\"totalLocalDist\":" + totalLocalDist.ToString("F4", CultureInfo.InvariantCulture)
-                            + ",\"totalWorldDist\":" + totalWorldDist.ToString("F4", CultureInfo.InvariantCulture)
-                            + ",\"startLocal\":\"" + Vec3(a.StartLocalPos) + "\""
-                            + ",\"endLocal\":\"" + Vec3(orb.transform.localPosition) + "\"");
-                    }
-                    // #endregion
                 }
                 else
                 {
@@ -192,24 +129,6 @@ public static class OrbitalRedistribution
                     Quaternion delta = Quaternion.FromToRotation(from.normalized, dirWorld);
                     orb.transform.rotation = delta * orb.transform.rotation;
                     orb.transform.position = atom.transform.position + dirWorld * a.Radius;
-                    // #region agent log
-                    if (DebugLogEmptyOrbitalPositionNdjson)
-                    {
-                        float radialAfter = Vector3.Distance(orb.transform.position, atom.transform.position);
-                        if (radialAfter <= 1e-4f)
-                        {
-                            AppendDebugNdjson(
-                                "dual-drag-errors",
-                                "H21",
-                                "OrbitalRedistribution.cs:194",
-                                "Orbital radial collapsed near zero after world placement",
-                                "\"atomId\":" + atom.GetInstanceID()
-                                + ",\"orbId\":" + orb.GetInstanceID()
-                                + ",\"radialAfter\":" + radialAfter.ToString("F6", CultureInfo.InvariantCulture)
-                                + ",\"radiusTarget\":" + a.Radius.ToString("F6", CultureInfo.InvariantCulture));
-                        }
-                    }
-                    // #endregion
 
                     if (a.IsBondGroup && a.Bond != null && a.FragmentStartWorld != null && a.FragmentStartWorld.Count > 0)
                     {
@@ -254,23 +173,6 @@ public static class OrbitalRedistribution
             visitedAtoms = new HashSet<AtomFunction>();
         if (!visitedAtoms.Add(atom))
             return new RedistributionAnimation(atom);
-        // #region agent log
-        if (DebugLogEmptyOrbitalPositionNdjson)
-        {
-            AppendDebugNdjson(
-                "dual-drag-errors",
-                "H13",
-                "OrbitalRedistribution.cs:233",
-                "BuildOrbitalRedistribution entry",
-                "\"atomId\":" + atom.GetInstanceID()
-                + ",\"guideAtomId\":" + (guideAtom != null ? guideAtom.GetInstanceID() : 0)
-                + ",\"isBondingEvent\":" + (isBondingEvent ? "true" : "false")
-                + ",\"guideOpId\":" + (guideAtomOrbitalOp != null ? guideAtomOrbitalOp.GetInstanceID() : 0)
-                + ",\"atomOpId\":" + (atomOrbitalOp != null ? atomOrbitalOp.GetInstanceID() : 0)
-                + ",\"finalDirectionMag\":" + finalDirectionForGuideOrbital.magnitude.ToString("F4", CultureInfo.InvariantCulture)
-                + ",\"finalDirection\":\"" + Vec3(finalDirectionForGuideOrbital) + "\"");
-        }
-        // #endregion
 
         var bondingGroups = new List<GroupEntry>();
         foreach (var cb in atom.CovalentBonds)
@@ -307,22 +209,6 @@ public static class OrbitalRedistribution
             };
             if (orb.ElectronCount > 0) nonbondingOccupied.Add(row);
             else emptyOrbitals.Add(row);
-            // #region agent log
-            if (DebugLogEmptyOrbitalPositionNdjson && orb.ElectronCount == 0)
-            {
-                AppendDebugNdjson(
-                    "rebond-empty-origin",
-                    "H8",
-                    "OrbitalRedistribution.cs:245",
-                    "BuildOrbitalRedistribution sees empty orbital start pose",
-                    "\"atomId\":" + atom.GetInstanceID()
-                    + ",\"orbId\":" + orb.GetInstanceID()
-                    + ",\"isBondingEvent\":" + (isBondingEvent ? "true" : "false")
-                    + ",\"localPos\":\"" + Vec3(orb.transform.localPosition) + "\""
-                    + ",\"localRotEuler\":\"" + Vec3(orb.transform.localRotation.eulerAngles) + "\""
-                    + ",\"currentDirWorld\":\"" + Vec3(row.CurrentDirWorld) + "\"");
-            }
-            // #endregion
         }
 
         ApplyEventSpecificGroupAdjustments(
@@ -353,19 +239,6 @@ public static class OrbitalRedistribution
             visitedAtoms,
             out var breakingSpecialAnimation))
         {
-            // #region agent log
-            if (DebugLogEmptyOrbitalPositionNdjson)
-            {
-                AppendDebugNdjson(
-                    "dual-drag-errors",
-                    "H15",
-                    "OrbitalRedistribution.cs:309",
-                    "Breaking special-case intercepted flow",
-                    "\"atomId\":" + atom.GetInstanceID()
-                    + ",\"isBondingEvent\":" + (isBondingEvent ? "true" : "false")
-                    + ",\"nVseprGroup\":" + nVseprGroup);
-            }
-            // #endregion
             return breakingSpecialAnimation;
         }
 
@@ -375,21 +248,6 @@ public static class OrbitalRedistribution
             : (guideGroup != null && guideGroup.CurrentDirWorld.sqrMagnitude > 1e-12f
                 ? atom.transform.InverseTransformDirection(guideGroup.CurrentDirWorld).normalized
                 : Vector3.right);
-        // #region agent log
-        if (DebugLogEmptyOrbitalPositionNdjson)
-        {
-            AppendDebugNdjson(
-                "dual-drag-errors",
-                "H14",
-                "OrbitalRedistribution.cs:324",
-                "Guide direction source selected",
-                "\"atomId\":" + atom.GetInstanceID()
-                + ",\"isBondingEvent\":" + (isBondingEvent ? "true" : "false")
-                + ",\"usedProvidedGuideDirection\":" + (usedProvidedGuideDirection ? "true" : "false")
-                + ",\"guideDirLocal\":\"" + Vec3(guideDirLocal) + "\""
-                + ",\"guideGroupKind\":\"" + (guideGroup != null ? EscapeJson(guideGroup.Kind) : "none") + "\"");
-        }
-        // #endregion
         Quaternion qAlign = finalDirectionsTemplate.Count > 0
             ? Quaternion.FromToRotation(finalDirectionsTemplate[0], guideDirLocal)
             : Quaternion.identity;
@@ -410,91 +268,6 @@ public static class OrbitalRedistribution
             atomMoveAnimation,
             visitedAtoms,
             isBondingEvent);
-
-        if (DebugLogSigmaPhase1OrbitalRedistribution)
-        {
-            int guideOrbId = guideGroup != null && guideGroup.Orbital != null ? guideGroup.Orbital.GetInstanceID() : 0;
-            string guideKind = guideGroup != null ? guideGroup.Kind : "none";
-            Debug.Log(
-                "[sigma-phase1-redist] config atomId=" + atom.GetInstanceID()
-                + " nVseprGroup=" + nVseprGroup
-                + " bondGroupCount=" + bondingGroups.Count
-                + " nonbondOccupiedCount=" + nonbondingOccupied.Count
-                + " emptyCount=" + emptyOrbitals.Count
-                + " guideGroupKind=" + guideKind
-                + " guideGroupOrbId=" + guideOrbId);
-
-            for (int i = 0; i < finalDirectionsTemplate.Count; i++)
-            {
-                Vector3 d = finalDirectionsTemplate[i];
-                Debug.Log(
-                    "[sigma-phase1-redist] templateDir atomId=" + atom.GetInstanceID()
-                    + " idx=" + i
-                    + " x=" + d.x.ToString("F4", CultureInfo.InvariantCulture)
-                    + " y=" + d.y.ToString("F4", CultureInfo.InvariantCulture)
-                    + " z=" + d.z.ToString("F4", CultureInfo.InvariantCulture));
-            }
-
-            for (int i = 0; i < finalDirectionsTemplate.Count; i++)
-            {
-                for (int j = i + 1; j < finalDirectionsTemplate.Count; j++)
-                {
-                    float ang = Vector3.Angle(finalDirectionsTemplate[i], finalDirectionsTemplate[j]);
-                    Debug.Log(
-                        "[sigma-phase1-redist] templatePairAngle atomId=" + atom.GetInstanceID()
-                        + " i=" + i
-                        + " j=" + j
-                        + " deg=" + ang.ToString("F3", CultureInfo.InvariantCulture));
-                }
-            }
-
-            for (int i = 0; i < alignedTemplate.Count; i++)
-            {
-                Vector3 d = alignedTemplate[i];
-                Debug.Log(
-                    "[sigma-phase1-redist] alignedDir atomId=" + atom.GetInstanceID()
-                    + " idx=" + i
-                    + " x=" + d.x.ToString("F4", CultureInfo.InvariantCulture)
-                    + " y=" + d.y.ToString("F4", CultureInfo.InvariantCulture)
-                    + " z=" + d.z.ToString("F4", CultureInfo.InvariantCulture));
-            }
-            if (bestPerm != null)
-            {
-                for (int i = 0; i < bestPerm.Length; i++)
-                {
-                    int ti = bestPerm[i];
-                    if (ti < 0 || ti >= alignedTemplate.Count || i >= groupsForMatching.Count) continue;
-                    // #region agent log
-                    if (DebugLogEmptyOrbitalPositionNdjson
-                        && isBondingEvent
-                        && atomOrbitalOp != null
-                        && groupsForMatching[i].Orbital == atomOrbitalOp)
-                    {
-                        Vector3 gLocal = atom.transform.InverseTransformDirection(groupsForMatching[i].CurrentDirWorld).normalized;
-                        Vector3 tLocal = alignedTemplate[ti].normalized;
-                        AppendDebugNdjson(
-                            "rebond-empty-origin",
-                            "H12",
-                            "OrbitalRedistribution.cs:402",
-                            "Bonding op-empty match angle",
-                            "\"atomId\":" + atom.GetInstanceID()
-                            + ",\"orbId\":" + groupsForMatching[i].Orbital.GetInstanceID()
-                            + ",\"templateIdx\":" + ti
-                            + ",\"angleDeg\":" + Vector3.Angle(gLocal, tLocal).ToString("F3", CultureInfo.InvariantCulture)
-                            + ",\"groupKind\":\"" + EscapeJson(groupsForMatching[i].Kind) + "\"");
-                    }
-                    // #endregion
-                    Debug.Log(
-                        "[sigma-phase1-redist] match atomId=" + atom.GetInstanceID()
-                        + " groupIdx=" + i
-                        + " groupKind=" + groupsForMatching[i].Kind
-                        + " templateIdx=" + ti
-                        + " costDirDeltaDeg=" + Vector3.Angle(
-                            atom.transform.InverseTransformDirection(groupsForMatching[i].CurrentDirWorld),
-                            alignedTemplate[ti]).ToString("F3", CultureInfo.InvariantCulture));
-                }
-            }
-        }
 
         return animation;
     }
@@ -683,7 +456,6 @@ public static class OrbitalRedistribution
     {
         if (anim == null || atom == null || emptyOrbitals == null || emptyOrbitals.Count == 0) return;
         if (finalDirectionsEmptyOrbital == null || finalDirectionsEmptyOrbital.Count == 0) return;
-        int assignedCount = 0;
 
         var occupiedNonEmpty = new List<Vector3>();
         if (groupsForMatching != null && alignedTemplate != null && perm != null)
@@ -729,48 +501,13 @@ public static class OrbitalRedistribution
             GroupEntry e = remainingEmpty[orbIdx];
             if (e?.Orbital != null)
             {
-                // #region agent log
-                if (DebugLogEmptyOrbitalPositionNdjson)
-                {
-                    Vector3 curLocal = atom.transform.InverseTransformDirection(e.CurrentDirWorld).normalized;
-                    AppendDebugNdjson(
-                        "empty-orb-pos",
-                        "H1",
-                        "OrbitalRedistribution.cs:598",
-                        "Empty orbital assigned target direction",
-                        "\"atomId\":" + atom.GetInstanceID()
-                        + ",\"orbId\":" + e.Orbital.GetInstanceID()
-                        + ",\"radius\":" + e.Radius.ToString("F4", CultureInfo.InvariantCulture)
-                        + ",\"currentDir\":\"" + Vec3(curLocal) + "\""
-                        + ",\"targetDir\":\"" + Vec3(targetDir) + "\""
-                        + ",\"angleDeg\":" + Vector3.Angle(curLocal, targetDir).ToString("F3", CultureInfo.InvariantCulture));
-                }
-                // #endregion
                 anim.AddOrbitalTarget(e.Orbital, e.CurrentDirWorld, e.Radius, targetDir, isEmptyGroup: true);
-                assignedCount++;
             }
 
             remainingEmpty.RemoveAt(orbIdx);
             remainingDirs.RemoveAt(dirIdx);
             forcedOppositeOf = targetDir;
         }
-
-        // #region agent log
-        if (DebugLogEmptyOrbitalPositionNdjson)
-        {
-            AppendDebugNdjson(
-                "empty-orb-pos",
-                "H7",
-                "OrbitalRedistribution.cs:638",
-                "Empty assignment coverage summary",
-                "\"atomId\":" + atom.GetInstanceID()
-                + ",\"initialEmptyCount\":" + emptyOrbitals.Count
-                + ",\"assignedCount\":" + assignedCount
-                + ",\"unassignedCount\":" + Mathf.Max(0, emptyOrbitals.Count - assignedCount)
-                + ",\"initialEmptyDirCount\":" + finalDirectionsEmptyOrbital.Count
-                + ",\"remainingDirCount\":" + remainingDirs.Count);
-        }
-        // #endregion
     }
 
     static int SelectNextEmptyDirectionIndex(
@@ -889,50 +626,6 @@ public static class OrbitalRedistribution
         return outDirs;
     }
 
-    // #region agent log
-    static void AppendDebugNdjson(
-        string runId,
-        string hypothesisId,
-        string location,
-        string message,
-        string dataJsonBody)
-    {
-        try
-        {
-            long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            string line = "{"
-                + "\"sessionId\":\"8de5d1\","
-                + "\"runId\":\"" + EscapeJson(runId) + "\","
-                + "\"hypothesisId\":\"" + EscapeJson(hypothesisId) + "\","
-                + "\"location\":\"" + EscapeJson(location) + "\","
-                + "\"message\":\"" + EscapeJson(message) + "\","
-                + "\"data\":{" + (string.IsNullOrEmpty(dataJsonBody) ? "" : dataJsonBody) + "},"
-                + "\"timestamp\":" + ts.ToString(CultureInfo.InvariantCulture)
-                + "}";
-            File.AppendAllText(DebugLogPath, line + Environment.NewLine);
-        }
-        catch { }
-    }
-
-    static string EscapeJson(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return "";
-        return s
-            .Replace("\\", "\\\\")
-            .Replace("\"", "\\\"")
-            .Replace("\r", "\\r")
-            .Replace("\n", "\\n");
-    }
-
-    static string Vec3(Vector3 v)
-    {
-        return v.x.ToString("F4", CultureInfo.InvariantCulture) + ","
-            + v.y.ToString("F4", CultureInfo.InvariantCulture) + ","
-            + v.z.ToString("F4", CultureInfo.InvariantCulture);
-    }
-    // #endregion
-
-
     static int[] FindBestCombinationVSEPRGroupToFinalDirection(
         List<GroupEntry> groups,
         List<Vector3> alignedTemplate,
@@ -1014,11 +707,6 @@ public static class OrbitalRedistribution
                 GroupEntry row = rows[i];
                 if (row == null) continue;
 
-                if (row.Orbital == atomOrbitalOp)
-                {
-                    Debug.Log("[OrbitalRedistribution] GetHeaviestGroupOpPrioritized row.MassWeight=" + row.MassWeight + " bestMass=" + bestMass + " row.Orbital == atomOrbitalOp=" + (row.Orbital == atomOrbitalOp) + "row.Kind=" + row.Kind);
-                }
-
                 if (best == null || row.MassWeight > bestMass || (row.Orbital == atomOrbitalOp && row.MassWeight >= bestMass))
                 {
                     best = row;
@@ -1063,20 +751,6 @@ public static class OrbitalRedistribution
             : Mathf.Max(1f, atom.AtomicNumber);
         if (isBondingEvent)
         {
-            // #region agent log
-            if (DebugLogEmptyOrbitalPositionNdjson)
-            {
-                AppendDebugNdjson(
-                    "rebond-empty-origin",
-                    "H11",
-                    "OrbitalRedistribution.cs:962",
-                    "Bonding event moves op-empty into nonbonding set",
-                    "\"atomId\":" + atom.GetInstanceID()
-                    + ",\"movedOrbId\":" + (moved.Orbital != null ? moved.Orbital.GetInstanceID() : 0)
-                    + ",\"movedLocalPos\":\"" + (moved.Orbital != null ? Vec3(moved.Orbital.transform.localPosition) : "0,0,0") + "\""
-                    + ",\"movedCurrentDirWorld\":\"" + Vec3(moved.CurrentDirWorld) + "\"");
-            }
-            // #endregion
             nonbondingOccupied.Add(moved);
             emptyOrbitals.RemoveAt(opEmptyIdx);
         }

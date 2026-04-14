@@ -17,6 +17,9 @@ using UnityEngine.Rendering;
 public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IPointerUpHandler
 {
     const string AgentNdjsonPath = "Assets/../.cursor/debug-8de5d1.log";
+    // Compatibility debug gates still referenced from AtomFunction.
+    public static bool DebugLogBreakBondSigmaRelaxWhy = false;
+    public static bool DebugLogBreakBondMotionSources = false;
 
     static string Qf(Quaternion q)
     {
@@ -26,48 +29,30 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             + q.w.ToString("F4", CultureInfo.InvariantCulture);
     }
 
+    // Historical diagnostic hook (H129). Kept as no-op to preserve call-sites.
     static void AppendH129FlipDecisionNdjson(
-        string location,
+        string source,
         int bondId,
-        bool flipBefore,
+        bool preFlipState,
         float dotTip0VsWant,
         float dotActualVsWant,
         float angTip0VsWantDeg,
         float angActualVsWantDeg,
-        string branch,
-        bool flipAfter,
-        Quaternion delta)
+        string decision,
+        bool postFlipState,
+        Quaternion deltaQ)
     {
-#if UNITY_EDITOR
-        try
-        {
-            long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var sb = new StringBuilder(640);
-            sb.Append("{\"sessionId\":\"8de5d1\",\"timestamp\":").Append(ts)
-                .Append(",\"runId\":\"pre-fix\",\"hypothesisId\":\"H129\"")
-                .Append(",\"location\":\"CovalentBond.cs:").Append(location).Append("\"")
-                .Append(",\"message\":\"sigma_flip_decision_branch\",\"data\":{")
-                .Append("\"bondId\":").Append(bondId)
-                .Append(",\"flipBefore\":").Append(flipBefore ? "true" : "false")
-                .Append(",\"dotTip0VsWant\":").Append(dotTip0VsWant.ToString("F6", CultureInfo.InvariantCulture))
-                .Append(",\"dotActualVsWant\":").Append(dotActualVsWant.ToString("F6", CultureInfo.InvariantCulture))
-                .Append(",\"angTip0VsWantDeg\":").Append(angTip0VsWantDeg.ToString("F5", CultureInfo.InvariantCulture))
-                .Append(",\"angActualVsWantDeg\":").Append(angActualVsWantDeg.ToString("F5", CultureInfo.InvariantCulture))
-                .Append(",\"branch\":\"").Append(branch).Append("\"")
-                .Append(",\"flipAfter\":").Append(flipAfter ? "true" : "false")
-                .Append(",\"deltaQ\":\"").Append(Qf(delta)).Append("\"")
-                .Append("}}\n");
-            File.AppendAllText(AgentNdjsonPath, sb.ToString());
-        }
-        catch { }
-#endif
+        _ = source;
+        _ = bondId;
+        _ = preFlipState;
+        _ = dotTip0VsWant;
+        _ = dotActualVsWant;
+        _ = angTip0VsWantDeg;
+        _ = angActualVsWantDeg;
+        _ = decision;
+        _ = postFlipState;
+        _ = deltaQ;
     }
-
-    public static void LogExBondOrbitalPose(string _, string __, ElectronOrbitalFunction ___, AtomFunction ____, AtomFunction _____ = null) { }
-
-    public static void LogBreakGuideOrbitalsPose(string _, AtomFunction __, AtomFunction ___, ElectronOrbitalFunction ____, ElectronOrbitalFunction _____, AtomFunction ______, AtomFunction _______) { }
-
-    static void LogBreakEmptyTeleportBoth(string _, AtomFunction __, AtomFunction ___, Vector3? ____, Vector3? _____, ElectronOrbitalFunction ______, ElectronOrbitalFunction _______, AtomFunction ________, AtomFunction _________) { }
 
     [SerializeField] AtomFunction atomA;
     [SerializeField] AtomFunction atomB;
@@ -125,17 +110,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     /// <summary>Diagnostics only — read <see cref="orbitalRedistributionWorldDelta"/> for σ-formation pose logs.</summary>
     internal Quaternion GetOrbitalRedistributionWorldDeltaForDiagnostics() => orbitalRedistributionWorldDelta;
-
-    /// <summary>
-    /// Orbital-drag σ phase 3: set δ and apply world pose so bond-parented σ animate with guide hybrid lerp (nucleus snapshots alone exclude bond children).
-    /// </summary>
-    internal void SetOrbitalRedistributionWorldDeltaForPhase3Lerp(Quaternion delta)
-    {
-        if (!IsSigmaBondLine() || orbital == null) return;
-        orbitalRedistributionWorldDelta = delta;
-        UpdateBondTransformToCurrentAtoms();
-        SyncSigmaOrbitalWorldPoseFromRedistribution(forceApplyPoseDuringBondToLineAnim: true);
-    }
 
     internal (Quaternion delta, bool flipped) CapturePiStep2RedistributionForBake() =>
         (orbitalRedistributionWorldDelta, orbitalRotationFlipped);
@@ -228,126 +202,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbitalRedistributionWorldDelta = appliedRot * Quaternion.Inverse(baseR);
         }
         orbital.transform.rotation = appliedRot;
-    }
-
-    /// <summary>
-    /// π bond end of post-Create formation: redistribution/animation sets the shared orbital world rotation, but
-    /// <see cref="GetOrbitalTargetWorldState"/> uses <see cref="orbitalRedistributionWorldDelta"/>·baseR.
-    /// Set δ from the current orbital world rotation after <see cref="UpdateBondTransformToCurrentAtoms"/> so
-    /// <see cref="SnapOrbitalToBondPosition"/> does not swing the π tip away from the post-redist pose (runtime: OL-3 triad 120 → OL-4 60 without this).
-    /// </summary>
-    public void SyncPiOrbitalRedistributionDeltaFromCurrentWorldRotation()
-    {
-        if (orbital == null || atomA == null || atomB == null) return;
-        if (IsSigmaBondLine()) return;
-        UpdateBondTransformToCurrentAtoms();
-        var baseR = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
-        if (orbitalRotationFlipped) baseR = baseR * Quaternion.Euler(0f, 0f, 180f);
-        orbitalRedistributionWorldDelta = orbital.transform.rotation * Quaternion.Inverse(baseR);
-    }
-
-    /// <summary>
-    /// π and σ between the same pair share the same cylinder <see cref="BondFrameRotation"/>; with δ=identity both lobes can
-    /// end up parallel (runtime: O=C=O second π, operation O <c>H-O-angle-snap</c> σ–π pair 0°). Twist δ by ±90° about the
-    /// internuclear axis so π +X is not colinear with the σ bond’s current target tip.
-    /// </summary>
-    public void TwistPiOrbitalRedistributionDeltaAwayFromColinearSigmaPartnerIfNeeded(float minSeparationDeg = 35f)
-    {
-        if (orbital == null || atomA == null || atomB == null) return;
-        if (IsSigmaBondLine()) return;
-        CovalentBond sigmaPartner = FindSigmaBondToSamePartner();
-        if (sigmaPartner == null || sigmaPartner.Orbital == null) return;
-
-        sigmaPartner.UpdateBondTransformToCurrentAtoms();
-        UpdateBondTransformToCurrentAtoms();
-        var (_, sigmaWorldRot) = sigmaPartner.GetOrbitalTargetWorldState();
-        Vector3 sigmaTip = (sigmaWorldRot * Vector3.right).normalized;
-        if (sigmaTip.sqrMagnitude < 1e-12f) return;
-
-        var baseR = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
-        if (orbitalRotationFlipped) baseR = baseR * Quaternion.Euler(0f, 0f, 180f);
-
-        Vector3 PiTipWorld(Quaternion delta) => (delta * baseR * Vector3.right).normalized;
-        Vector3 piTip = PiTipWorld(orbitalRedistributionWorldDelta);
-        float ang = Vector3.Angle(piTip, sigmaTip);
-        if (ang >= minSeparationDeg) return;
-
-        var first = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomA : atomB;
-        var second = atomA.GetInstanceID() < atomB.GetInstanceID() ? atomB : atomA;
-        Vector3 bondAxis = second.transform.position - first.transform.position;
-        if (bondAxis.sqrMagnitude < 1e-12f) return;
-        bondAxis.Normalize();
-
-        bool TryTwists(List<Vector3> axes)
-        {
-            for (int ai = 0; ai < axes.Count; ai++)
-            {
-                Vector3 ax = axes[ai];
-                if (ax.sqrMagnitude < 1e-12f) continue;
-                ax.Normalize();
-                for (int k = 0; k < 2; k++)
-                {
-                    float sign = k == 0 ? 1f : -1f;
-                    Quaternion twist = Quaternion.AngleAxis(90f * sign, ax);
-                    Quaternion tryDelta = twist * orbitalRedistributionWorldDelta;
-                    float angNew = Vector3.Angle(PiTipWorld(tryDelta), sigmaTip);
-                    if (angNew >= minSeparationDeg)
-                    {
-                        orbitalRedistributionWorldDelta = tryDelta;
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-
-        var axesToTry = new List<Vector3>(4) { bondAxis };
-        Vector3 orthoBondPi = Vector3.Cross(bondAxis, piTip);
-        if (orthoBondPi.sqrMagnitude > 1e-12f) axesToTry.Add(orthoBondPi);
-        Vector3 orthoBondSig = Vector3.Cross(bondAxis, sigmaTip);
-        if (orthoBondSig.sqrMagnitude > 1e-12f) axesToTry.Add(orthoBondSig);
-        Vector3 orthoSigPi = Vector3.Cross(sigmaTip, piTip);
-        if (orthoSigPi.sqrMagnitude > 1e-12f) axesToTry.Add(orthoSigPi);
-        if (axesToTry.Count <= 1 || Mathf.Abs(Vector3.Dot(piTip, bondAxis)) > 0.995f)
-        {
-            Vector3 aux = Mathf.Abs(Vector3.Dot(bondAxis, Vector3.up)) < 0.95f ? Vector3.up : Vector3.right;
-            Vector3 fb = Vector3.Cross(bondAxis, aux);
-            if (fb.sqrMagnitude > 1e-12f) axesToTry.Add(fb);
-        }
-        TryTwists(axesToTry);
-    }
-
-    CovalentBond FindSigmaBondToSamePartner()
-    {
-        if (atomA == null || atomB == null) return null;
-        CovalentBond TryPivot(AtomFunction pivot)
-        {
-            if (pivot == null) return null;
-            foreach (var b in pivot.CovalentBonds)
-            {
-                if (b == null || b == this || !b.IsSigmaBondLine()) continue;
-                var other = b.AtomA == pivot ? b.AtomB : b.AtomA;
-                if ((pivot == atomA && other == atomB) || (pivot == atomB && other == atomA))
-                    return b;
-            }
-            return null;
-        }
-        return TryPivot(atomA) ?? TryPivot(atomB);
-    }
-
-    /// <summary>
-    /// Pure σ-relax + gauge path: bonding world rotation follows <c>bondEndLive.worldRot * gaugeRel</c> while
-    /// <see cref="orbitalRedistributionWorldDelta"/> may still match its pre-step-2 value. Call when nuclei are at
-    /// relax end so δ·baseR equals the actual bonding orbital world rot — then <see cref="GetOrbitalTargetWorldState"/>
-    /// agrees and post–step-2 <see cref="ApplySigmaOrbitalTipFromRedistribution"/> (tips match, large quat angle) can skip.
-    /// </summary>
-    public void CommitSigmaRedistributionDeltaFromWorldOrbitalRotation(Quaternion orbitalWorldRotation)
-    {
-        if (!IsSigmaBondLine()) return;
-        UpdateBondTransformToCurrentAtoms();
-        var baseR = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
-        if (orbitalRotationFlipped) baseR = baseR * Quaternion.Euler(0f, 0f, 180f);
-        orbitalRedistributionWorldDelta = orbitalWorldRotation * Quaternion.Inverse(baseR);
     }
 
     /// <summary>Used by <see cref="AtomFunction.UpdateSigmaBondVisualsForAtoms"/>; same guards as LateUpdate σ pose.</summary>
@@ -715,31 +569,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
             mat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
         }
-    }
-
-    /// <summary>Bond stepped-debug: tint existing line/cylinder renderers (MPB on 3D mesh so shared material stays black for other bonds).</summary>
-    public void SetBondFormationDebugGuideHighlight(bool highlighted)
-    {
-        if (!highlighted)
-        {
-            if (cylinderRenderer != null)
-                cylinderRenderer.SetPropertyBlock(null);
-            if (lineRenderer != null)
-                lineRenderer.color = BondVisualColor;
-            return;
-        }
-        var c = new Color(0.12f, 0.88f, 0.4f, 0.92f);
-        if (cylinderRenderer != null)
-        {
-            if (bondFormationDebugGuideMpb == null)
-                bondFormationDebugGuideMpb = new MaterialPropertyBlock();
-            bondFormationDebugGuideMpb.Clear();
-            bondFormationDebugGuideMpb.SetColor(BondShaderBaseColorId, c);
-            bondFormationDebugGuideMpb.SetColor(BondShaderColorId, c);
-            cylinderRenderer.SetPropertyBlock(bondFormationDebugGuideMpb);
-        }
-        if (lineRenderer != null)
-            lineRenderer.color = c;
     }
 
     /// <summary>Template preview pick: tint bond line/cylinder red (MPB on 3D mesh; sprite line color).</summary>
@@ -1386,71 +1215,5 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
 
         FinishBreakBondTail();
-    }
-
-    /// <summary>Legacy flag (bond-break σ-relax path removed). Some <see cref="AtomFunction"/> helpers still gate logs on this.</summary>
-    public static bool DebugLogBreakBondSigmaRelaxWhy = false;
-
-    /// <summary>Gates <see cref="AtomFunction.LogBondBreakTetraFrameworkSnapshot"/>; default off for quiet runs is not required for legacy triage here.</summary>
-    public static bool DebugLogBondBreakTetraFramework = true;
-
-    /// <summary>Gates bond-break motion source logs on <see cref="AtomFunction.RedistributeOrbitals"/> entry. Default on for triage; set false for quiet runs.</summary>
-    public static bool DebugLogBreakBondMotionSources = true;
-
-    /// <summary>σ post-Create formation: set redistribute target pose to current locals for occupied nucleus-parented lobes (still used by <see cref="ElectronOrbitalFunction"/> formation).</summary>
-    public static void NeutralizeOccupiedRedistTargetsToCurrentLocals(
-        AtomFunction nucleus,
-        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> list)
-    {
-        if (nucleus == null || list == null || list.Count == 0) return;
-        for (int i = 0; i < list.Count; i++)
-        {
-            var (o, _, _) = list[i];
-            if (o == null || o.ElectronCount <= 0) continue;
-            if (o.transform.parent != nucleus.transform) continue;
-            list[i] = (o, o.transform.localPosition, o.transform.localRotation);
-        }
-    }
-
-    /// <summary>
-    /// Bond-break lerp: freeze non-guide domains to current locals so joint motion does not fight the partner (σ or π cylinder break, same idea as “π break” for redistribution). Cleaved ex-bond <paramref name="guide"/> keeps Peek targets.
-    /// When <paramref name="nucleusWhoseEmptyNonbondOrbitalsKeepPeekTargets"/> is set, nucleus-parented 0e non-bond rows also keep Peek targets so an empty p can lerp to ⊥ VSEPR (π-cylinder break); otherwise they would stay frozen and appear motionless.
-    /// </summary>
-    public static void FreezeRedistTargetsExceptGuideToCurrentLocals(
-        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> list,
-        ElectronOrbitalFunction guide,
-        AtomFunction nucleusWhoseEmptyNonbondOrbitalsKeepPeekTargets = null)
-    {
-        if (list == null || list.Count == 0 || guide == null) return;
-        for (int i = 0; i < list.Count; i++)
-        {
-            var (o, _, _) = list[i];
-            // UnityEngine.Object: test o before o == guide so destroyed rows never touch transform.
-            if (o == null) continue;
-            if (o == guide) continue;
-            if (nucleusWhoseEmptyNonbondOrbitalsKeepPeekTargets != null
-                && o.Bond == null
-                && o.ElectronCount == 0
-                && o.transform.parent == nucleusWhoseEmptyNonbondOrbitalsKeepPeekTargets.transform)
-                continue;
-            list[i] = (o, o.transform.localPosition, o.transform.localRotation);
-        }
-    }
-
-    /// <summary>
-    /// True if any target row is bond-parented on a non-σ (<see cref="IsSigmaBondLine"/>) line. When the user breaks the σ bond,
-    /// Peek can still list the remaining π bond orbital; joint lerp then rotates σ+π+lobes together (~165° on CO₂-style centers). Used to apply the same freeze-except-guide as π cleavage.
-    /// </summary>
-    public static bool TargetsListContainsPiBondLineRow(
-        List<(ElectronOrbitalFunction orb, Vector3 pos, Quaternion rot)> list)
-    {
-        if (list == null || list.Count == 0) return false;
-        for (int i = 0; i < list.Count; i++)
-        {
-            var o = list[i].orb;
-            if (o == null) continue;
-            if (o.Bond is CovalentBond cb && !cb.IsSigmaBondLine()) return true;
-        }
-        return false;
     }
 }

@@ -212,60 +212,6 @@ public static class ElectronRedistributionOrchestrator
     }
 
     /// <summary>
-    /// Orbital-drag σ phase 1 (prebond, no <see cref="CovalentBond"/> yet): rigid world rotation of the non-guide
-    /// σ prebond unified shell about the non-guide nucleus so the forming lobe axis
-    /// (<see cref="SigmaLobeUnitDirectionFromAtom"/>(non-guide op, non-guide)) anti-aligns with the guide lobe axis
-    /// (negated guide head). No-op if already within ~0.02° or directions degenerate. Skips hydrogen non-guide.
-    /// </summary>
-    public static void RunSigmaFormation12PrebondNonGuideHybridOnly(
-        AtomFunction atomA,
-        AtomFunction atomB,
-        ElectronOrbitalFunction orbA,
-        ElectronOrbitalFunction orbB,
-        ElectronOrbitalFunction draggedOrbitalForGuideTieBreak)
-    {
-        if (atomA == null || atomB == null || orbA == null || orbB == null) return;
-        ElectronRedistributionGuide.ResolveGuideAtomForPair(
-            atomA, atomB, draggedOrbitalForGuideTieBreak, out var guide, out var nonGuide);
-        if (guide == null || nonGuide == null || ReferenceEquals(guide, nonGuide)) return;
-        if (nonGuide.AtomicNumber <= 1) return;
-
-        ElectronOrbitalFunction guideOp = guide == atomA ? orbA : orbB;
-        ElectronOrbitalFunction nonGuideOp = nonGuide == atomA ? orbA : orbB;
-        if (guideOp == null || nonGuideOp == null) return;
-
-        if (DryRunLogOnly) return;
-
-        Vector3 guideHead = SigmaLobeUnitDirectionFromAtom(guideOp, guide);
-        if (guideHead.sqrMagnitude < 1e-12f) return;
-        guideHead.Normalize();
-
-        Vector3 desiredNonGuideHead = -guideHead;
-        Vector3 currentNonGuideHead = SigmaLobeUnitDirectionFromAtom(nonGuideOp, nonGuide);
-        if (currentNonGuideHead.sqrMagnitude < 1e-12f) return;
-        currentNonGuideHead.Normalize();
-
-        const float tolDot = 1f - 1e-4f;
-        if (Vector3.Dot(currentNonGuideHead, desiredNonGuideHead) >= tolDot)
-            return;
-
-        Quaternion worldDelta = Quaternion.FromToRotation(currentNonGuideHead, desiredNonGuideHead);
-        nonGuide.ApplyRigidWorldRotationToNucleusParentedOrbitals(worldDelta, nonGuideOp);
-
-        if (DebugLogSigmaPrebondHeadAngles)
-        {
-            Vector3 after = SigmaLobeUnitDirectionFromAtom(nonGuideOp, nonGuide);
-            float angAfter = after.sqrMagnitude > 1e-12f
-                ? Vector3.Angle(after.normalized, desiredNonGuideHead)
-                : -1f;
-            Debug.Log(
-                "[sigma-prebond-head] RunSigmaFormation12PrebondNonGuideHybridOnly guideId=" + guide.GetInstanceID()
-                + " nonGuideId=" + nonGuide.GetInstanceID()
-                + " angNonGuideHeadVsDesiredAfterDeg=" + angAfter.ToString("F3", System.Globalization.CultureInfo.InvariantCulture));
-        }
-    }
-
-    /// <summary>
     /// Post-bond σ-12 hybrid on the <b>guide</b> only. Prefer <see cref="RunElectronRedistributionForBondEvent"/> with
     /// <see cref="CovalentBond.SkipNonGuideExecuteSigmaFormation12HybridPass"/> true (orbital-drag phase 3 / instant postbond).
     /// </summary>
