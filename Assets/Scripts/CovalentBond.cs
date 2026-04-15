@@ -240,10 +240,24 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>Returns the target world position and rotation for the bond orbital (post-Create formation animation).</summary>
     public (Vector3 worldPos, Quaternion worldRot) GetOrbitalTargetWorldState()
     {
+        if (atomA == null || atomB == null)
+            return GetOrbitalTargetWorldStateForLine(0, 1, orbitalRotationFlipped);
+        return GetOrbitalTargetWorldStateForLine(GetBondIndex(), atomA.GetBondsTo(atomB), orbitalRotationFlipped);
+    }
+
+    /// <summary>
+    /// Target pose for a bond line between these atoms: <paramref name="lineIndex"/> 0 = σ (centered), 1+ = π offsets per <see cref="GetLineOffset"/>.
+    /// Use <paramref name="applyOrbitalRotationFlip"/> instead of mutating <see cref="orbitalRotationFlipped"/> (e.g. π phase-1 prep on the σ bond).
+    /// </summary>
+    public (Vector3 worldPos, Quaternion worldRot) GetOrbitalTargetWorldStateForLine(
+        int lineIndex,
+        int bondCount,
+        bool applyOrbitalRotationFlip)
+    {
         Quaternion BaseSigmaOrbitalWorldRotation(bool applyFlip)
         {
             var r = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
-            if (applyFlip && orbitalRotationFlipped) r = r * Quaternion.Euler(0f, 0f, 180f);
+            if (applyFlip && applyOrbitalRotationFlip) r = r * Quaternion.Euler(0f, 0f, 180f);
             return r;
         }
 
@@ -259,7 +273,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (distance < 0.001f)
             return (center, orbitalRedistributionWorldDelta * BaseSigmaOrbitalWorldRotation(false));
         var perpendicular = PerpendicularToBondDirection(delta / distance);
-        float offset = GetLineOffset(GetBondIndex(), atomA.GetBondsTo(atomB));
+        float offset = GetLineOffset(lineIndex, bondCount);
         var worldPos = center + perpendicular * offset;
         var worldRot = orbitalRedistributionWorldDelta * BaseSigmaOrbitalWorldRotation(true);
         return (worldPos, worldRot);
@@ -506,7 +520,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         SyncSigmaOrbitalWorldPoseFromRedistribution(forceApplyPoseDuringBondToLineAnim: true);
     }
 
-    int GetBondIndex()
+    internal int GetBondIndex()
     {
         if (atomA == null || atomB == null) return 0;
         var bondsBetween = new List<CovalentBond>();
@@ -669,7 +683,11 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <summary>Animates the bond orbital transforming into a line over the given duration. Optionally fades out another orbital (e.g. target orbital) in parallel.</summary>
-    public IEnumerator AnimateOrbitalToLine(float duration, ElectronOrbitalFunction orbitalToFadeOut = null)
+    /// <param name="atomsForPerFrameBondLineUpdate">When non-null, refreshes σ/π bond cylinders each frame (π formation keeps existing σ line aligned).</param>
+    public IEnumerator AnimateOrbitalToLine(
+        float duration,
+        ElectronOrbitalFunction orbitalToFadeOut = null,
+        ICollection<AtomFunction> atomsForPerFrameBondLineUpdate = null)
     {
         orbitalVisible = true;
         orbitalToLineAnimProgress = 0f;
@@ -685,6 +703,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbitalToLineAnimProgress = s;
             if (orbitalToFadeOut != null)
                 orbitalToFadeOut.transform.localScale = Vector3.Lerp(fadeOutStartScale, Vector3.zero, s);
+            if (atomsForPerFrameBondLineUpdate != null && atomsForPerFrameBondLineUpdate.Count > 0)
+                AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(atomsForPerFrameBondLineUpdate);
             yield return null;
         }
 

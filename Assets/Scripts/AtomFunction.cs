@@ -2905,9 +2905,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             if (!breakGuideIsZeroEmpty)
                 return;
 
-            if (false && !placeEmptyAlongBondBreakRef)
-
-
             if (placeEmptyAlongBondBreakRef)
             {
                 return;
@@ -2929,9 +2926,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             }
             goto OrientEmptyFinishCarbSnap;
         }
-
-        if (false && !placeEmptyAlongBondBreakRef)
-
 
         var electronDirs = new List<Vector3>();
         foreach (var o in bondedOrbitals)

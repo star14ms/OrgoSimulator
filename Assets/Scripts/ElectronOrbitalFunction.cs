@@ -1159,6 +1159,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             ? SigmaFormationPhase2OrbitalToLineSecondsResolved
             : sigmaFormationPhase3PostbondGuideSeconds;
 
+    /// <summary>σ/π drag formation: orbital→line duration (phase 2b, or phase 3 when 2b ~0).</summary>
+    public float BondFormationOrbitalToLineDurationResolved => BondAnimOrbitalToLineDuration;
+
     /// <summary>σ bond from orbital drag: <see cref="SigmaBondFormation"/> runs phase 1 approach, bond animation, then post-bond guide lerp (independent of edit mode).</summary>
     bool FormCovalentBondSigmaStart(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital, Vector3 dropPosition, bool alreadyFlipped = false)
     {
@@ -1218,6 +1221,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
     bool FormCovalentBondPiStart(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital)
     {
+        var runner = SigmaBondFormation.EnsureRunnerInScene();
+        if (runner != null && runner.TryBeginOrbitalDragPiFormation(sourceAtom, targetAtom, this, targetOrbital, this))
+            return true;
         targetAtom.StartCoroutine(FormCovalentBondPiCoroutine(sourceAtom, targetAtom, targetOrbital));
         return true;
     }
@@ -1232,10 +1238,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         try
         {
         int ecnPiEvent = AtomFunction.AllocateMoleculeEcnEventId();
-        int piBeforeSource = sourceAtom.GetPiBondCount();
-        int piBeforeTarget = targetAtom.GetPiBondCount();
-        int sigmaBeforeSource = sourceAtom.GetDistinctSigmaNeighborCount();
-        int sigmaBeforeTarget = targetAtom.GetDistinctSigmaNeighborCount();
+        _ = sourceAtom.GetPiBondCount();
+        _ = targetAtom.GetPiBondCount();
+        _ = sourceAtom.GetDistinctSigmaNeighborCount();
+        _ = targetAtom.GetDistinctSigmaNeighborCount();
         int mergedElectrons = electronCount + targetOrbital.ElectronCount;
 
         // Snap source orbital to original position (like sigma bond) before animating to bond center
@@ -1256,12 +1262,17 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
 
-        yield return AnimateBondFormationOperationOrbitalsTowardBondCylinder(sourceAtom, targetAtom, this, targetOrbital, bond);
+        var molForBondLineUpdates = new HashSet<AtomFunction>();
+        foreach (var a in sourceAtom.GetConnectedMolecule()) if (a != null) molForBondLineUpdates.Add(a);
+        foreach (var a in targetAtom.GetConnectedMolecule()) if (a != null) molForBondLineUpdates.Add(a);
+
+        yield return AnimateBondFormationOperationOrbitalsTowardBondCylinder(
+            sourceAtom, targetAtom, this, targetOrbital, bond, -1f, molForBondLineUpdates);
 
         if (bond != null)
         {
             bond.animatingOrbitalToBondPosition = false;
-            yield return bond.AnimateOrbitalToLine(BondAnimOrbitalToLineDuration, this);
+            yield return bond.AnimateOrbitalToLine(BondFormationOrbitalToLineDurationResolved, this, molForBondLineUpdates);
             targetOrbital.ElectronCount = mergedElectrons; // Show merged electrons only after orbital-to-line
         }
         else
@@ -1281,7 +1292,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
     }
 
-    struct BondFormationCylinderPrepared
+    /// <summary>Prepared σ/π cylinder lerp: shared by timed coroutine and phase-1 parallel tracks.</summary>
+    public struct BondFormationCylinderPrepared
     {
         public Vector3 BondTargetPos;
         public Quaternion SourceTargetRot;
@@ -1291,19 +1303,37 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         public bool SkipCylinderLerp;
     }
 
+    public enum BondFormationCylinderFinalizeMode
+    {
+        /// <summary>Reparent to bond and <see cref="CovalentBond.SnapOrbitalToBondPosition"/> (post–π-bond Create).</summary>
+        AttachAndSnapToBond,
+        /// <summary>Set world pose only (π phase 1 pre-bond, σ still the only line between atoms).</summary>
+        ApplyWorldTargetsOnly,
+    }
+
     /// <summary>Computes bond-cylinder targets and whether both operation orbitals already match them (no timed lerp needed).</summary>
+    /// <param name="piPreBondSecondLineOnSigma">When true, <paramref name="bond"/> must be the σ line between the pair; targets use π line offset as if a second bond exists, without mutating σ’s <see cref="CovalentBond.orbitalRotationFlipped"/> during prep.</param>
     static bool TryPrepareBondFormationCylinderStep(
         AtomFunction sourceAtom,
         AtomFunction targetAtom,
         ElectronOrbitalFunction sourceOrbital,
         ElectronOrbitalFunction targetOrbital,
         CovalentBond bond,
+        bool piPreBondSecondLineOnSigma,
         out BondFormationCylinderPrepared prepared)
     {
         prepared = default;
         if (bond == null) return false;
 
-        var bt = bond.GetOrbitalTargetWorldState();
+        int lineIndex = piPreBondSecondLineOnSigma && bond.IsSigmaBondLine()
+            ? 1
+            : bond.GetBondIndex();
+        int bondCount = piPreBondSecondLineOnSigma && bond.IsSigmaBondLine()
+            ? Mathf.Max(2, bond.AtomA.GetBondsTo(bond.AtomB))
+            : bond.AtomA.GetBondsTo(bond.AtomB);
+
+        bool rotFlip = bond.orbitalRotationFlipped;
+        var bt = bond.GetOrbitalTargetWorldStateForLine(lineIndex, bondCount, rotFlip);
         Vector3 bondTargetPos = bt.Item1;
         Quaternion bondTargetRot = bt.Item2;
         (float sourceDiff, float targetDiff) = ComputePiBondAngleDiffs(sourceAtom, targetAtom, bondTargetPos, bondTargetRot, bond);
@@ -1323,12 +1353,14 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         Quaternion targetTargetRot;
         if (flipTarget)
         {
-            bond.orbitalRotationFlipped = true;
-            bt = bond.GetOrbitalTargetWorldState();
+            rotFlip = true;
+            bt = bond.GetOrbitalTargetWorldStateForLine(lineIndex, bondCount, rotFlip);
             bondTargetPos = bt.Item1;
             bondTargetRot = bt.Item2;
             sourceTargetRot = bondTargetRot * Quaternion.Euler(0f, 0f, 180f);
             targetTargetRot = bondTargetRot;
+            if (!piPreBondSecondLineOnSigma)
+                bond.orbitalRotationFlipped = true;
         }
         else
         {
@@ -1400,17 +1432,102 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         return true;
     }
 
+    /// <summary>π phase 1 (pre–π bond): cylinder targets on the σ line using second-line offset; does not flip σ’s stored flag during prep.</summary>
+    public static bool TryPreparePiPhase1CylinderFromSigmaBond(
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        ElectronOrbitalFunction sourceOrbital,
+        ElectronOrbitalFunction targetOrbital,
+        CovalentBond sigmaBondBetweenEndpoints,
+        out BondFormationCylinderPrepared prepared)
+    {
+        return TryPrepareBondFormationCylinderStep(
+            sourceAtom,
+            targetAtom,
+            sourceOrbital,
+            targetOrbital,
+            sigmaBondBetweenEndpoints,
+            piPreBondSecondLineOnSigma: true,
+            out prepared);
+    }
+
+    /// <summary>One smoothstep sample <paramref name="smoothS"/> in [0,1] (already smoothstepped) for parallel phase-1 tracks.</summary>
+    public static void ApplyBondFormationCylinderPoseForSmoothStep(
+        BondFormationCylinderPrepared prepared,
+        ElectronOrbitalFunction sourceOrbital,
+        ElectronOrbitalFunction targetOrbital,
+        float smoothS)
+    {
+        float s = Mathf.Clamp01(smoothS);
+        float rotT = prepared.SkipCylinderLerp ? 1f : s;
+        if (prepared.SkipCylinderLerp)
+            s = 1f;
+        if (sourceOrbital != null)
+        {
+            sourceOrbital.transform.position = Vector3.Lerp(prepared.SourceOrbStart.pos, prepared.BondTargetPos, s);
+            sourceOrbital.transform.rotation = Quaternion.Slerp(prepared.SourceOrbStart.rot, prepared.SourceTargetRot, rotT);
+        }
+        if (targetOrbital != null)
+        {
+            targetOrbital.transform.position = Vector3.Lerp(prepared.TargetOrbStart.pos, prepared.BondTargetPos, s);
+            targetOrbital.transform.rotation = Quaternion.Slerp(prepared.TargetOrbStart.rot, prepared.TargetTargetRot, rotT);
+        }
+    }
+
+    /// <summary>End state after cylinder lerp: full attach (phase 2) or world pose only (π phase 1).</summary>
+    public static void FinalizeBondFormationCylinderPose(
+        BondFormationCylinderPrepared prepared,
+        AtomFunction sourceAtom,
+        ElectronOrbitalFunction sourceOrbital,
+        ElectronOrbitalFunction targetOrbital,
+        CovalentBond bond,
+        BondFormationCylinderFinalizeMode mode,
+        ICollection<AtomFunction> atomsForPerFrameBondLineUpdate)
+    {
+        if (sourceOrbital != null)
+            sourceOrbital.transform.SetPositionAndRotation(prepared.BondTargetPos, prepared.SourceTargetRot);
+        if (targetOrbital != null)
+            targetOrbital.transform.SetPositionAndRotation(prepared.BondTargetPos, prepared.TargetTargetRot);
+
+        if (mode == BondFormationCylinderFinalizeMode.ApplyWorldTargetsOnly)
+        {
+            if (atomsForPerFrameBondLineUpdate != null && atomsForPerFrameBondLineUpdate.Count > 0)
+                AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(atomsForPerFrameBondLineUpdate);
+            return;
+        }
+
+        if (bond == null) return;
+
+        if (sourceOrbital != null && sourceAtom != null && sourceOrbital.transform.parent != sourceAtom.transform)
+            sourceOrbital.transform.SetParent(sourceAtom.transform, worldPositionStays: true);
+
+        if (targetOrbital != null)
+            targetOrbital.transform.SetParent(bond.transform, worldPositionStays: true);
+        bond.UpdateBondTransformToCurrentAtoms();
+        if (atomsForPerFrameBondLineUpdate != null && atomsForPerFrameBondLineUpdate.Count > 0)
+            AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(atomsForPerFrameBondLineUpdate);
+        if (sourceOrbital != null && !OrbitalAngleUtility.UseFull3DOrbitalGeometry)
+        {
+            var bt = bond.GetOrbitalTargetWorldState();
+            sourceOrbital.transform.position = bt.Item1;
+            sourceOrbital.transform.rotation = prepared.SourceTargetRot;
+        }
+        bond.SnapOrbitalToBondPosition();
+    }
+
     /// <summary>Bond-formation animation only: lerp the two orbitals in this gesture toward the shared bond cylinder pose. Electron redistribution is a separate system — no hybrid refresh or σ/π redistribution hooks here.</summary>
     /// <param name="durationSeconds">If negative, uses <see cref="SigmaFormationPhase2CylinderSecondsResolved"/>. If zero or positive, uses that many seconds (σ drag may pass 0).</param>
+    /// <param name="atomsForPerFrameBondLineUpdate">When non-null, updates all incident bond cylinders (σ + π) each frame — use during π formation so existing σ lines stay aligned.</param>
     public IEnumerator AnimateBondFormationOperationOrbitalsTowardBondCylinder(AtomFunction sourceAtom, AtomFunction targetAtom,
-        ElectronOrbitalFunction sourceOrbital, ElectronOrbitalFunction targetOrbital, CovalentBond bond, float durationSeconds = -1f)
+        ElectronOrbitalFunction sourceOrbital, ElectronOrbitalFunction targetOrbital, CovalentBond bond, float durationSeconds = -1f,
+        ICollection<AtomFunction> atomsForPerFrameBondLineUpdate = null)
     {
         if (bond == null) yield break;
 
         float dur = durationSeconds < 0f ? SigmaFormationPhase2CylinderSecondsResolved : durationSeconds;
 
         if (!TryPrepareBondFormationCylinderStep(
-                sourceAtom, targetAtom, sourceOrbital, targetOrbital, bond, out var prepared))
+                sourceAtom, targetAtom, sourceOrbital, targetOrbital, bond, piPreBondSecondLineOnSigma: false, out var prepared))
             yield break;
 
         if (prepared.SkipCylinderLerp)
@@ -1420,41 +1537,23 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         {
             for (float t = 0f; t < dur; t += Time.deltaTime)
             {
-                float s = Mathf.Clamp01(t / dur);
-                s = s * s * (3f - 2f * s);
-                float rotT = s;
-                if (sourceOrbital != null)
-                {
-                    sourceOrbital.transform.position = Vector3.Lerp(prepared.SourceOrbStart.pos, prepared.BondTargetPos, s);
-                    sourceOrbital.transform.rotation = Quaternion.Slerp(prepared.SourceOrbStart.rot, prepared.SourceTargetRot, rotT);
-                }
-                if (targetOrbital != null)
-                {
-                    targetOrbital.transform.position = Vector3.Lerp(prepared.TargetOrbStart.pos, prepared.BondTargetPos, s);
-                    targetOrbital.transform.rotation = Quaternion.Slerp(prepared.TargetOrbStart.rot, prepared.TargetTargetRot, rotT);
-                }
+                float u = Mathf.Clamp01(t / dur);
+                float s = u * u * (3f - 2f * u);
+                ApplyBondFormationCylinderPoseForSmoothStep(prepared, sourceOrbital, targetOrbital, s);
+                if (atomsForPerFrameBondLineUpdate != null && atomsForPerFrameBondLineUpdate.Count > 0)
+                    AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(atomsForPerFrameBondLineUpdate);
                 yield return null;
             }
         }
 
-        if (sourceOrbital != null)
-            sourceOrbital.transform.SetPositionAndRotation(prepared.BondTargetPos, prepared.SourceTargetRot);
-        if (targetOrbital != null)
-            targetOrbital.transform.SetPositionAndRotation(prepared.BondTargetPos, prepared.TargetTargetRot);
-
-        if (sourceOrbital != null && sourceOrbital.transform.parent != sourceAtom.transform)
-            sourceOrbital.transform.SetParent(sourceAtom.transform, worldPositionStays: true);
-
-        if (targetOrbital != null)
-            targetOrbital.transform.SetParent(bond.transform, worldPositionStays: true);
-        bond.UpdateBondTransformToCurrentAtoms();
-        if (sourceOrbital != null && !OrbitalAngleUtility.UseFull3DOrbitalGeometry)
-        {
-            var bt = bond.GetOrbitalTargetWorldState();
-            sourceOrbital.transform.position = bt.Item1;
-            sourceOrbital.transform.rotation = prepared.SourceTargetRot;
-        }
-        bond.SnapOrbitalToBondPosition();
+        FinalizeBondFormationCylinderPose(
+            prepared,
+            sourceAtom,
+            sourceOrbital,
+            targetOrbital,
+            bond,
+            BondFormationCylinderFinalizeMode.AttachAndSnapToBond,
+            atomsForPerFrameBondLineUpdate);
     }
 
     static (float sourceDiff, float targetDiff) ComputePiBondAngleDiffs(AtomFunction sourceAtom, AtomFunction targetAtom, Vector3 bondPos, Quaternion bondRot, CovalentBond bond)

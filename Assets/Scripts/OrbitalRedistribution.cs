@@ -105,13 +105,44 @@ public static class OrbitalRedistribution
         {
             if (atom == null) return;
             float s = Mathf.Clamp01(smoothS);
-            for (int i = 0; i < assignments.Count; i++)
+            int n = assignments.Count;
+            // Rigid rotation about the nucleus that maps the σ internuclear axis from its start pose to the
+            // slerp target. π orbitals on the same partner pair use this so π lobes + cylinders stay aligned with σ.
+            var sigmaRigidByPartnerId = new Dictionary<int, Quaternion>(n);
+            for (int i = 0; i < n; i++)
+            {
+                Assignment a = assignments[i];
+                if (a.Group?.Orbital == null) continue;
+                if (a.Bond == null || !a.IsBondGroup || !a.Bond.IsSigmaBondLine()) continue;
+                Vector3 targetWorld = atom.transform.TransformDirection(a.TargetDirLocal).normalized;
+                Vector3 dirSigma = Vector3.Slerp(a.StartDirWorld, targetWorld, s).normalized;
+                if (dirSigma.sqrMagnitude < 1e-12f) dirSigma = targetWorld;
+                Vector3 startAxis = a.StartNeighborDirWorld.sqrMagnitude > 1e-12f
+                    ? a.StartNeighborDirWorld.normalized
+                    : a.StartDirWorld.normalized;
+                AtomFunction partner = a.Bond.AtomA == atom ? a.Bond.AtomB : a.Bond.AtomA;
+                if (partner != null)
+                    sigmaRigidByPartnerId[partner.GetInstanceID()] = Quaternion.FromToRotation(startAxis, dirSigma);
+            }
+
+            for (int i = 0; i < n; i++)
             {
                 Assignment a = assignments[i];
                 if (a.Group?.Orbital == null) continue;
                 Vector3 targetWorld = atom.transform.TransformDirection(a.TargetDirLocal).normalized;
                 Vector3 dirWorld = Vector3.Slerp(a.StartDirWorld, targetWorld, s).normalized;
                 if (dirWorld.sqrMagnitude < 1e-12f) dirWorld = targetWorld;
+
+                if (a.Bond != null && a.IsBondGroup && !a.Bond.IsSigmaBondLine())
+                {
+                    AtomFunction partner = a.Bond.AtomA == atom ? a.Bond.AtomB : a.Bond.AtomA;
+                    if (partner != null && sigmaRigidByPartnerId.TryGetValue(partner.GetInstanceID(), out Quaternion qRigid))
+                    {
+                        Vector3 startRay = a.StartDirWorld.sqrMagnitude > 1e-12f ? a.StartDirWorld.normalized : Vector3.right;
+                        dirWorld = (qRigid * startRay).normalized;
+                        if (dirWorld.sqrMagnitude < 1e-12f) dirWorld = targetWorld;
+                    }
+                }
 
                 ElectronOrbitalFunction orb = a.Group.Orbital;
                 if (orb.Bond == null && orb.transform.parent == atom.transform)
@@ -143,8 +174,10 @@ public static class OrbitalRedistribution
                             Vector3 rel0 = row.worldPos0 - a.StartPivotWorld;
                             row.atom.transform.position = atom.transform.position + qFrag * rel0;
                         }
-                        a.Bond.UpdateBondTransformToCurrentAtoms();
                     }
+
+                    if (a.IsBondGroup && a.Bond != null)
+                        a.Bond.UpdateBondTransformToCurrentAtoms();
                 }
             }
 
@@ -179,7 +212,7 @@ public static class OrbitalRedistribution
         {
             if (cb == null) continue;
             var orb = cb.Orbital;
-            if (orb == null) continue;
+            if (orb == null || !cb.IsSigmaBondLine()) continue;
             Vector3 dir = orb.transform.position - atom.transform.position;
             float radius = dir.magnitude;
             var row = new GroupEntry
@@ -248,12 +281,12 @@ public static class OrbitalRedistribution
             : (guideGroup != null && guideGroup.CurrentDirWorld.sqrMagnitude > 1e-12f
                 ? atom.transform.InverseTransformDirection(guideGroup.CurrentDirWorld).normalized
                 : Vector3.right);
-        Quaternion qAlign = finalDirectionsTemplate.Count > 0
-            ? Quaternion.FromToRotation(finalDirectionsTemplate[0], guideDirLocal)
-            : Quaternion.identity;
-        var alignedTemplate = new List<Vector3>(finalDirectionsTemplate.Count);
-        for (int i = 0; i < finalDirectionsTemplate.Count; i++)
-            alignedTemplate.Add((qAlign * finalDirectionsTemplate[i]).normalized);
+        List<Vector3> alignedTemplate = AlignFinalDirectionsTemplateToGuide(
+            finalDirectionsTemplate,
+            guideDirLocal,
+            atom,
+            guideAtom,
+            nVseprGroup);
 
         int[] bestPerm = FindBestCombinationVSEPRGroupToFinalDirection(groupsForMatching, alignedTemplate, atom, guideGroup);
         var finalDirectionsEmptyOrbital = BuildFinalDirectionsEmptyOrbitalTemplate(alignedTemplate);
@@ -264,6 +297,7 @@ public static class OrbitalRedistribution
             finalDirectionsEmptyOrbital,
             bestPerm,
             atom,
+            atomOrbitalOp,
             guideOrbitalPredetermined,
             atomMoveAnimation,
             visitedAtoms,
@@ -344,6 +378,7 @@ public static class OrbitalRedistribution
                 finalDirectionsEmptyOrbital: null,
                 identityPerm,
                 atom,
+                atomOrbitalOp,
                 guideOrbitalPredetermined,
                 atomMoveAnimation,
                 visitedAtoms,
@@ -372,6 +407,7 @@ public static class OrbitalRedistribution
         List<Vector3> finalDirectionsEmptyOrbital,
         int[] perm,
         AtomFunction atom,
+        ElectronOrbitalFunction atomOrbitalOp,
         ElectronOrbitalFunction guideOrbitalPredetermined,
         System.Func<float, Vector3> atomMoveAnimation,
         HashSet<AtomFunction> visitedAtoms,
@@ -386,7 +422,9 @@ public static class OrbitalRedistribution
             int ti = perm[i];
             if (ti < 0 || ti >= alignedTemplate.Count) continue;
             GroupEntry g = groups[i];
-            if (g == null || g.Orbital == null || g.Orbital == guideOrbitalPredetermined) continue;
+            if (g == null || g.Orbital == null) continue;
+            if (g.Orbital == guideOrbitalPredetermined) continue;
+            // π line rows: same atom can be planned twice (chained σ wave + later pass); skip π here so orbitals/fragments are not driven twice.
             if (g.Kind == "bond" && g.Bond != null)
             {
                 AtomFunction adjacentAtom = g.Bond.AtomA == atom ? g.Bond.AtomB : g.Bond.AtomA;
@@ -403,17 +441,21 @@ public static class OrbitalRedistribution
                         fragStart.Add((fa, fa.transform.position));
                     }
                     startNbrDir = (adjacentAtom.transform.position - atom.transform.position).normalized;
-                    Vector3 childGuideDirWorld = atom.transform.TransformDirection((-alignedTemplate[ti]).normalized);
-                    Vector3 childGuideDirLocal = adjacentAtom.transform.InverseTransformDirection(childGuideDirWorld).normalized;
-                    var childAnim = BuildOrbitalRedistribution(
-                        adjacentAtom,
-                        atom,
-                        guideOrbitalPredetermined: g.Orbital,
-                        finalDirectionForGuideOrbital: childGuideDirLocal,
-                        atomMoveAnimation: atomMoveAnimation,
-                        visitedAtoms: visitedAtoms,
-                        isBondingEvent: isBondingEvent);
-                    anim.AddChild(childAnim);
+                    bool isOpPath = IsOperationPathGroup(atom, g, atomOrbitalOp);
+                    if (!isOpPath)
+                    {
+                        Vector3 childGuideDirWorld = atom.transform.TransformDirection((-alignedTemplate[ti]).normalized);
+                        Vector3 childGuideDirLocal = adjacentAtom.transform.InverseTransformDirection(childGuideDirWorld).normalized;
+                        var childAnim = BuildOrbitalRedistribution(
+                            adjacentAtom,
+                            atom,
+                            guideOrbitalPredetermined: g.Orbital,
+                            finalDirectionForGuideOrbital: childGuideDirLocal,
+                            atomMoveAnimation: atomMoveAnimation,
+                            visitedAtoms: visitedAtoms,
+                            isBondingEvent: isBondingEvent);
+                        anim.AddChild(childAnim);
+                    }
                 }
 
                 anim.AddOrbitalTarget(
@@ -443,6 +485,18 @@ public static class OrbitalRedistribution
             finalDirectionsEmptyOrbital);
 
         return anim;
+    }
+
+    static bool IsOperationPathGroup(AtomFunction atom, GroupEntry group, ElectronOrbitalFunction atomOrbitalOp)
+    {
+        if (group == null || atomOrbitalOp == null) return false;
+        if (ReferenceEquals(group.Orbital, atomOrbitalOp)) return true;
+        if (atom == null || group.Bond == null || atomOrbitalOp.Bond == null) return false;
+
+        AtomFunction groupOther = group.Bond.AtomA == atom ? group.Bond.AtomB : group.Bond.AtomA;
+        AtomFunction opOther = atomOrbitalOp.Bond.AtomA == atom ? atomOrbitalOp.Bond.AtomB : atomOrbitalOp.Bond.AtomA;
+        if (groupOther == null || opOther == null) return false;
+        return groupOther == opOther;
     }
 
     static void AppendEmptyOrbitalAssignments(
@@ -732,6 +786,18 @@ public static class OrbitalRedistribution
         if (atom == null || atomOrbitalOp == null || emptyOrbitals == null || nonbondingOccupied == null)
             return;
 
+        if (isBondingEvent)
+        {
+            for (int i = nonbondingOccupied.Count - 1; i >= 0; i--)
+            {
+                if (nonbondingOccupied[i] != null && ReferenceEquals(nonbondingOccupied[i].Orbital, atomOrbitalOp))
+                {
+                    nonbondingOccupied.RemoveAt(i);
+                    break;
+                }
+            }
+        }
+
         int opEmptyIdx = -1;
         for (int i = 0; i < emptyOrbitals.Count; i++)
         {
@@ -782,6 +848,150 @@ public static class OrbitalRedistribution
             total += Mathf.Max(1f, a.AtomicNumber);
         }
         return Mathf.Max(1f, total);
+    }
+
+    /// <summary>
+    /// σ bond lines + occupied nonbonding domains (same basis as <see cref="BuildOrbitalRedistribution"/> group lists,
+    /// without event-specific empty-op reclassification). Used for tetrahedral–tetrahedral stagger checks.
+    /// </summary>
+    static int CountVseprGroupsForAtom(AtomFunction a)
+    {
+        if (a == null) return 0;
+        int bonds = 0;
+        foreach (var cb in a.CovalentBonds)
+        {
+            if (cb == null || cb.Orbital == null || !cb.IsSigmaBondLine()) continue;
+            bonds++;
+        }
+        int nonbondingOccupied = 0;
+        foreach (var orb in a.BondedOrbitals)
+        {
+            if (orb == null || orb.Bond != null || orb.transform.parent != a.transform) continue;
+            if (orb.ElectronCount > 0) nonbondingOccupied++;
+        }
+        return bonds + nonbondingOccupied;
+    }
+
+    static bool HasPiBondBetweenAtoms(AtomFunction a, AtomFunction b)
+    {
+        if (a == null || b == null) return false;
+        foreach (var cb in a.CovalentBonds)
+        {
+            if (cb == null || cb.IsSigmaBondLine()) continue;
+            AtomFunction other = cb.AtomA == a ? cb.AtomB : cb.AtomA;
+            if (other == b) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Maps canonical template vertex 0 onto <paramref name="guideDirLocal"/>, then when both centers are tetrahedral,
+    /// rotates around that axis so the template is staggered (60°) relative to the guide atom’s real substituent clock.
+    /// </summary>
+    static List<Vector3> AlignFinalDirectionsTemplateToGuide(
+        List<Vector3> finalDirectionsTemplate,
+        Vector3 guideDirLocal,
+        AtomFunction nonGuideAtom,
+        AtomFunction guideAtom,
+        int nVseprGroup)
+    {
+        var aligned = new List<Vector3>();
+        if (finalDirectionsTemplate == null || finalDirectionsTemplate.Count == 0)
+            return aligned;
+
+        Vector3 axisLocal = guideDirLocal.sqrMagnitude > 1e-12f ? guideDirLocal.normalized : Vector3.right;
+        Quaternion qAlign = Quaternion.FromToRotation(finalDirectionsTemplate[0], axisLocal);
+
+        Quaternion qTotal = qAlign;
+        if (nVseprGroup == 4
+            && guideAtom != null
+            && CountVseprGroupsForAtom(guideAtom) == 4
+            && finalDirectionsTemplate.Count >= 2
+            && TryGetGuideTetrahedralStaggerReferenceInNonGuideLocal(
+                nonGuideAtom, guideAtom, axisLocal, out Vector3 refInPlaneLocal))
+        {
+            Vector3 v1 = (qAlign * finalDirectionsTemplate[1]).normalized;
+            Vector3 aLocal = Vector3.ProjectOnPlane(v1, axisLocal);
+            if (aLocal.sqrMagnitude > 1e-10f && refInPlaneLocal.sqrMagnitude > 1e-10f)
+            {
+                aLocal.Normalize();
+                refInPlaneLocal.Normalize();
+                float eclipseToRefDeg = Vector3.SignedAngle(aLocal, refInPlaneLocal, axisLocal);
+                const float staggerDihedralDegrees = 60f;
+                float twistDeg = eclipseToRefDeg + staggerDihedralDegrees;
+                Quaternion qTwist = Quaternion.AngleAxis(twistDeg, axisLocal);
+                qTotal = qTwist * qAlign;
+            }
+        }
+        else if (nVseprGroup == 3
+            && guideAtom != null
+            && CountVseprGroupsForAtom(guideAtom) == 3
+            && HasPiBondBetweenAtoms(nonGuideAtom, guideAtom)
+            && finalDirectionsTemplate.Count >= 2
+            && TryGetGuideTetrahedralStaggerReferenceInNonGuideLocal(
+                nonGuideAtom, guideAtom, axisLocal, out Vector3 trigonalRefInPlaneLocal))
+        {
+            Vector3 v1 = (qAlign * finalDirectionsTemplate[1]).normalized;
+            Vector3 aLocal = Vector3.ProjectOnPlane(v1, axisLocal);
+            if (aLocal.sqrMagnitude > 1e-10f && trigonalRefInPlaneLocal.sqrMagnitude > 1e-10f)
+            {
+                aLocal.Normalize();
+                trigonalRefInPlaneLocal.Normalize();
+                float eclipseToRefDeg = Vector3.SignedAngle(aLocal, trigonalRefInPlaneLocal, axisLocal);
+                Quaternion qTwist = Quaternion.AngleAxis(eclipseToRefDeg, axisLocal);
+                qTotal = qTwist * qAlign;
+            }
+        }
+
+        for (int i = 0; i < finalDirectionsTemplate.Count; i++)
+            aligned.Add((qTotal * finalDirectionsTemplate[i]).normalized);
+        return aligned;
+    }
+
+    /// <summary>
+    /// One substituent direction on the guide atom, projected into the plane perpendicular to the non-guide→guide axis,
+    /// expressed in non-guide local space — for aligning stagger vs the guide’s actual conformation.
+    /// </summary>
+    static bool TryGetGuideTetrahedralStaggerReferenceInNonGuideLocal(
+        AtomFunction nonGuideAtom,
+        AtomFunction guideAtom,
+        Vector3 axisLocalNonGuideTowardGuide,
+        out Vector3 refInPlaneLocal)
+    {
+        refInPlaneLocal = default;
+        if (nonGuideAtom == null || guideAtom == null) return false;
+        Vector3 axisWorld = nonGuideAtom.transform.TransformDirection(axisLocalNonGuideTowardGuide).normalized;
+        if (axisWorld.sqrMagnitude < 1e-12f) return false;
+
+        Vector3 towardNonGuideWorld = (nonGuideAtom.transform.position - guideAtom.transform.position).normalized;
+        if (towardNonGuideWorld.sqrMagnitude < 1e-12f) return false;
+
+        const float sigmaAxisMaxDeg = 18f;
+
+        foreach (var cb in guideAtom.CovalentBonds)
+        {
+            if (cb == null || cb.Orbital == null || !cb.IsSigmaBondLine()) continue;
+            Vector3 dw = (cb.Orbital.transform.position - guideAtom.transform.position).normalized;
+            if (Vector3.Angle(dw, towardNonGuideWorld) < sigmaAxisMaxDeg)
+                continue;
+            Vector3 pw = Vector3.ProjectOnPlane(dw, axisWorld);
+            if (pw.sqrMagnitude < 1e-8f) continue;
+            refInPlaneLocal = nonGuideAtom.transform.InverseTransformDirection(pw.normalized).normalized;
+            return true;
+        }
+
+        foreach (var orb in guideAtom.BondedOrbitals)
+        {
+            if (orb == null || orb.Bond != null || orb.transform.parent != guideAtom.transform) continue;
+            if (orb.ElectronCount <= 0) continue;
+            Vector3 dw = (orb.transform.position - guideAtom.transform.position).normalized;
+            Vector3 pw = Vector3.ProjectOnPlane(dw, axisWorld);
+            if (pw.sqrMagnitude < 1e-8f) continue;
+            refInPlaneLocal = nonGuideAtom.transform.InverseTransformDirection(pw.normalized).normalized;
+            return true;
+        }
+
+        return false;
     }
 
     static List<Vector3> BuildFinalDirectionsTemplate(int nVseprGroup)

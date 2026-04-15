@@ -1,7 +1,3 @@
-During step 1 in sigma bond formation, orbital groups not in op rotate wrongly, depending on the non-guide atom's relative position (or non-guide atom's orbital in op's relative position) from the guide atom (or guide orbital's orbital group in op). I can produce two cases: large deviation from the correct conformation with small/large distances between their positions. 
-The error you solved in step 3 happening in step 1, is that the atoms in opposite side of the bonding group, their orbital groups don't rotate together to keep the correct conformation (chain redistribution), with rotating bonding group. If you see the github commit history, you can find how I solved in step 3. Solve it in step 1 with that reference.
-
-When you decide the guide orbital group, and sum of atomic mass is same, prioritize the one that was in op
 When bond breaking failed by dragging to atom which is less electronnegative, charge label highlight is not shown, if label is disabled. So make it visible while highlighting. Also highlight the charge label of opposite atom more electronegative with green color.
 
 Consider speical cases for electron redisribution: Cyclic molecules, when bonding formed, if you detect it's cyclic, you should rearrange the atoms except the two atoms in op, to form regular polygons, in that case the rest orbital groups of atoms not involed in cycle should under electron redisribution with special rule, heading opposite direction from center of the ring.
