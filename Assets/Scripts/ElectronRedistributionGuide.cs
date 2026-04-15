@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Guide atom (whole-molecule mass) and VSEPR domain helpers for electron redistribution.
+/// Guide atom resolution (whole-molecule mass for separate fragments; substituent mass across the pair edge when bonded in the same molecule) and VSEPR domain helpers for electron redistribution.
 /// See instruction/electron-redistribution-orbital-drag-events.md.
 /// </summary>
 public static class ElectronRedistributionGuide
@@ -89,7 +89,11 @@ public static class ElectronRedistributionGuide
         return sum;
     }
 
-    /// <summary>Heavier whole-molecule side is guide; tie: dragged orbital’s atom is non-guide.</summary>
+    /// <summary>
+    /// Heavier side is guide. If <paramref name="atomA"/> and <paramref name="atomB"/> are in the same connected molecule and share at least one bond,
+    /// compare <see cref="SumSubstituentMassThroughSigmaEdge"/> across that edge (e.g. carbonyl C vs O: −CO vs −O). Otherwise compare whole-molecule mass.
+    /// Tie: dragged orbital’s parent atom is non-guide.
+    /// </summary>
     public static void ResolveGuideAtomForPair(
         AtomFunction atomA,
         AtomFunction atomB,
@@ -101,8 +105,21 @@ public static class ElectronRedistributionGuide
         nonGuideAtom = atomB;
         if (atomA == null || atomB == null)
             return;
-        float massA = SumAtomicMassInConnectedMolecule(atomA);
-        float massB = SumAtomicMassInConnectedMolecule(atomB);
+        var molA = atomA.GetConnectedMolecule();
+        bool sameMolecule = molA.Contains(atomB);
+        int bondsBetweenPair = atomA.GetBondsTo(atomB);
+        float massA;
+        float massB;
+        if (sameMolecule && bondsBetweenPair > 0)
+        {
+            massA = SumSubstituentMassThroughSigmaEdge(atomA, atomB);
+            massB = SumSubstituentMassThroughSigmaEdge(atomB, atomA);
+        }
+        else
+        {
+            massA = SumAtomicMassInConnectedMolecule(atomA);
+            massB = SumAtomicMassInConnectedMolecule(atomB);
+        }
         string resolveBranch;
         AtomFunction draggedParentAtom = draggedOrbital != null
             ? (draggedOrbital.transform.parent != null

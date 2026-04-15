@@ -7,6 +7,7 @@ using UnityEngine;
 /// </summary>
 public static class OrbitalRedistribution
 {
+
     /// <summary>
     /// Simple entry: build redistribution for <paramref name="nonGuideAtom"/> using <paramref name="guideAtom"/> as guide.
     /// </summary>
@@ -236,7 +237,7 @@ public static class OrbitalRedistribution
             {
                 Kind = "nonbond",
                 Orbital = orb,
-                MassWeight = Mathf.Max(1f, atom.AtomicNumber),
+                MassWeight = Mathf.Max(1e-3f, ElectronRedistributionGuide.GetStandardAtomicWeight(atom.AtomicNumber)),
                 CurrentDirWorld = (orb.transform.position - atom.transform.position).normalized,
                 Radius = (orb.transform.position - atom.transform.position).magnitude
             };
@@ -772,6 +773,38 @@ public static class OrbitalRedistribution
         Visit(bondingGroups);
         Visit(nonbondingOccupied);
         Visit(emptyOrbitals);
+
+        bool IsSameBondAxisAsOp(GroupEntry row)
+        {
+            if (row == null || atomOrbitalOp == null) return false;
+            if (ReferenceEquals(row.Orbital, atomOrbitalOp)) return true;
+            if (row.Bond == null || atomOrbitalOp.Bond == null) return false;
+            AtomFunction rA = row.Bond.AtomA;
+            AtomFunction rB = row.Bond.AtomB;
+            AtomFunction oA = atomOrbitalOp.Bond.AtomA;
+            AtomFunction oB = atomOrbitalOp.Bond.AtomB;
+            return (rA == oA && rB == oB) || (rA == oB && rB == oA);
+        }
+
+        float opPathBestMass = float.NegativeInfinity;
+        GroupEntry opPathBest = null;
+        void VisitOpPath(List<GroupEntry> rows)
+        {
+            for (int i = 0; i < rows.Count; i++)
+            {
+                GroupEntry row = rows[i];
+                if (row == null || !IsSameBondAxisAsOp(row)) continue;
+                if (opPathBest == null || row.MassWeight > opPathBestMass)
+                {
+                    opPathBest = row;
+                    opPathBestMass = row.MassWeight;
+                }
+            }
+        }
+
+        VisitOpPath(bondingGroups);
+        VisitOpPath(nonbondingOccupied);
+        VisitOpPath(emptyOrbitals);
         return best;
     }
 
@@ -808,22 +841,28 @@ public static class OrbitalRedistribution
         if (opEmptyIdx < 0)
             return;
 
+        bool isPiBondFormationEvent = isBondingEvent && guideAtom != null && atom.GetBondsTo(guideAtom) > 0;
+        bool addOpEmptyAsOccupiedForBonding = isBondingEvent && !isPiBondFormationEvent;
+
         GroupEntry moved = emptyOrbitals[opEmptyIdx];
-        moved.Kind = isBondingEvent
+        moved.Kind = addOpEmptyAsOccupiedForBonding
             ? "nonbond-op-empty-counted-bonding"
-            : "nonbond-op-empty-counted-breaking";
-        moved.MassWeight = isBondingEvent
+            : "nonbond-op-empty-preserved";
+        moved.MassWeight = addOpEmptyAsOccupiedForBonding
             ? ComputeAtomComponentMass(guideAtom)
-            : Mathf.Max(1f, atom.AtomicNumber);
+            : Mathf.Max(1e-3f, ElectronRedistributionGuide.GetStandardAtomicWeight(atom.AtomicNumber));
         if (isBondingEvent)
         {
-            nonbondingOccupied.Add(moved);
+            if (addOpEmptyAsOccupiedForBonding)
+                nonbondingOccupied.Add(moved);
             emptyOrbitals.RemoveAt(opEmptyIdx);
         }
         else
         {
-            // Breaking event: keep released empty in emptyOrbitals so empty-target assignment can rotate it.
-            moved.Kind = "empty-op-released-breaking";
+            // π bonding and breaking: keep OP empty in emptyOrbitals so empty-target assignment can rotate it.
+            moved.Kind = isBondingEvent
+                ? "empty-op-preserved-pi-bonding"
+                : "empty-op-released-breaking";
         }
     }
 
@@ -832,7 +871,9 @@ public static class OrbitalRedistribution
         if (center == null || bond == null) return 1f;
         var other = bond.AtomA == center ? bond.AtomB : bond.AtomA;
         if (other == null) return 1f;
-        return ComputeAtomComponentMass(other);
+        // Same substituent fragment and standard atomic weights as <see cref="ElectronRedistributionGuide.SumSubstituentMassThroughSigmaEdge"/>.
+        float m = ElectronRedistributionGuide.SumSubstituentMassThroughSigmaEdge(center, other);
+        return Mathf.Max(1e-3f, m);
     }
 
     static float ComputeAtomComponentMass(AtomFunction start)
@@ -840,14 +881,14 @@ public static class OrbitalRedistribution
         if (start == null) return 1f;
         var component = start.GetConnectedMolecule();
         if (component == null || component.Count == 0)
-            return Mathf.Max(1f, start.AtomicNumber);
+            return Mathf.Max(1e-3f, ElectronRedistributionGuide.GetStandardAtomicWeight(start.AtomicNumber));
         float total = 0f;
         foreach (var a in component)
         {
             if (a == null) continue;
-            total += Mathf.Max(1f, a.AtomicNumber);
+            total += ElectronRedistributionGuide.GetStandardAtomicWeight(a.AtomicNumber);
         }
-        return Mathf.Max(1f, total);
+        return Mathf.Max(1e-3f, total);
     }
 
     /// <summary>

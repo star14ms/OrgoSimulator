@@ -132,13 +132,13 @@ public class SigmaBondFormation : MonoBehaviour
     }
 
     /// <summary>
-    /// Orbital-drag σ <b>phase 1</b> (pre-bond): builds parallel tracks (fragment translation + orbital redistribution placeholder) and runs them on one timeline.
+    /// Orbital-drag σ <b>phase 1</b> (pre-bond): builds parallel tracks (fragment translation + orbital redistribution) and runs them on one timeline.
     /// </summary>
     /// <param name="guide">Guide atom from <see cref="ElectronRedistributionGuide.ResolveGuideAtomForPair"/>.</param>
     /// <param name="nonGuide">Non-guide (approaching) atom.</param>
     /// <param name="guideOp">Guide atom’s σ operation orbital.</param>
     /// <param name="nonGuideOp">Non-guide atom’s σ operation orbital.</param>
-    IEnumerator CoOrbitalDragSigmaPhase1PrebondPlaceholder(
+    IEnumerator CoOrbitalDragSigmaPhase1Prebond(
         AtomFunction guide,
         AtomFunction nonGuide,
         ElectronOrbitalFunction guideOp,
@@ -188,7 +188,7 @@ public class SigmaBondFormation : MonoBehaviour
         }
     }
 
-    /// <summary>Assembles phase-1 parallel lanes: atom fragment approach + non-guide orbital redistribution (placeholder).</summary>
+    /// <summary>Assembles phase-1 parallel lanes: atom fragment approach + non-guide orbital redistribution.</summary>
     static List<Phase1ParallelTrack> BuildPhase1ParallelAnimationList(
         AtomFunction guide,
         AtomFunction nonGuide,
@@ -262,6 +262,30 @@ public class SigmaBondFormation : MonoBehaviour
             nonGuideOp,
             guideOrbitalPredetermined: null,
             finalDirectionForGuideOrbital,
+            isBondingEvent: true);
+        return new Phase1ParallelTrack
+        {
+            ApplySmoothStep = s => animation?.Apply(s),
+            FinalizeAfterTimeline = () => { }
+        };
+    }
+
+    /// <summary>
+    /// π phase 1: same redistribution as σ phase 1, but <see cref="OrbitalRedistribution.BuildOrbitalRedistribution"/> guide axis uses
+    /// pivot nucleus → σ bond partner (guide atom), i.e. the internuclear leg the OP π bond forms across, in <paramref name="nonGuideAtom"/> local.
+    /// </summary>
+    static Phase1ParallelTrack BuildPhase1OrbitalRedistributeForPiFormationPhase1(
+        AtomFunction guideAtom,
+        AtomFunction nonGuideAtom,
+        ElectronOrbitalFunction guideOp,
+        ElectronOrbitalFunction nonGuideOp)
+    {
+        var animation = OrbitalRedistribution.BuildOrbitalRedistribution(
+            nonGuideAtom,
+            guideAtom,
+            guideOp,
+            nonGuideOp,
+            guideOrbitalPredetermined: null,
             isBondingEvent: true);
         return new Phase1ParallelTrack
         {
@@ -475,7 +499,7 @@ public class SigmaBondFormation : MonoBehaviour
 
             ElectronOrbitalFunction guideOpPhase1 = guide == atomA ? orbA : orbB;
             ElectronOrbitalFunction nonGuideOpPhase1 = nonGuide == atomA ? orbA : orbB;
-            yield return StartCoroutine(CoOrbitalDragSigmaPhase1PrebondPlaceholder(
+            yield return StartCoroutine(CoOrbitalDragSigmaPhase1Prebond(
                 guide,
                 nonGuide,
                 guideOpPhase1,
@@ -601,7 +625,7 @@ public class SigmaBondFormation : MonoBehaviour
 
         var tracks = new List<Phase1ParallelTrack>(2)
         {
-            BuildPhase1OrbitalRedistributeForSigmaFormationPhase1(guide, nonGuide, guideOp, nonGuideOp)
+            BuildPhase1OrbitalRedistributeForPiFormationPhase1(guide, nonGuide, guideOp, nonGuideOp)
         };
 
         var sigmaBetween = TryFindSigmaBondBetween(sourceAtom, targetAtom);

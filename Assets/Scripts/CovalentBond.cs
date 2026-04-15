@@ -1043,10 +1043,12 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     }
 
     /// <param name="userDragBondCylinderBreak">When true (bond broken by dragging the bond orbital), both bonding electrons stay on the dragged atom's orbital.</param>
-    /// <param name="instantRedistributionForDestroyPartner">When true, skip post-break <see cref="AtomFunction.CoLerpBondBreakRedistribution"/> (pure σ-break layout lerp) so callers can keep nuclear/orbital framing (e.g. edit-mode replace-H / destroy-bridge before attach). Default false runs redistribution after ex-bond lobes are placed.</param>
+    /// <param name="instantRedistributionForDestroyPartner">When true, skip post-break <see cref="OrbitalRedistribution.BuildOrbitalRedistribution"/> lerp (pure σ-break layout lerp) so callers can keep nuclear/orbital framing (e.g. edit-mode replace-H / destroy-bridge before attach). Default false runs redistribution after ex-bond lobes are placed.</param>
     public void BreakBond(AtomFunction returnOrbitalTo, bool userDragBondCylinderBreak = false, bool instantRedistributionForDestroyPartner = false)
     {
         if (orbital == null) return;
+
+        int bondsBetweenPairBeforeBreak = atomA != null && atomB != null ? atomA.GetBondsTo(atomB) : 0;
 
         // Bond-line pose for orbitals (must capture before UnregisterBond — GetOrbitalTargetWorldState uses bond topology).
         var (bondOrbitalWorldPos, bondOrbitalWorldRot) = GetOrbitalTargetWorldState();
@@ -1223,17 +1225,89 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         if (!instantRedistributionForDestroyPartner && atomA != null && atomB != null)
         {
-            ElectronOrbitalFunction antiGuideA = otherAtom == atomA && newOrbital.ElectronCount == 0 ? newOrbital : null;
-            ElectronOrbitalFunction antiGuideB = otherAtom == atomB && newOrbital.ElectronCount == 0 ? newOrbital : null;
+            bool breakingPiLine = !IsSigmaBondLine();
+            ElectronOrbitalFunction antiGuideA;
+            ElectronOrbitalFunction antiGuideB;
+            if (breakingPiLine)
+            {
+                // π-only break: keep redistribution anchored to the released ex-bond orbital on each endpoint.
+                antiGuideA = returnOrbitalTo == atomA ? orbital : newOrbital;
+                antiGuideB = returnOrbitalTo == atomB ? orbital : newOrbital;
+            }
+            else
+            {
+                antiGuideA = otherAtom == atomA && newOrbital.ElectronCount == 0 ? newOrbital : null;
+                antiGuideB = otherAtom == atomB && newOrbital.ElectronCount == 0 ? newOrbital : null;
+            }
 
-            atomA.StartCoroutine(atomA.CoLerpBondBreakRedistribution(
-                atomB,
-                antiGuideA,
-                antiGuideB,
-                FinishBreakBondTail));
+            // Single bond between the two atoms (full cleavage): redistribute both fragments. π break or any multiply-bonded pair: heavier substituent only.
+            bool runBothFragments = bondsBetweenPairBeforeBreak <= 1 && !breakingPiLine;
+
+            OrbitalRedistribution.RedistributionAnimation animA = null;
+            OrbitalRedistribution.RedistributionAnimation animB = null;
+            if (runBothFragments)
+            {
+                animA = OrbitalRedistribution.BuildOrbitalRedistribution(atomA, atomB, null, antiGuideA, isBondingEvent: false);
+                animB = OrbitalRedistribution.BuildOrbitalRedistribution(atomB, atomA, null, antiGuideB, isBondingEvent: false);
+            }
+            else
+            {
+                float massSideA = ElectronRedistributionGuide.SumSubstituentMassThroughSigmaEdge(atomA, atomB);
+                float massSideB = ElectronRedistributionGuide.SumSubstituentMassThroughSigmaEdge(atomB, atomA);
+                AtomFunction heavy = massSideA > massSideB + 1e-4f ? atomA
+                    : massSideB > massSideA + 1e-4f ? atomB
+                    : returnOrbitalTo;
+                AtomFunction partner = heavy == atomA ? atomB : atomA;
+                var antiHeavy = heavy == atomA ? antiGuideA : antiGuideB;
+                animA = OrbitalRedistribution.BuildOrbitalRedistribution(heavy, partner, null, antiHeavy, isBondingEvent: false);
+            }
+
+            atomA.StartCoroutine(CoLerpBondBreakRedistributionFromAnimations(animA, animB, runBothFragments, FinishBreakBondTail));
             return;
         }
 
         FinishBreakBondTail();
+    }
+
+    const float BondBreakRedistributionDuration = 0.65f;
+
+    /// <summary>
+    /// Smoothstep-lerp <see cref="OrbitalRedistribution.BuildOrbitalRedistribution"/> result(s). Started via <see cref="AtomFunction.StartCoroutine"/> on an endpoint so this bond GameObject can be destroyed in <paramref name="onComplete"/>.
+    /// </summary>
+    IEnumerator CoLerpBondBreakRedistributionFromAnimations(
+        OrbitalRedistribution.RedistributionAnimation animPrimary,
+        OrbitalRedistribution.RedistributionAnimation animSecondary,
+        bool applySecondary,
+        Action onComplete)
+    {
+        if (atomA == null || atomB == null)
+        {
+            onComplete?.Invoke();
+            yield break;
+        }
+
+        float elapsed = 0f;
+        while (elapsed < BondBreakRedistributionDuration)
+        {
+            elapsed += Time.deltaTime;
+            float s = BondBreakRedistributionDuration > 1e-6f ? Mathf.Clamp01(elapsed / BondBreakRedistributionDuration) : 1f;
+            float smooth = s * s * (3f - 2f * s);
+            animPrimary?.Apply(smooth);
+            if (applySecondary)
+                animSecondary?.Apply(smooth);
+            AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(new HashSet<AtomFunction> { atomA, atomB });
+            yield return null;
+        }
+
+        animPrimary?.Apply(1f);
+        if (applySecondary)
+            animSecondary?.Apply(1f);
+        AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(new HashSet<AtomFunction> { atomA, atomB });
+
+        atomA.RefreshCharge();
+        atomB.RefreshCharge();
+        AtomFunction.SetupGlobalIgnoreCollisions();
+
+        onComplete?.Invoke();
     }
 }

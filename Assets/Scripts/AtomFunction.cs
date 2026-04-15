@@ -2451,62 +2451,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         return targets != null && targets.Count > 0;
     }
 
-
-
-
-    /// <summary>
-    /// Bond-break: animate endpoint redistribution using <see cref="OrbitalRedistribution.BuildOrbitalRedistribution(AtomFunction, AtomFunction, ElectronOrbitalFunction, ElectronOrbitalFunction, ElectronOrbitalFunction, Vector3, System.Func{float, Vector3}, HashSet{AtomFunction})"/>.
-    /// <paramref name="onComplete"/> runs electron sync and bond GO teardown.
-    /// </summary>
-    public IEnumerator CoLerpBondBreakRedistribution(
-        AtomFunction partnerAtom,
-        ElectronOrbitalFunction antiGuideOnThis,
-        ElectronOrbitalFunction antiGuideOnPartner,
-        System.Action onComplete)
-    {
-        const float duration = 0.65f;
-        if (partnerAtom == null)
-        {
-            onComplete?.Invoke();
-            yield break;
-        }
-
-        var animThis = OrbitalRedistribution.BuildOrbitalRedistribution(
-            this,
-            partnerAtom,
-            guideAtomOrbitalOp: null,
-            atomOrbitalOp: antiGuideOnThis,
-            isBondingEvent: false);
-        var animPartner = OrbitalRedistribution.BuildOrbitalRedistribution(
-            partnerAtom,
-            this,
-            guideAtomOrbitalOp: null,
-            atomOrbitalOp: antiGuideOnPartner,
-            isBondingEvent: false);
-
-        float elapsed = 0f;
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float s = duration > 1e-6f ? Mathf.Clamp01(elapsed / duration) : 1f;
-            float smooth = s * s * (3f - 2f * s);
-            animThis?.Apply(smooth);
-            animPartner?.Apply(smooth);
-            AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(new HashSet<AtomFunction> { this, partnerAtom });
-            yield return null;
-        }
-
-        animThis?.Apply(1f);
-        animPartner?.Apply(1f);
-        AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(new HashSet<AtomFunction> { this, partnerAtom });
-
-        RefreshCharge();
-        partnerAtom.RefreshCharge();
-        SetupGlobalIgnoreCollisions();
-
-        onComplete?.Invoke();
-    }
-
     void ClearSigmaBondOrbitalRedistributionDeltaWhereAuthoritative(bool sigmaFormationPrebond = false)
     {
         foreach (var b in covalentBonds)
