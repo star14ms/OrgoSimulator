@@ -7,6 +7,18 @@ public static class BondFormationTemplateDescriptionUI
 {
     static GameObject panel;
     static TextMeshProUGUI label;
+    static string lastBaseText;
+    static DebugSelectionDriver debugDriver;
+    static DebugUiBootstrap debugUiBootstrap;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    static void InstallDebugUiBootstrap()
+    {
+        if (debugUiBootstrap != null) return;
+        var go = new GameObject("BondFormationTemplateDescriptionBootstrap");
+        Object.DontDestroyOnLoad(go);
+        debugUiBootstrap = go.AddComponent<DebugUiBootstrap>();
+    }
 
     public static void Show(string text)
     {
@@ -16,7 +28,16 @@ public static class BondFormationTemplateDescriptionUI
             return;
         }
         EnsurePanel();
-        if (label != null) label.text = text;
+        lastBaseText = text;
+        if (label != null) label.text = BuildDisplayText(text);
+        if (panel != null) panel.SetActive(true);
+    }
+
+    public static void ShowDebugSelectedAtomOnly()
+    {
+        EnsurePanel();
+        string baseText = string.IsNullOrEmpty(lastBaseText) ? "Debug Selection" : lastBaseText;
+        if (label != null) label.text = BuildDisplayText(baseText);
         if (panel != null) panel.SetActive(true);
     }
 
@@ -79,5 +100,44 @@ public static class BondFormationTemplateDescriptionUI
         label.color = new Color(0.92f, 0.94f, 0.96f, 1f);
         label.textWrappingMode = TextWrappingModes.Normal;
         label.raycastTarget = false;
+
+        EnsureDebugDriver();
+    }
+
+    static string BuildDisplayText(string baseText)
+    {
+        if (!BondFormationDebugController.SteppedModeEnabled)
+            return baseText;
+
+        var edit = Object.FindFirstObjectByType<EditModeManager>();
+        var selectedAtom = edit != null ? edit.SelectedAtom : null;
+        string selectedId = selectedAtom != null ? selectedAtom.GetInstanceID().ToString() : "none";
+        return baseText + "\nSelected Atom InstanceID: " + selectedId;
+    }
+
+    static void EnsureDebugDriver()
+    {
+        if (debugDriver != null) return;
+        var go = new GameObject("BondFormationTemplateDescriptionDebugDriver");
+        Object.DontDestroyOnLoad(go);
+        debugDriver = go.AddComponent<DebugSelectionDriver>();
+    }
+
+    sealed class DebugSelectionDriver : MonoBehaviour
+    {
+        void LateUpdate()
+        {
+            if (!BondFormationDebugController.SteppedModeEnabled) return;
+            ShowDebugSelectedAtomOnly();
+        }
+    }
+
+    sealed class DebugUiBootstrap : MonoBehaviour
+    {
+        void LateUpdate()
+        {
+            if (!BondFormationDebugController.SteppedModeEnabled) return;
+            ShowDebugSelectedAtomOnly();
+        }
     }
 }

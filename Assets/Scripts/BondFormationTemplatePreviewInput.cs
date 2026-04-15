@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Text;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
@@ -12,49 +11,6 @@ public class BondFormationTemplatePreviewInput : MonoBehaviour
     const float RaycastDistance = 250f;
 
     readonly List<RaycastResult> _uiRaycastScratch = new List<RaycastResult>();
-
-    #region agent log
-    [System.Serializable]
-    class AgentTemplatePickDbg
-    {
-        public bool tryGet;
-        public bool rawNewInputDown;
-        public bool legacyMouseDown;
-        public bool enabled;
-        public bool activeInHierarchy;
-        public string previewRootName;
-        public bool pointerOverUI;
-        public int mouseDeviceId;
-        public bool pointerOverUiLegacyMinus1;
-        public int uiRaycastCount;
-        public string uiTopHitShort;
-        public bool blockInteractiveUi;
-        public bool camNull;
-        public int hitCount;
-        public string hitsSummary;
-        public int stemCount;
-        public bool stemPickOk;
-        public float stemT;
-        public float bestRayPickDist;
-        public bool finalPickNonNull;
-        public string exitReason;
-    }
-
-    static readonly string AgentDebugLogFile = ProjectAgentDebugLog.CursorDebugModeIngestNdjsonFileName;
-    const string AgentDebugSessionId = "9ddc95";
-
-    static void AgentLogTemplatePick(string hypothesisId, AgentTemplatePickDbg dbg)
-    {
-        ProjectAgentDebugLog.AppendDebugModeNdjson(
-            AgentDebugLogFile,
-            AgentDebugSessionId,
-            hypothesisId,
-            "BondFormationTemplatePreviewInput.LateUpdate",
-            "template_pick_mousedown",
-            JsonUtility.ToJson(dbg),
-            "post-fix-v2");
-    }
-    #endregion
 
     /// <summary>
     /// Full-screen HUD graphics make <see cref="EventSystem.IsPointerOverGameObject"/> true even over &quot;empty&quot; areas.
@@ -86,83 +42,31 @@ public class BondFormationTemplatePreviewInput : MonoBehaviour
 
     void LateUpdate()
     {
-        bool tryGet = TryGetPrimaryClickThisFrame(out Vector2 screenPx);
-        var mouseDev = Mouse.current ?? InputSystem.GetDevice<Mouse>();
-        bool rawNew = mouseDev != null && mouseDev.leftButton.wasPressedThisFrame;
-#if ENABLE_LEGACY_INPUT_MANAGER
-        bool legacyDown = Input.GetMouseButtonDown(0);
-#else
-        bool legacyDown = false;
-#endif
+        if (!BondFormationDebugController.IsWaitingForPhase)
+        {
+            BondFormationTemplatePickHighlight.Clear();
+            return;
+        }
 
+        bool tryGet = TryGetPrimaryClickThisFrame(out Vector2 screenPx);
         if (!tryGet)
         {
-            #region agent log
-            if (rawNew || legacyDown)
-            {
-                AgentLogTemplatePick("H2", new AgentTemplatePickDbg
-                {
-                    tryGet = false,
-                    rawNewInputDown = rawNew,
-                    legacyMouseDown = legacyDown,
-                    enabled = enabled,
-                    activeInHierarchy = gameObject.activeInHierarchy,
-                    previewRootName = gameObject.name,
-                    exitReason = "H2_tryGet_false"
-                });
-            }
-            #endregion
+            if (BondFormationDebugController.SteppedModeEnabled)
+                BondFormationTemplateDescriptionUI.ShowDebugSelectedAtomOnly();
             return;
         }
-
-        #region agent log
-        var dbg = new AgentTemplatePickDbg
-        {
-            tryGet = true,
-            rawNewInputDown = rawNew,
-            legacyMouseDown = legacyDown,
-            enabled = enabled,
-            activeInHierarchy = gameObject.activeInHierarchy,
-            previewRootName = gameObject.name,
-            bestRayPickDist = float.MaxValue
-        };
-        #endregion
 
         if (!enabled || !gameObject.activeInHierarchy)
-        {
-            #region agent log
-            dbg.exitReason = "H1_disabled_or_inactive";
-            AgentLogTemplatePick("H1", dbg);
-            #endregion
             return;
-        }
 
-        dbg.mouseDeviceId = mouseDev != null ? mouseDev.deviceId : -1;
-        dbg.pointerOverUiLegacyMinus1 = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject(-1);
-        bool blockInteractive = ShouldBlockWorldPickForInteractiveUi(screenPx, mouseDev, _uiRaycastScratch, out int uiCnt, out string uiTopShort);
-        dbg.uiRaycastCount = uiCnt;
-        dbg.uiTopHitShort = uiTopShort ?? "";
-        dbg.blockInteractiveUi = blockInteractive;
+        var mouseDev = Mouse.current ?? InputSystem.GetDevice<Mouse>();
+        bool blockInteractive = ShouldBlockWorldPickForInteractiveUi(screenPx, mouseDev, _uiRaycastScratch, out _, out _);
         if (blockInteractive)
-        {
-            #region agent log
-            dbg.pointerOverUI = true;
-            dbg.exitReason = "H3_interactive_ui";
-            AgentLogTemplatePick("H3", dbg);
-            #endregion
             return;
-        }
 
         var cam = Camera.main;
         if (cam == null)
-        {
-            #region agent log
-            dbg.camNull = true;
-            dbg.exitReason = "H4_cam_null";
-            AgentLogTemplatePick("H4", dbg);
-            #endregion
             return;
-        }
 
         var ray = cam.ScreenPointToRay(screenPx);
         // Tips use trigger colliders; project Physics.queriesHitTriggers may be false — always query triggers here.
@@ -170,30 +74,35 @@ public class BondFormationTemplatePreviewInput : MonoBehaviour
 
         BondFormationTemplatePreviewPick bestPick = null;
         float bestRayDist = float.MaxValue;
+        AtomFunction clickedAtom = null;
+        float clickedAtomDist = float.MaxValue;
 
-        dbg.hitCount = hits != null ? hits.Length : 0;
-        var hb = new StringBuilder(320);
         if (hits != null && hits.Length > 0)
         {
             System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
-            int nShow = Mathf.Min(hits.Length, 8);
-            for (int i = 0; i < nShow; i++)
-            {
-                var h = hits[i];
-                if (h.collider == null) continue;
-                string cname = h.collider.name ?? "";
-                if (cname.Length > 48) cname = cname.Substring(0, 45) + "...";
-                var pickOnHit = h.collider.GetComponent<BondFormationTemplatePreviewPick>()
-                    ?? h.collider.GetComponentInParent<BondFormationTemplatePreviewPick>();
-                if (hb.Length > 0) hb.Append('|');
-                hb.Append(h.distance.ToString("F2")).Append(':').Append(cname).Append(":pk=").Append(pickOnHit != null);
-            }
 
             foreach (var h in hits)
             {
                 if (h.collider == null) continue;
                 var pick = h.collider.GetComponent<BondFormationTemplatePreviewPick>()
                     ?? h.collider.GetComponentInParent<BondFormationTemplatePreviewPick>();
+                if (pick == null)
+                {
+                    var orb = h.collider.GetComponent<ElectronOrbitalFunction>()
+                        ?? h.collider.GetComponentInParent<ElectronOrbitalFunction>();
+                    if (orb != null)
+                        BondFormationTemplatePreviewPick.TryGetByLinkedOrbital(orb, out pick);
+                }
+                if (h.distance < clickedAtomDist)
+                {
+                    var atom = h.collider.GetComponent<AtomFunction>()
+                        ?? h.collider.GetComponentInParent<AtomFunction>();
+                    if (atom != null)
+                    {
+                        clickedAtom = atom;
+                        clickedAtomDist = h.distance;
+                    }
+                }
                 if (pick == null || string.IsNullOrEmpty(pick.Description)) continue;
                 if (h.distance < bestRayDist)
                 {
@@ -202,16 +111,10 @@ public class BondFormationTemplatePreviewInput : MonoBehaviour
                 }
             }
         }
-        dbg.hitsSummary = hb.ToString();
-
-        var stemsArr = transform.GetComponentsInChildren<BondFormationTemplateStemRayPick>(true);
-        dbg.stemCount = stemsArr != null ? stemsArr.Length : 0;
 
         // Stems have no collider (unreliable under non-uniform cylinder scale); pick by ray vs world segment.
         if (TryPickStemByRaySegment(ray, transform, out var stemPick, out float stemRayDist))
         {
-            dbg.stemPickOk = true;
-            dbg.stemT = stemRayDist;
             if (stemRayDist < bestRayDist)
             {
                 bestRayDist = stemRayDist;
@@ -219,12 +122,20 @@ public class BondFormationTemplatePreviewInput : MonoBehaviour
             }
         }
 
-        dbg.bestRayPickDist = bestRayDist;
-        dbg.finalPickNonNull = bestPick != null;
-        dbg.exitReason = bestPick != null ? "ok" : "H5_H6_no_template_pick";
-        #region agent log
-        AgentLogTemplatePick("H5_H6", dbg);
-        #endregion
+        if (bestPick == null && clickedAtom != null && OrbitalRedistribution.TryGetGuideOrbitalForDebug(clickedAtom, out var debugGuideOrbital))
+        {
+            if (BondFormationTemplatePreviewPick.TryGetByLinkedOrbital(debugGuideOrbital, out var guidePick) && guidePick != null)
+            {
+                bestPick = guidePick;
+            }
+            else
+            {
+                BondFormationTemplateDescriptionUI.Show(
+                    "Guide orbital A=" + clickedAtom.GetInstanceID() + " O=" + debugGuideOrbital.GetInstanceID());
+                BondFormationTemplatePickHighlight.ApplyFromOrbital(debugGuideOrbital);
+                return;
+            }
+        }
 
         if (bestPick != null)
         {
@@ -233,7 +144,10 @@ public class BondFormationTemplatePreviewInput : MonoBehaviour
         }
         else
         {
-            BondFormationTemplateDescriptionUI.Hide();
+            if (BondFormationDebugController.SteppedModeEnabled)
+                BondFormationTemplateDescriptionUI.ShowDebugSelectedAtomOnly();
+            else
+                BondFormationTemplateDescriptionUI.Hide();
             BondFormationTemplatePickHighlight.Clear();
         }
     }
@@ -354,6 +268,19 @@ static class BondFormationTemplatePickHighlight
                 orb.Bond.SetBondFormationTemplatePickHighlight(true);
                 lastBond = orb.Bond;
             }
+        }
+    }
+
+    public static void ApplyFromOrbital(ElectronOrbitalFunction orb)
+    {
+        Clear();
+        if (orb == null) return;
+        orb.SetBondFormationTemplatePickHighlight(true);
+        lastOrbital = orb;
+        if (orb.Bond != null)
+        {
+            orb.Bond.SetBondFormationTemplatePickHighlight(true);
+            lastBond = orb.Bond;
         }
     }
 

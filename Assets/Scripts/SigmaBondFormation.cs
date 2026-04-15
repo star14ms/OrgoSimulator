@@ -13,7 +13,10 @@ using UnityEngine;
 [DefaultExecutionOrder(100)]
 public class SigmaBondFormation : MonoBehaviour
 {
+    static GameObject phase1DebugTemplatePreviewRoot;
+
     [SerializeField] EditModeManager editModeManager;
+    [SerializeField] bool debugDisableCyclicSigmaPhase1Redistribution = false;
 
     void Awake()
     {
@@ -131,6 +134,15 @@ public class SigmaBondFormation : MonoBehaviour
         public Action FinalizeAfterTimeline;
     }
 
+    sealed class CyclicPhase1Context
+    {
+        public List<AtomFunction> PathAtoms;
+        public Dictionary<AtomFunction, Vector3> TargetWorldByAtom;
+        public Vector3 CycleCenterWorld;
+        public HashSet<AtomFunction> ChainRedistributionBlockAtoms;
+        public AtomFunction NonGuideCycleNeighbor;
+    }
+
     /// <summary>
     /// Orbital-drag σ <b>phase 1</b> (pre-bond): builds parallel tracks (fragment translation + orbital redistribution) and runs them on one timeline.
     /// </summary>
@@ -149,12 +161,18 @@ public class SigmaBondFormation : MonoBehaviour
             yield break;
 
         float bl = DefaultSigmaBondLengthForPair(guide, nonGuide);
+        CyclicPhase1Context cyclicContext = TryBuildCyclicPhase1Context(guide, nonGuide, bl);
+        bool disablePhase1Redistribution = debugDisableCyclicSigmaPhase1Redistribution && cyclicContext != null;
         Vector3 nTarget = Phase1NonGuideNucleusTargetOnGuideOpOutboundRay(guide, guideOp, bl);
         Vector3 deltaTotal = nTarget - nonGuide.transform.position;
-        if (deltaTotal.sqrMagnitude < 1e-16f)
+        if (cyclicContext == null && deltaTotal.sqrMagnitude < 1e-16f)
             yield break;
 
-        var toMove = BuildNonGuideFragmentAtomsForApproach(guide, nonGuide);
+        var toMove = cyclicContext != null
+            ? new List<AtomFunction>(cyclicContext.TargetWorldByAtom.Keys)
+            : BuildNonGuideFragmentAtomsForApproach(guide, nonGuide);
+        if (cyclicContext != null && toMove.Count == 0)
+            yield break;
         var initialWorld = new Dictionary<AtomFunction, Vector3>(toMove.Count);
         foreach (var a in toMove)
         {
@@ -174,7 +192,22 @@ public class SigmaBondFormation : MonoBehaviour
             toMove,
             deltaTotal,
             nTarget,
-            mol);
+            mol,
+            cyclicContext,
+            disablePhase1Redistribution);
+
+        if (BondFormationDebugController.SteppedModeEnabled)
+        {
+            BuildPhase1RedistributeTemplatePreviewVisuals(
+                guide,
+                nonGuide,
+                initialWorld,
+                deltaTotal,
+                cyclicContext,
+                disablePhase1Redistribution);
+            yield return BondFormationDebugController.WaitPhase(1);
+            ClearPhase1RedistributeTemplatePreviewVisuals();
+        }
 
         SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, true);
         try
@@ -198,13 +231,18 @@ public class SigmaBondFormation : MonoBehaviour
         List<AtomFunction> toMove,
         Vector3 deltaTotal,
         Vector3 nTarget,
-        ICollection<AtomFunction> molForBondLines)
+        ICollection<AtomFunction> molForBondLines,
+        CyclicPhase1Context cyclicContext,
+        bool disablePhase1Redistribution)
     {
-        var list = new List<Phase1ParallelTrack>(2);
+        var list = new List<Phase1ParallelTrack>(disablePhase1Redistribution ? 1 : 2);
         list.Add(BuildPhase1AtomFragmentApproachAnimation(
-            nonGuide, initialWorld, toMove, deltaTotal, nTarget, molForBondLines));
-        list.Add(BuildPhase1OrbitalRedistributeForSigmaFormationPhase1(
-            guide, nonGuide, guideOp, nonGuideOp));
+            nonGuide, initialWorld, toMove, deltaTotal, nTarget, molForBondLines, cyclicContext));
+        if (!disablePhase1Redistribution)
+        {
+            list.Add(BuildPhase1OrbitalRedistributeForSigmaFormationPhase1(
+                guide, nonGuide, guideOp, nonGuideOp, cyclicContext));
+        }
         return list;
     }
 
@@ -217,21 +255,39 @@ public class SigmaBondFormation : MonoBehaviour
         List<AtomFunction> toMove,
         Vector3 deltaTotal,
         Vector3 nTarget,
-        ICollection<AtomFunction> molForBondLines)
+        ICollection<AtomFunction> molForBondLines,
+        CyclicPhase1Context cyclicContext)
     {
         return new Phase1ParallelTrack
         {
-            ApplySmoothStep = s => ApplyPhase1ApproachFragmentOffset(initialWorld, toMove, deltaTotal, s),
+            ApplySmoothStep = s =>
+            {
+                if (cyclicContext != null)
+                    ApplyPhase1CyclicAtomTargets(initialWorld, cyclicContext.TargetWorldByAtom, s);
+                else
+                    ApplyPhase1ApproachFragmentOffset(initialWorld, toMove, deltaTotal, s);
+            },
             FinalizeAfterTimeline = () =>
             {
                 if (nonGuide == null) return;
-                Vector3 residual = nTarget - nonGuide.transform.position;
-                if (residual.sqrMagnitude > 1e-14f)
+                if (cyclicContext != null)
                 {
-                    foreach (var a in toMove)
+                    foreach (var kv in cyclicContext.TargetWorldByAtom)
                     {
-                        if (a == null) continue;
-                        a.transform.position += residual;
+                        if (kv.Key == null) continue;
+                        kv.Key.transform.position = kv.Value;
+                    }
+                }
+                else
+                {
+                    Vector3 residual = nTarget - nonGuide.transform.position;
+                    if (residual.sqrMagnitude > 1e-14f)
+                    {
+                        foreach (var a in toMove)
+                        {
+                            if (a == null) continue;
+                            a.transform.position += residual;
+                        }
                     }
                 }
                 if (molForBondLines != null && molForBondLines.Count > 0)
@@ -245,10 +301,49 @@ public class SigmaBondFormation : MonoBehaviour
         AtomFunction guideAtom,
         AtomFunction nonGuideAtom,
         ElectronOrbitalFunction guideOp,
-        ElectronOrbitalFunction nonGuideOp)
+        ElectronOrbitalFunction nonGuideOp,
+        CyclicPhase1Context cyclicContext)
     {
-       Vector3 finalDirectionForGuideOrbital = Vector3.zero;
-        if (guideAtom != null && guideOp != null)
+        Vector3 finalDirectionForGuideOrbital = Vector3.zero;
+
+        OrbitalRedistribution.CyclicRedistributionContext redistCycleContext = null;
+        if (cyclicContext != null && guideAtom != null && nonGuideAtom != null)
+        {
+            var finalWorldByAtom = new Dictionary<AtomFunction, Vector3>();
+            for (int i = 0; i < cyclicContext.PathAtoms.Count; i++)
+            {
+                AtomFunction a = cyclicContext.PathAtoms[i];
+                if (a == null) continue;
+                if (cyclicContext.TargetWorldByAtom.TryGetValue(a, out Vector3 target))
+                    finalWorldByAtom[a] = target;
+                else
+                    finalWorldByAtom[a] = a.transform.position;
+            }
+
+            redistCycleContext = new OrbitalRedistribution.CyclicRedistributionContext
+            {
+                PivotAtom = nonGuideAtom,
+                CycleNeighborA = guideAtom,
+                CycleNeighborB = cyclicContext.NonGuideCycleNeighbor,
+                FinalWorldByAtom = finalWorldByAtom,
+                CycleCenterWorld = cyclicContext.CycleCenterWorld,
+                ChainRedistributionBlockedAtoms = cyclicContext.ChainRedistributionBlockAtoms,
+                PivotSigmaOp = nonGuideOp,
+                GuideSigmaOp = guideOp
+            };
+
+            // Match preview / cyclic template: internuclear axis is pivot final → guide final in world.
+            // The guide-OP inbound ray (-(guideOp - guideNucleus)) can align with the wrong cycle edge
+            // (and mis-trigger OP preassign steal). See H12 vs H6 in cyclic NDJSON.
+            Vector3 pivotFinal = finalWorldByAtom.TryGetValue(nonGuideAtom, out Vector3 pFin) ? pFin : nonGuideAtom.transform.position;
+            Vector3 guideFinal = finalWorldByAtom.TryGetValue(guideAtom, out Vector3 gFin) ? gFin : guideAtom.transform.position;
+            Vector3 guideLegWorld = guideFinal - pivotFinal;
+            if (guideLegWorld.sqrMagnitude > 1e-12f)
+            {
+                finalDirectionForGuideOrbital = nonGuideAtom.transform.InverseTransformDirection(guideLegWorld.normalized).normalized;
+            }
+        }
+        else if (guideAtom != null && guideOp != null && nonGuideAtom != null)
         {
             Vector3 guideOpFromGuide = guideOp.transform.position - guideAtom.transform.position;
             Vector3 invGuideOpWorld = (-guideOpFromGuide).normalized;
@@ -262,7 +357,8 @@ public class SigmaBondFormation : MonoBehaviour
             nonGuideOp,
             guideOrbitalPredetermined: null,
             finalDirectionForGuideOrbital,
-            isBondingEvent: true);
+            isBondingEvent: true,
+            cyclicContext: redistCycleContext);
         return new Phase1ParallelTrack
         {
             ApplySmoothStep = s => animation?.Apply(s),
@@ -370,6 +466,20 @@ public class SigmaBondFormation : MonoBehaviour
         }
     }
 
+    static void ApplyPhase1CyclicAtomTargets(
+        Dictionary<AtomFunction, Vector3> initialWorld,
+        Dictionary<AtomFunction, Vector3> targetWorldByAtom,
+        float s)
+    {
+        if (initialWorld == null || targetWorldByAtom == null) return;
+        foreach (var kv in targetWorldByAtom)
+        {
+            if (kv.Key == null) continue;
+            if (!initialWorld.TryGetValue(kv.Key, out Vector3 p0)) continue;
+            kv.Key.transform.position = Vector3.Lerp(p0, kv.Value, s);
+        }
+    }
+
     /// <summary>
     /// Atoms that move in σ phase 1 approach. If the guide is not in the same molecule as non-guide, the whole non-guide component moves.
     /// If both are in one molecule, only the non-guide <b>branch</b> (reachable without crossing the guide atom) moves with the approach.
@@ -411,6 +521,385 @@ public class SigmaBondFormation : MonoBehaviour
             }
         }
         return fragment;
+    }
+
+    static CyclicPhase1Context TryBuildCyclicPhase1Context(AtomFunction guide, AtomFunction nonGuide, float bondLength)
+    {
+        if (guide == null || nonGuide == null) return null;
+        if (TryFindSigmaBondBetween(guide, nonGuide) != null) return null;
+
+        var mol = guide.GetConnectedMolecule();
+        if (mol == null || !mol.Contains(nonGuide)) return null;
+
+        if (!TryBuildShortestSigmaPath(guide, nonGuide, out var pathAtoms)) return null;
+        int ringSize = pathAtoms.Count;
+        if (ringSize < 3 || ringSize > 6) return null;
+        if (pathAtoms[0] != guide || pathAtoms[ringSize - 1] != nonGuide) return null;
+        if (ringSize < 2 || pathAtoms[1] == null || pathAtoms[ringSize - 2] == null) return null;
+
+        var template = BuildCycleTemplateVertexAnchored(ringSize, bondLength);
+        if (template == null || template.Length != ringSize) return null;
+
+        Vector3 guidePos = guide.transform.position;
+        Vector3 templateEdge = template[1] - template[0];
+        Vector3 worldEdge = pathAtoms[1].transform.position - guidePos;
+        if (templateEdge.sqrMagnitude < 1e-10f || worldEdge.sqrMagnitude < 1e-10f) return null;
+
+        Quaternion align = Quaternion.FromToRotation(templateEdge.normalized, worldEdge.normalized);
+
+        // After pinning C1->C2, add one twist around that axis so C3 lands as close as possible.
+        Vector3 axis = worldEdge.normalized;
+        if (ringSize >= 3 && pathAtoms[2] != null)
+        {
+            Vector3 alignedTemplateC3Dir = align * (template[2] - template[0]).normalized;
+            Vector3 currentC3Dir = (pathAtoms[2].transform.position - guidePos).normalized;
+
+            Vector3 tplInPlane = Vector3.ProjectOnPlane(alignedTemplateC3Dir, axis).normalized;
+            Vector3 curInPlane = Vector3.ProjectOnPlane(currentC3Dir, axis).normalized;
+            if (tplInPlane.sqrMagnitude > 1e-10f && curInPlane.sqrMagnitude > 1e-10f)
+            {
+                float twistDeg = Vector3.SignedAngle(tplInPlane, curInPlane, axis);
+                Quaternion twist = Quaternion.AngleAxis(twistDeg, axis);
+                align = twist * align;
+            }
+        }
+
+        var targetsByAtom = new Dictionary<AtomFunction, Vector3>();
+        Vector3 centerAccum = Vector3.zero;
+        int centerCount = 0;
+        for (int i = 0; i < ringSize; i++)
+        {
+            Vector3 world = guidePos + align * (template[i] - template[0]);
+            centerAccum += world;
+            centerCount++;
+            // Keep guide + immediate guide neighbor fixed; animate the rest of the path.
+            if (i >= 2)
+                targetsByAtom[pathAtoms[i]] = world;
+        }
+
+        return new CyclicPhase1Context
+        {
+            PathAtoms = pathAtoms,
+            TargetWorldByAtom = targetsByAtom,
+            CycleCenterWorld = centerCount > 0 ? centerAccum / centerCount : guidePos,
+            ChainRedistributionBlockAtoms = new HashSet<AtomFunction>(pathAtoms),
+            NonGuideCycleNeighbor = pathAtoms[ringSize - 2]
+        };
+    }
+
+    static bool TryBuildShortestSigmaPath(AtomFunction start, AtomFunction end, out List<AtomFunction> path)
+    {
+        path = null;
+        if (start == null || end == null) return false;
+        if (start == end)
+        {
+            path = new List<AtomFunction> { start };
+            return true;
+        }
+
+        var parent = new Dictionary<AtomFunction, AtomFunction>();
+        var queue = new Queue<AtomFunction>();
+        queue.Enqueue(start);
+        parent[start] = null;
+
+        while (queue.Count > 0)
+        {
+            AtomFunction cur = queue.Dequeue();
+            if (cur == null) continue;
+            if (cur == end) break;
+            for (int bi = 0; bi < cur.CovalentBonds.Count; bi++)
+            {
+                var cb = cur.CovalentBonds[bi];
+                if (cb == null || !cb.IsSigmaBondLine()) continue;
+                AtomFunction next = cb.AtomA == cur ? cb.AtomB : cb.AtomA;
+                if (next == null || parent.ContainsKey(next)) continue;
+                parent[next] = cur;
+                queue.Enqueue(next);
+            }
+        }
+
+        if (!parent.ContainsKey(end)) return false;
+        var rev = new List<AtomFunction>();
+        AtomFunction node = end;
+        while (node != null)
+        {
+            rev.Add(node);
+            node = parent[node];
+        }
+        rev.Reverse();
+        path = rev;
+        return true;
+    }
+
+    static Vector3[] BuildCycleTemplateVertexAnchored(int ringSize, float bondLength)
+    {
+        if (ringSize < 3 || ringSize > 6) return null;
+        switch (ringSize)
+        {
+            case 3:
+                return BuildPuckeredCyclopropaneTemplate(bondLength);
+            case 4:
+                return BuildPuckeredCyclobutaneTemplate(bondLength);
+            case 5:
+                return BuildEnvelopeCyclopentaneTemplate(bondLength);
+            case 6:
+                return BuildChairCyclohexaneTemplate(bondLength);
+            default:
+                return null;
+        }
+    }
+
+    static void RescaleRingEdges(Vector3[] pts, float targetEdge)
+    {
+        if (pts == null || pts.Length < 2) return;
+        int n = pts.Length;
+        float sum = 0f;
+        for (int i = 0; i < n; i++)
+            sum += Vector3.Distance(pts[i], pts[(i + 1) % n]);
+        float avg = sum / n;
+        if (avg < 1e-6f) return;
+        float s = targetEdge / avg;
+        for (int i = 0; i < n; i++)
+            pts[i] *= s;
+    }
+
+    static Vector3[] BuildPuckeredCyclopropaneTemplate(float bondLength)
+    {
+        float r = bondLength / (2f * Mathf.Sin(Mathf.PI / 3f));
+        float lift = bondLength * 0.14f;
+        var pts = new Vector3[3];
+        for (int i = 0; i < 3; i++)
+        {
+            float ang = (360f * i / 3f - 90f) * Mathf.Deg2Rad;
+            float z = i == 0 ? lift : (i == 1 ? -lift * 0.45f : -lift * 0.55f);
+            pts[i] = new Vector3(Mathf.Cos(ang) * r, Mathf.Sin(ang) * r, z);
+        }
+        RescaleRingEdges(pts, bondLength);
+        return pts;
+    }
+
+    static Vector3[] BuildPuckeredCyclobutaneTemplate(float bondLength)
+    {
+        float r = bondLength * 0.74f;
+        float d = bondLength * 0.22f;
+        var pts = new Vector3[4];
+        float[] zs = { d, -d, d, -d };
+        for (int i = 0; i < 4; i++)
+        {
+            float ang = (45f + 90f * i) * Mathf.Deg2Rad;
+            pts[i] = new Vector3(Mathf.Cos(ang) * r, Mathf.Sin(ang) * r, zs[i]);
+        }
+        RescaleRingEdges(pts, bondLength);
+        return pts;
+    }
+
+    static Vector3[] BuildEnvelopeCyclopentaneTemplate(float bondLength)
+    {
+        const int n = 5;
+        float r = bondLength / (2f * Mathf.Sin(Mathf.PI / n));
+        float flap = bondLength * 0.35f;
+        float ripple = bondLength * 0.08f;
+        var pts = new Vector3[n];
+        for (int i = 0; i < n; i++)
+        {
+            float ang = (360f * i / n - 90f) * Mathf.Deg2Rad;
+            float z = (i == 2 ? flap : 0f) + Mathf.Sin(i * 2f * Mathf.PI / n) * ripple;
+            pts[i] = new Vector3(Mathf.Cos(ang) * r, Mathf.Sin(ang) * r, z);
+        }
+        RescaleRingEdges(pts, bondLength);
+        return pts;
+    }
+
+    static Vector3[] BuildChairCyclohexaneTemplate(float bondLength)
+    {
+        float r = bondLength * 0.72f;
+        float h = r * Mathf.Sqrt(1f / 32f);
+        var pts = new Vector3[6];
+        for (int i = 0; i < 6; i++)
+        {
+            float ang = (60f * i - 90f) * Mathf.Deg2Rad;
+            float z = i % 2 == 0 ? h : -h;
+            pts[i] = new Vector3(Mathf.Cos(ang) * r, Mathf.Sin(ang) * r, z);
+        }
+        RescaleRingEdges(pts, bondLength);
+        return pts;
+    }
+
+    static bool TryGetPrebondCycleSize(AtomFunction guide, AtomFunction nonGuide, out int cycleSize)
+    {
+        cycleSize = 0;
+        if (guide == null || nonGuide == null) return false;
+        if (TryFindSigmaBondBetween(guide, nonGuide) != null) return false;
+        if (!TryBuildShortestSigmaPath(guide, nonGuide, out var pathAtoms) || pathAtoms == null) return false;
+        cycleSize = pathAtoms.Count;
+        return cycleSize >= 3 && cycleSize <= 6;
+    }
+
+    static void BuildPhase1RedistributeTemplatePreviewVisuals(
+        AtomFunction guideAtom,
+        AtomFunction nonGuideAtom,
+        Dictionary<AtomFunction, Vector3> initialWorld,
+        Vector3 deltaTotal,
+        CyclicPhase1Context cyclicContext,
+        bool disablePhase1Redistribution)
+    {
+        ClearPhase1RedistributeTemplatePreviewVisuals();
+        if (disablePhase1Redistribution)
+            return;
+
+        OrbitalRedistribution.BeginDebugTemplateCapture();
+        try
+        {
+            Vector3 finalDirectionForGuideOrbital = Vector3.zero;
+            OrbitalRedistribution.CyclicRedistributionContext redistCycleContext = null;
+            if (cyclicContext != null && guideAtom != null && nonGuideAtom != null)
+            {
+                var finalWorldByAtom = new Dictionary<AtomFunction, Vector3>();
+                for (int i = 0; i < cyclicContext.PathAtoms.Count; i++)
+                {
+                    AtomFunction a = cyclicContext.PathAtoms[i];
+                    if (a == null) continue;
+                    if (cyclicContext.TargetWorldByAtom.TryGetValue(a, out Vector3 target))
+                        finalWorldByAtom[a] = target;
+                    else
+                        finalWorldByAtom[a] = a.transform.position;
+                }
+
+                redistCycleContext = new OrbitalRedistribution.CyclicRedistributionContext
+                {
+                    PivotAtom = nonGuideAtom,
+                    CycleNeighborA = guideAtom,
+                    CycleNeighborB = cyclicContext.NonGuideCycleNeighbor,
+                    FinalWorldByAtom = finalWorldByAtom,
+                    CycleCenterWorld = cyclicContext.CycleCenterWorld,
+                    ChainRedistributionBlockedAtoms = cyclicContext.ChainRedistributionBlockAtoms
+                };
+
+                Vector3 pivotFinal = finalWorldByAtom.TryGetValue(nonGuideAtom, out Vector3 p) ? p : nonGuideAtom.transform.position;
+                Vector3 guideFinal = finalWorldByAtom.TryGetValue(guideAtom, out Vector3 g) ? g : guideAtom.transform.position;
+                Vector3 guideFinalDirWorld = (guideFinal - pivotFinal).normalized;
+                if (guideFinalDirWorld.sqrMagnitude > 1e-12f)
+                    finalDirectionForGuideOrbital = nonGuideAtom.transform.InverseTransformDirection(guideFinalDirWorld).normalized;
+            }
+
+            var _ = OrbitalRedistribution.BuildOrbitalRedistribution(
+                nonGuideAtom,
+                guideAtom,
+                guideOrbitalPredetermined: null,
+                finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
+                cyclicContext: redistCycleContext,
+                isBondingEvent: true);
+        }
+        finally
+        {
+            // capture closed below
+        }
+
+        var snapshots = OrbitalRedistribution.EndDebugTemplateCapture();
+        if (snapshots == null || snapshots.Count == 0)
+            return;
+
+        phase1DebugTemplatePreviewRoot = new GameObject("Phase1RedistributeTemplatePreview");
+        if (phase1DebugTemplatePreviewRoot.GetComponent<BondFormationTemplatePreviewInput>() == null)
+            phase1DebugTemplatePreviewRoot.AddComponent<BondFormationTemplatePreviewInput>();
+        for (int i = 0; i < snapshots.Count; i++)
+        {
+            var snap = snapshots[i];
+            if (snap == null) continue;
+            if (snap.Atom == null || snap.TemplateLocal == null || snap.TemplateLocal.Count == 0) continue;
+            Vector3 center = ResolvePhase1FinalCenterWorld(snap.Atom, initialWorld, deltaTotal, cyclicContext);
+            float len = Mathf.Max(0.125f, snap.Atom.BondRadius * 0.55f);
+            for (int di = 0; di < snap.TemplateLocal.Count; di++)
+            {
+                Vector3 dirWorld = snap.Atom.transform.TransformDirection(snap.TemplateLocal[di]).normalized;
+                if (dirWorld.sqrMagnitude < 1e-12f) continue;
+                Vector3 end = center + dirWorld * len;
+                ElectronOrbitalFunction linkedOrbital = FindAssignedOrbitalForTemplateIndex(snap, di);
+                CreateDebugTemplateCylinder(
+                    phase1DebugTemplatePreviewRoot.transform,
+                    center,
+                    end,
+                    snap.Atom.GetInstanceID(),
+                    di,
+                    linkedOrbital);
+            }
+        }
+    }
+
+    static Vector3 ResolvePhase1FinalCenterWorld(
+        AtomFunction atom,
+        Dictionary<AtomFunction, Vector3> initialWorld,
+        Vector3 deltaTotal,
+        CyclicPhase1Context cyclicContext)
+    {
+        if (atom == null) return Vector3.zero;
+        if (cyclicContext != null
+            && cyclicContext.TargetWorldByAtom != null
+            && cyclicContext.TargetWorldByAtom.TryGetValue(atom, out Vector3 cycTarget))
+            return cycTarget;
+        if (initialWorld != null && initialWorld.TryGetValue(atom, out Vector3 p0))
+            return p0 + deltaTotal;
+        return atom.transform.position;
+    }
+
+    static void CreateDebugTemplateCylinder(
+        Transform parent,
+        Vector3 startWorld,
+        Vector3 endWorld,
+        int atomId,
+        int dirIndex,
+        ElectronOrbitalFunction linkedOrbital)
+    {
+        Vector3 v = endWorld - startWorld;
+        float len = v.magnitude;
+        if (len < 1e-6f) return;
+        var go = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        go.name = "Phase1Tpl_A" + atomId + "_D" + dirIndex;
+        go.transform.SetParent(parent, worldPositionStays: true);
+        go.transform.position = (startWorld + endWorld) * 0.5f;
+        go.transform.rotation = Quaternion.FromToRotation(Vector3.up, v.normalized);
+        float r = Mathf.Clamp(len * 0.06f, 0.015f, 0.06f);
+        go.transform.localScale = new Vector3(r, len * 0.5f, r);
+        var col = go.GetComponent<Collider>();
+        if (col != null) col.isTrigger = true;
+        var renderer = go.GetComponent<Renderer>();
+        if (renderer != null)
+        {
+            var shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null) shader = Shader.Find("Standard");
+            if (shader != null)
+            {
+                var mat = new Material(shader);
+                mat.color = new Color(0.20f, 0.90f, 1f, 0.92f);
+                renderer.sharedMaterial = mat;
+            }
+        }
+        var pick = go.AddComponent<BondFormationTemplatePreviewPick>();
+        pick.SetDescription("Final template A=" + atomId + " dir=" + dirIndex);
+        pick.SetLinkedOrbital(linkedOrbital, renderer != null ? new[] { renderer } : null);
+    }
+
+    static ElectronOrbitalFunction FindAssignedOrbitalForTemplateIndex(
+        OrbitalRedistribution.DebugTemplateSnapshot snapshot,
+        int templateIndex)
+    {
+        if (snapshot == null || snapshot.GroupAssignments == null) return null;
+        for (int i = 0; i < snapshot.GroupAssignments.Count; i++)
+        {
+            var row = snapshot.GroupAssignments[i];
+            if (row.templateIndex == templateIndex)
+                return row.orbital;
+        }
+        return null;
+    }
+
+    static void ClearPhase1RedistributeTemplatePreviewVisuals()
+    {
+        if (phase1DebugTemplatePreviewRoot != null)
+        {
+            UnityEngine.Object.Destroy(phase1DebugTemplatePreviewRoot);
+            phase1DebugTemplatePreviewRoot = null;
+        }
     }
 
     /// <summary>
@@ -475,6 +964,7 @@ public class SigmaBondFormation : MonoBehaviour
             int merged = orbA.ElectronCount + orbB.ElectronCount;
             var guideOrb = redistributionGuideTieBreakDraggedOrbital != null ? redistributionGuideTieBreakDraggedOrbital : orbA;
             ElectronRedistributionGuide.ResolveGuideAtomForPair(atomA, atomB, guideOrb, out var guide, out var nonGuide);
+            bool prebondCycleCandidate = TryGetPrebondCycleSize(guide, nonGuide, out int prebondCycleSize);
 
             if (guide == null || nonGuide == null || ReferenceEquals(guide, nonGuide))
             {
@@ -532,8 +1022,8 @@ public class SigmaBondFormation : MonoBehaviour
             atomA.RefreshCharge();
             atomB.RefreshCharge();
             
-            // Phase 3: guide post-bond redistribution animation.
-            if (guide.AtomicNumber > 1 && phase3Sec > 1e-5f)
+            // Phase 3: guide post-bond redistribution. Omit for ring-closure σ (prebond cycle): phase 1–2 already set geometry.
+            if (guide.AtomicNumber > 1 && phase3Sec > 1e-5f && !prebondCycleCandidate)
             {
                 var phase3GuideOp = bond != null && bond.Orbital != null ? bond.Orbital : guideOpPhase1;
                 var phase3GuideRedistribution = OrbitalRedistribution.BuildOrbitalRedistribution(
