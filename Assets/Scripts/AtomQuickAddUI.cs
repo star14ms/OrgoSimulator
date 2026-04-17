@@ -109,6 +109,7 @@ public class AtomQuickAddUI : MonoBehaviour
         else if (k.nKey.wasPressedThisFrame) OnElementClicked(7);
         else if (k.oKey.wasPressedThisFrame) OnElementClicked(8);
         else if (k.fKey.wasPressedThisFrame) OnElementClicked(9);
+        else if (k.pKey.wasPressedThisFrame) OnElementClicked(15);
         else if (k.sKey.wasPressedThisFrame) OnElementClicked(16);
         else if (k.iKey.wasPressedThisFrame) OnElementClicked(53);
 

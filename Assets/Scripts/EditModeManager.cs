@@ -1226,8 +1226,11 @@ public class EditModeManager : MonoBehaviour
 
             if (orb == null) break;
 
-            // Prefer world pose of the 1e lobe; σ-only VSEPR can aim at a lone-pair domain instead.
-            dirN = OrbitalAngleUtility.GetOrbitalDirectionWorld(orb.transform);
+            // For pi-bearing centers (e.g., benzene carbons), keep VSEPR-derived direction so H follows
+            // the local trigonal framework instead of inheriting out-of-plane lobe tilt.
+            bool useOrbitalDirectionForSpawn = atom.GetPiBondCount() <= 0;
+            if (useOrbitalDirectionForSpawn)
+                dirN = OrbitalAngleUtility.GetOrbitalDirectionWorld(orb.transform);
             Vector3 hPos = atom.transform.position + dirN * bondLength;
 
             var hGo = Instantiate(atomPrefab, hPos, Quaternion.identity);

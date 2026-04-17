@@ -719,7 +719,8 @@ public class MoleculeBuilder : MonoBehaviour
 
     /// <summary>
     /// FG safety pass: if a trigonal center (C/N) still has no π after build/saturation, try one π to an O neighbor.
-    /// This keeps carbonyl-like C and nitrate/nitro-like N in sp2 electron geometry.
+    /// This keeps carbonyl-like C and nitrate/nitro-like N in sp2 electron geometry for FG-internal centers.
+    /// The attachment root (substrate atom) is excluded to avoid unintended bond-order promotion on the parent molecule.
     /// </summary>
     void EnsureSinglePiOnTrigonalCnCenters(List<AtomFunction> touched, AtomFunction attachmentRoot)
     {
@@ -727,6 +728,7 @@ public class MoleculeBuilder : MonoBehaviour
         foreach (var center in touched)
         {
             if (center == null) continue;
+            if (attachmentRoot != null && center == attachmentRoot) continue;
             int z = center.AtomicNumber;
             if (z != 6 && z != 7) continue;
             if (center.GetPiBondCount() > 0) continue;
