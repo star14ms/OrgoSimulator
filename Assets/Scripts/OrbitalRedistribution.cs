@@ -1032,6 +1032,11 @@ public static class OrbitalRedistribution
             else emptyOrbitals.Add(row);
         }
 
+        cyclicContext = EnsureChainRedistributionBlockedAtomsForCyclicEvent(
+            atom,
+            bondingGroups,
+            cyclicContext);
+
         ApplyEventSpecificGroupAdjustments(
             atom,
             guideAtom,
@@ -1163,6 +1168,70 @@ public static class OrbitalRedistribution
             cyclicContext);
 
         return animation;
+    }
+
+    static CyclicRedistributionContext EnsureChainRedistributionBlockedAtomsForCyclicEvent(
+        AtomFunction atom,
+        List<GroupEntry> bondingGroups,
+        CyclicRedistributionContext cyclicContext)
+    {
+        if (atom == null || bondingGroups == null || bondingGroups.Count < 2)
+            return cyclicContext;
+
+        HashSet<AtomFunction> blocked = cyclicContext?.ChainRedistributionBlockedAtoms;
+        bool addedBlocked = false;
+
+        var neighbors = new List<AtomFunction>(bondingGroups.Count);
+        var ownerByAtom = new Dictionary<AtomFunction, int>();
+
+        for (int i = 0; i < bondingGroups.Count; i++)
+        {
+            GroupEntry g = bondingGroups[i];
+            AtomFunction neighbor = g?.Bond == null
+                ? null
+                : (g.Bond.AtomA == atom ? g.Bond.AtomB : g.Bond.AtomA);
+            neighbors.Add(neighbor);
+            if (neighbor == null)
+                continue;
+
+            List<AtomFunction> fragment = atom.GetAtomsOnSideOfSigmaBond(neighbor);
+            if (fragment == null || fragment.Count == 0)
+                continue;
+
+            // Fragment overlap means this sigma edge is part of a cycle; block chain redistribution.
+            if (fragment.Contains(atom))
+            {
+                if (blocked == null) blocked = new HashSet<AtomFunction>();
+                addedBlocked |= blocked.Add(neighbor);
+            }
+
+            for (int fi = 0; fi < fragment.Count; fi++)
+            {
+                AtomFunction fa = fragment[fi];
+                if (fa == null) continue;
+                if (!ownerByAtom.TryGetValue(fa, out int priorOwner))
+                {
+                    ownerByAtom[fa] = i;
+                    continue;
+                }
+
+                if (priorOwner == i) continue;
+                AtomFunction priorNeighbor = neighbors[priorOwner];
+                if (priorNeighbor == null) continue;
+                if (blocked == null) blocked = new HashSet<AtomFunction>();
+                addedBlocked |= blocked.Add(priorNeighbor);
+                addedBlocked |= blocked.Add(neighbor);
+            }
+        }
+
+        if (!addedBlocked)
+            return cyclicContext;
+
+        bool createdContext = cyclicContext == null;
+        if (cyclicContext == null)
+            cyclicContext = new CyclicRedistributionContext();
+        cyclicContext.ChainRedistributionBlockedAtoms = blocked;
+        return cyclicContext;
     }
 
     static bool TryHandleBreakingReleasedEmptySpecialCase(
@@ -1304,6 +1373,7 @@ public static class OrbitalRedistribution
                     bool isOpPath = IsOperationPathGroup(atom, g, atomOrbitalOp);
                     if (!isOpPath)
                     {
+                        Debug.Log(atom.GetInstanceID() + " " + adjacentAtom.GetInstanceID());
                         Vector3 childGuideDirWorld = atom.transform.TransformDirection((-alignedTemplate[ti]).normalized);
                         Vector3 childGuideDirLocal = adjacentAtom.transform.InverseTransformDirection(childGuideDirWorld).normalized;
                         var childAnim = BuildOrbitalRedistribution(
@@ -1885,13 +1955,13 @@ public static class OrbitalRedistribution
         template = null;
         if (fixedAssignments == null) return false;
         fixedAssignments.Clear();
-        if (atom == null || cyclicContext == null)
-            return false;
+        if (atom == null || cyclicContext == null) return false;
         if (groupsForMatching == null || nVseprGroup < 3 || nVseprGroup > 4) return false;
 
         if (!TryResolveCycleContributorNeighborsFromContext(
             atom, cyclicContext, out AtomFunction neighborA, out AtomFunction neighborB))
             return false;
+        
 
         Vector3 pivotWorld = GetFinalWorldForAtom(cyclicContext, atom);
         Vector3 nAWorld = GetFinalWorldForAtom(cyclicContext, neighborA);
@@ -1922,15 +1992,7 @@ public static class OrbitalRedistribution
         fixedAssignments[idxA] = 0;
         fixedAssignments[idxB] = 1;
 
-        Vector3 centerToPivotWorld = pivotWorld - cyclicContext.CycleCenterWorld;
-        Vector3 outwardWorld = centerToPivotWorld.sqrMagnitude > 1e-12f
-            ? centerToPivotWorld.normalized
-            : -(dirAWorld + dirBWorld).normalized;
-        if (outwardWorld.sqrMagnitude < 1e-12f)
-            outwardWorld = Vector3.Cross(dirAWorld, dirBWorld).normalized;
-        if (outwardWorld.sqrMagnitude < 1e-12f)
-            outwardWorld = Vector3.up;
-
+        Vector3 outwardWorld = -(dirAWorld + dirBWorld).normalized;
         Vector3 outward = atom.transform.InverseTransformDirection(outwardWorld).normalized;
         if (outward.sqrMagnitude < 1e-12f) outward = Vector3.up;
 
@@ -1981,8 +2043,11 @@ public static class OrbitalRedistribution
     {
         neighborA = null;
         neighborB = null;
-        if (atom == null || cyclicContext == null || cyclicContext.FinalWorldByAtom == null)
+        if (atom == null || cyclicContext == null)
             return false;
+        if (cyclicContext.FinalWorldByAtom == null)
+            return false;
+        
         if (!cyclicContext.FinalWorldByAtom.ContainsKey(atom))
             return false;
 

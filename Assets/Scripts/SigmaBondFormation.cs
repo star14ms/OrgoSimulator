@@ -1143,6 +1143,9 @@ public class SigmaBondFormation : MonoBehaviour
         };
 
         var sigmaBetween = TryFindSigmaBondBetween(sourceAtom, targetAtom);
+        Phase1ParallelTrack cyclicCoplanarTrack = BuildPhase1PiCyclicCoplanarTrack(sourceAtom, targetAtom, sigmaBetween);
+        if (cyclicCoplanarTrack != null)
+            tracks.Add(cyclicCoplanarTrack);
         Phase1ParallelTrack piCylinderTrack = BuildPhase1PiCylinderTrackFromOpFinalPose(
             sourceAtom,
             targetAtom,
@@ -1163,6 +1166,167 @@ public class SigmaBondFormation : MonoBehaviour
         {
             SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, false);
         }
+    }
+
+    /// <summary>
+    /// For cyclic π formation on an existing σ edge, move the operation-pair atoms (C2/C3)
+    /// toward a shared plane during phase 1.
+    /// Default plane is C1-C2-C3-C4 coplanarity; when a ring atom is already double-bonded,
+    /// use that ring π-center local plane as the target.
+    /// </summary>
+    static Phase1ParallelTrack BuildPhase1PiCyclicCoplanarTrack(
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        CovalentBond sigmaBetween)
+    {
+        if (sourceAtom == null || targetAtom == null || sigmaBetween == null || !sigmaBetween.IsSigmaBondLine())
+            return null;
+        if (!TryBuildShortestSigmaPath(sourceAtom, targetAtom, out var ringPath, sigmaBetween))
+            return null;
+        if (ringPath == null || ringPath.Count < 4)
+            return null;
+
+        AtomFunction c2 = sourceAtom;
+        AtomFunction c3 = targetAtom;
+        AtomFunction c1 = ringPath[1];
+        AtomFunction c4 = ringPath[ringPath.Count - 2];
+        if (c1 == null || c4 == null || c1 == c2 || c1 == c3 || c4 == c2 || c4 == c3 || c1 == c4)
+            return null;
+        var cycleAtoms = new List<AtomFunction>(ringPath.Count + 1) { sourceAtom };
+        for (int i = 1; i < ringPath.Count; i++)
+            cycleAtoms.Add(ringPath[i]);
+
+        Vector3 startC2 = c2.transform.position;
+        Vector3 startC3 = c3.transform.position;
+        bool targetsBuilt = false;
+        Vector3 targetC2 = startC2;
+        Vector3 targetC3 = startC3;
+
+        return new Phase1ParallelTrack
+        {
+            ApplySmoothStep = s =>
+            {
+                if (!targetsBuilt)
+                {
+                    targetsBuilt = TryComputePiCyclicCoplanarTargets(
+                        cycleAtoms,
+                        c1.transform.position,
+                        c2.transform.position,
+                        c3.transform.position,
+                        c4.transform.position,
+                        out targetC2,
+                        out targetC3);
+                }
+                if (!targetsBuilt)
+                    return;
+
+                c2.transform.position = Vector3.Lerp(startC2, targetC2, Mathf.Clamp01(s));
+                c3.transform.position = Vector3.Lerp(startC3, targetC3, Mathf.Clamp01(s));
+            },
+            FinalizeAfterTimeline = () =>
+            {
+                if (!targetsBuilt)
+                    return;
+                c2.transform.position = targetC2;
+                c3.transform.position = targetC3;
+            }
+        };
+    }
+
+    static bool TryComputePiCyclicCoplanarTargets(
+        List<AtomFunction> cycleAtoms,
+        Vector3 c1,
+        Vector3 c2,
+        Vector3 c3,
+        Vector3 c4,
+        out Vector3 outC2,
+        out Vector3 outC3)
+    {
+        outC2 = c2;
+        outC3 = c3;
+
+        bool useExistingPiPlane = TryGetExistingRingPiPlane(
+            cycleAtoms,
+            out Vector3 planePoint,
+            out Vector3 planeNormal);
+        if (!useExistingPiPlane)
+        {
+            // Default fallback: flatten C1-C2-C3-C4 to one plane while moving C2/C3 together.
+            // Build the plane through C1, C4, and the C2/C3 midpoint so projecting C2 and C3
+            // sends them in opposite normal directions (symmetric coplanar settle).
+            Vector3 mid23 = 0.5f * (c2 + c3);
+            planePoint = c1;
+            planeNormal = Vector3.Cross(c4 - c1, mid23 - c1);
+            if (planeNormal.sqrMagnitude < 1e-12f)
+                planeNormal = Vector3.Cross(c3 - c2, c4 - c1);
+            if (planeNormal.sqrMagnitude < 1e-12f)
+                planeNormal = Vector3.Cross(c2 - c1, c4 - c1);
+            if (planeNormal.sqrMagnitude < 1e-12f)
+                return false;
+            planeNormal.Normalize();
+        }
+
+        outC2 = c2 - Vector3.Dot(c2 - planePoint, planeNormal) * planeNormal;
+        outC3 = c3 - Vector3.Dot(c3 - planePoint, planeNormal) * planeNormal;
+        return true;
+    }
+
+    static bool TryGetExistingRingPiPlane(
+        List<AtomFunction> cycleAtoms,
+        out Vector3 planePoint,
+        out Vector3 planeNormal)
+    {
+        planePoint = Vector3.zero;
+        planeNormal = Vector3.zero;
+        if (cycleAtoms == null || cycleAtoms.Count < 4)
+            return false;
+
+        Vector3 cycleCenter = Vector3.zero;
+        int centerCount = 0;
+        for (int i = 0; i < cycleAtoms.Count; i++)
+        {
+            AtomFunction a = cycleAtoms[i];
+            if (a == null) continue;
+            cycleCenter += a.transform.position;
+            centerCount++;
+        }
+        if (centerCount <= 0)
+            return false;
+        cycleCenter /= centerCount;
+
+        int n = cycleAtoms.Count;
+        for (int i = 0; i < n; i++)
+        {
+            AtomFunction center = cycleAtoms[i];
+            if (center == null || center.AtomicNumber != 6 || center.GetPiBondCount() <= 0)
+                continue;
+
+            AtomFunction prev = cycleAtoms[(i - 1 + n) % n];
+            AtomFunction next = cycleAtoms[(i + 1) % n];
+            if (prev == null || next == null)
+                continue;
+            int bondToPrev = center.GetBondsTo(prev);
+            int bondToNext = center.GetBondsTo(next);
+            AtomFunction doubleBondPartner = null;
+            if (bondToPrev > 1) doubleBondPartner = prev;
+            else if (bondToNext > 1) doubleBondPartner = next;
+            if (doubleBondPartner == null)
+                continue;
+
+            Vector3 p = center.transform.position;
+            // Plane from (pi center atom, its ring double-bond partner, cycle center).
+            Vector3 toPartner = doubleBondPartner.transform.position - p;
+            Vector3 toCycleCenter = cycleCenter - p;
+            Vector3 nrm = Vector3.Cross(toPartner, toCycleCenter);
+            if (nrm.sqrMagnitude < 1e-12f)
+                continue;
+
+            planePoint = p;
+            planeNormal = nrm.normalized;
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
