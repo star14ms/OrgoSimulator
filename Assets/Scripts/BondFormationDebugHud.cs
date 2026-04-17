@@ -195,7 +195,7 @@ public class BondFormationDebugHud : MonoBehaviour
         }
     }
 
-    public void SetPhaseWaiting(int phase, bool waiting)
+    public void SetPhaseWaiting(int phase, bool waiting, string phaseLabelOverride = null)
     {
         if (!waiting)
             BondFormationBreakPhaseUiLock.SetLocked(false);
@@ -206,6 +206,8 @@ public class BondFormationDebugHud : MonoBehaviour
         {
             if (!waiting || !BondFormationDebugController.SteppedModeEnabled)
                 nextPhaseLabel.text = "";
+            else if (!string.IsNullOrEmpty(phaseLabelOverride))
+                nextPhaseLabel.text = phaseLabelOverride;
             else
             {
                 nextPhaseLabel.text = phase switch

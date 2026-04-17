@@ -26,16 +26,17 @@ public static class BondFormationDebugController
     }
 
     /// <param name="phase">1 = template created, 2 = joint / vertex-0 alignment resolved, 3 = after further rotation (pre-apply).</param>
-    public static IEnumerator WaitPhase(int phase)
+    /// <param name="phaseLabelOverride">When non-null, shown on the Next row instead of the default 1/3–3/3 labels.</param>
+    public static IEnumerator WaitPhase(int phase, string phaseLabelOverride = null)
     {
         if (!SteppedModeEnabled) yield break;
         _waiting = true;
         _pendingAdvance = false;
-        BondFormationDebugHud.Instance?.SetPhaseWaiting(phase, true);
+        BondFormationDebugHud.Instance?.SetPhaseWaiting(phase, true, phaseLabelOverride);
         while (SteppedModeEnabled && !_pendingAdvance)
             yield return null;
         _waiting = false;
         _pendingAdvance = false;
-        BondFormationDebugHud.Instance?.SetPhaseWaiting(phase, false);
+        BondFormationDebugHud.Instance?.SetPhaseWaiting(phase, false, phaseLabelOverride);
     }
 }

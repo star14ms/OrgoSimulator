@@ -1242,13 +1242,81 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
             // Single bond between the two atoms (full cleavage): redistribute both fragments. π break or any multiply-bonded pair: heavier substituent only.
             bool runBothFragments = bondsBetweenPairBeforeBreak <= 1 && !breakingPiLine;
+            bool cyclicSigmaRingBondBreak =
+                runBothFragments && SigmaBondFormation.TryGetCyclicSigmaBondBreakRingSize(this, out _);
+
+            List<AtomFunction> ringPathOrderedC1ToCn = null;
+            if (cyclicSigmaRingBondBreak)
+                SigmaBondFormation.TryGetSigmaShortestPathBetween(atomA, atomB, out ringPathOrderedC1ToCn);
+
+            // Shortest path is always atomA→atomB; cyclic σ break naming wants C1 = 2e redistribution recipient, not 0e.
+            if (ringPathOrderedC1ToCn != null && ringPathOrderedC1ToCn.Count >= 3)
+            {
+                AtomFunction twoERecipient = ResolveCyclicSigmaBreakRedistributionRecipientAtom(
+                    returnOrbitalTo, otherAtom, orbital, newOrbital);
+                int last = ringPathOrderedC1ToCn.Count - 1;
+                if (twoERecipient != null
+                    && ringPathOrderedC1ToCn[0] != twoERecipient
+                    && ringPathOrderedC1ToCn[last] == twoERecipient)
+                    ringPathOrderedC1ToCn.Reverse();
+            }
+
+            bool debugSteppedChainVisualization =
+                cyclicSigmaRingBondBreak
+                && ringPathOrderedC1ToCn != null
+                && ringPathOrderedC1ToCn.Count >= 3
+                && OrbitalRedistribution.DebugCyclicSigmaBondBreakSteppedTemplate
+                && BondFormationDebugController.SteppedModeEnabled;
+
+            OrbitalRedistribution.CyclicSigmaChainAtomAnimation cyclicChainAtomAnim = null;
+            if (cyclicSigmaRingBondBreak
+                && ringPathOrderedC1ToCn != null
+                && ringPathOrderedC1ToCn.Count >= 3
+                && !debugSteppedChainVisualization)
+            {
+                OrbitalRedistribution.TryBuildCyclicSigmaBondBreakStaggeredChainAtomAnimation(
+                    ringPathOrderedC1ToCn,
+                    out cyclicChainAtomAnim);
+            }
 
             OrbitalRedistribution.RedistributionAnimation animA = null;
             OrbitalRedistribution.RedistributionAnimation animB = null;
+            bool applySecondaryFragmentRedistribution = false;
+            AtomFunction cyclicSigmaBreakRecipient = null;
+            AtomFunction cyclicSigmaBreakPartner = null;
+            ElectronOrbitalFunction cyclicSigmaBreakAntiRecipient = null;
+            OrbitalRedistribution.CyclicRedistributionContext cyclicSigmaBreakRedistContext = null;
             if (runBothFragments)
             {
-                animA = OrbitalRedistribution.BuildOrbitalRedistribution(atomA, atomB, null, antiGuideA, isBondingEvent: false);
-                animB = OrbitalRedistribution.BuildOrbitalRedistribution(atomB, atomA, null, antiGuideB, isBondingEvent: false);
+                if (cyclicSigmaRingBondBreak)
+                {
+                    cyclicSigmaBreakRecipient = ResolveCyclicSigmaBreakRedistributionRecipientAtom(
+                        returnOrbitalTo, otherAtom, orbital, newOrbital);
+                    cyclicSigmaBreakPartner = cyclicSigmaBreakRecipient == atomA ? atomB : atomA;
+                    cyclicSigmaBreakAntiRecipient = cyclicSigmaBreakRecipient == atomA ? antiGuideA : antiGuideB;
+                    cyclicSigmaBreakRedistContext =
+                        OrbitalRedistribution.CreateCyclicSigmaBondBreakRedistributionBlockContext(
+                            ringPathOrderedC1ToCn);
+                    animA = OrbitalRedistribution.BuildOrbitalRedistribution(
+                        cyclicSigmaBreakRecipient,
+                        cyclicSigmaBreakPartner,
+                        guideAtomOrbitalOp: null,
+                        atomOrbitalOp: cyclicSigmaBreakAntiRecipient,
+                        guideOrbitalPredetermined: null,
+                        finalDirectionForGuideOrbital: default,
+                        atomMoveAnimation: null,
+                        visitedAtoms: null,
+                        isBondingEvent: false,
+                        cyclicContext: cyclicSigmaBreakRedistContext);
+                    animB = null;
+                    applySecondaryFragmentRedistribution = false;
+                }
+                else
+                {
+                    animA = OrbitalRedistribution.BuildOrbitalRedistribution(atomA, atomB, null, antiGuideA, isBondingEvent: false);
+                    animB = OrbitalRedistribution.BuildOrbitalRedistribution(atomB, atomA, null, antiGuideB, isBondingEvent: false);
+                    applySecondaryFragmentRedistribution = true;
+                }
             }
             else
             {
@@ -1260,16 +1328,141 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 AtomFunction partner = heavy == atomA ? atomB : atomA;
                 var antiHeavy = heavy == atomA ? antiGuideA : antiGuideB;
                 animA = OrbitalRedistribution.BuildOrbitalRedistribution(heavy, partner, null, antiHeavy, isBondingEvent: false);
+                applySecondaryFragmentRedistribution = false;
             }
 
-            atomA.StartCoroutine(CoLerpBondBreakRedistributionFromAnimations(animA, animB, runBothFragments, FinishBreakBondTail));
+            if (debugSteppedChainVisualization)
+            {
+                atomA.StartCoroutine(CoBondBreakCyclicStaggerChainSteppedDebugThenRedistribute(
+                    ringPathOrderedC1ToCn,
+                    cyclicSigmaBreakRecipient,
+                    cyclicSigmaBreakPartner,
+                    cyclicSigmaBreakAntiRecipient,
+                    cyclicSigmaBreakRedistContext,
+                    animA,
+                    animB,
+                    applySecondaryFragmentRedistribution,
+                    FinishBreakBondTail));
+                return;
+            }
+
+            atomA.StartCoroutine(CoLerpBondBreakRedistributionFromAnimations(
+                animA, animB, applySecondaryFragmentRedistribution, FinishBreakBondTail, cyclicChainAtomAnim));
             return;
         }
 
         FinishBreakBondTail();
     }
 
+    /// <summary>
+    /// Cyclic σ bond break: run <see cref="OrbitalRedistribution.BuildOrbitalRedistribution"/> once on the fragment that
+    /// keeps the larger electron count on the cleaved σ lobes (2e drag-cleave on <paramref name="returnOrbitalTo"/> vs 0e
+    /// on <paramref name="otherAtom"/>); 1+1 homolytic tie-breaks to <paramref name="returnOrbitalTo"/>.
+    /// </summary>
+    static AtomFunction ResolveCyclicSigmaBreakRedistributionRecipientAtom(
+        AtomFunction returnOrbitalTo,
+        AtomFunction otherAtom,
+        ElectronOrbitalFunction returnSideExBondLobe,
+        ElectronOrbitalFunction otherSideNewLobe)
+    {
+        if (returnOrbitalTo == null) return otherAtom;
+        if (otherAtom == null) return returnOrbitalTo;
+        int eRet = returnSideExBondLobe != null ? returnSideExBondLobe.ElectronCount : 0;
+        int eOth = otherSideNewLobe != null ? otherSideNewLobe.ElectronCount : 0;
+        if (eRet > eOth) return returnOrbitalTo;
+        if (eOth > eRet) return otherAtom;
+        return returnOrbitalTo;
+    }
+
     const float BondBreakRedistributionDuration = 0.65f;
+
+    /// <summary>
+    /// Stepped cyclic σ-chain: builds stagger targets invisibly, pauses on HUD Next for redistribution template preview, then bond-break lerp.
+    /// </summary>
+    IEnumerator CoBondBreakCyclicStaggerChainSteppedDebugThenRedistribute(
+        List<AtomFunction> ringPathOrderedC1ToCn,
+        AtomFunction cyclicSigmaBreakRecipient,
+        AtomFunction cyclicSigmaBreakPartner,
+        ElectronOrbitalFunction cyclicSigmaBreakAntiRecipient,
+        OrbitalRedistribution.CyclicRedistributionContext cyclicSigmaBreakRedistContext,
+        OrbitalRedistribution.RedistributionAnimation animPrimary,
+        OrbitalRedistribution.RedistributionAnimation animSecondary,
+        bool applySecondary,
+        Action onComplete)
+    {
+        OrbitalRedistribution.CyclicSigmaChainAtomAnimation chainAnim = null;
+        if (atomA == null || atomB == null)
+        {
+            onComplete?.Invoke();
+            yield break;
+        }
+
+        OrbitalRedistribution.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
+        int n = ringPathOrderedC1ToCn.Count;
+        var targetWorld = new Vector3[n];
+        for (int i = 0; i < n; i++)
+            targetWorld[i] = ringPathOrderedC1ToCn[i].transform.position;
+
+        float bondLen = Vector3.Distance(targetWorld[0], targetWorld[1]);
+        if (bondLen < 1e-4f)
+        {
+            OrbitalRedistribution.TryBuildCyclicSigmaBondBreakStaggeredChainAtomAnimation(
+                ringPathOrderedC1ToCn,
+                out chainAnim);
+        }
+        else
+        {
+            bool failed = false;
+            for (int i = 2; i < n; i++)
+            {
+                if (!OrbitalRedistribution.TryComputeCyclicSigmaStaggerChainTargetsOneStep(
+                        ringPathOrderedC1ToCn, targetWorld, bondLen, i,
+                        out _, out _, out _))
+                {
+                    failed = true;
+                    break;
+                }
+            }
+
+            if (failed)
+            {
+                OrbitalRedistribution.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
+                OrbitalRedistribution.TryBuildCyclicSigmaBondBreakStaggeredChainAtomAnimation(
+                    ringPathOrderedC1ToCn,
+                    out chainAnim);
+            }
+            else
+            {
+                chainAnim = OrbitalRedistribution.BuildCyclicSigmaChainAtomAnimationFromTargetWorld(
+                    ringPathOrderedC1ToCn, targetWorld);
+            }
+        }
+
+        if (atomA == null || atomB == null)
+        {
+            OrbitalRedistribution.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
+            onComplete?.Invoke();
+            yield break;
+        }
+
+        if (cyclicSigmaBreakRecipient != null
+            && cyclicSigmaBreakPartner != null
+            && cyclicSigmaBreakRedistContext != null)
+        {
+            OrbitalRedistribution.AppendCyclicSigmaBondBreakRedistributionTemplateDebugVisuals(
+                cyclicSigmaBreakRecipient,
+                cyclicSigmaBreakPartner,
+                cyclicSigmaBreakAntiRecipient,
+                cyclicSigmaBreakRedistContext);
+            yield return BondFormationDebugController.WaitPhase(
+                4,
+                "cyclo σ bond break redistribution templates");
+        }
+
+        OrbitalRedistribution.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
+        yield return StartCoroutine(CoLerpBondBreakRedistributionFromAnimations(
+            animPrimary, animSecondary, applySecondary, onComplete, chainAnim));
+    }
 
     /// <summary>
     /// Smoothstep-lerp <see cref="OrbitalRedistribution.BuildOrbitalRedistribution"/> result(s). Started via <see cref="AtomFunction.StartCoroutine"/> on an endpoint so this bond GameObject can be destroyed in <paramref name="onComplete"/>.
@@ -1278,7 +1471,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         OrbitalRedistribution.RedistributionAnimation animPrimary,
         OrbitalRedistribution.RedistributionAnimation animSecondary,
         bool applySecondary,
-        Action onComplete)
+        Action onComplete,
+        OrbitalRedistribution.CyclicSigmaChainAtomAnimation cyclicChainAtomAnim = null)
     {
         if (atomA == null || atomB == null)
         {
@@ -1286,23 +1480,30 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             yield break;
         }
 
+        var sigmaLineAtoms = new HashSet<AtomFunction> { atomA, atomB };
+        cyclicChainAtomAnim?.GatherAtoms(sigmaLineAtoms);
+
         float elapsed = 0f;
         while (elapsed < BondBreakRedistributionDuration)
         {
             elapsed += Time.deltaTime;
             float s = BondBreakRedistributionDuration > 1e-6f ? Mathf.Clamp01(elapsed / BondBreakRedistributionDuration) : 1f;
             float smooth = s * s * (3f - 2f * s);
+            // Redistribution (incl. fragment rigid children) must run first; cyclic chain lerp then overwrites
+            // ring-atom nuclei to dynamic stagger targets so FragmentStartWorld does not cancel atom motion.
             animPrimary?.Apply(smooth);
             if (applySecondary)
                 animSecondary?.Apply(smooth);
-            AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(new HashSet<AtomFunction> { atomA, atomB });
+            cyclicChainAtomAnim?.Apply(smooth);
+            AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(sigmaLineAtoms);
             yield return null;
         }
 
         animPrimary?.Apply(1f);
         if (applySecondary)
             animSecondary?.Apply(1f);
-        AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(new HashSet<AtomFunction> { atomA, atomB });
+        cyclicChainAtomAnim?.Apply(1f);
+        AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(sigmaLineAtoms);
 
         atomA.RefreshCharge();
         atomB.RefreshCharge();

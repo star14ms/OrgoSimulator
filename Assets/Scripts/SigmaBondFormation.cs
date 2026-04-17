@@ -587,7 +587,7 @@ public class SigmaBondFormation : MonoBehaviour
         };
     }
 
-    static bool TryBuildShortestSigmaPath(AtomFunction start, AtomFunction end, out List<AtomFunction> path)
+    static bool TryBuildShortestSigmaPath(AtomFunction start, AtomFunction end, out List<AtomFunction> path, CovalentBond excludeSigmaBond = null)
     {
         path = null;
         if (start == null || end == null) return false;
@@ -611,6 +611,7 @@ public class SigmaBondFormation : MonoBehaviour
             {
                 var cb = cur.CovalentBonds[bi];
                 if (cb == null || !cb.IsSigmaBondLine()) continue;
+                if (excludeSigmaBond != null && ReferenceEquals(cb, excludeSigmaBond)) continue;
                 AtomFunction next = cb.AtomA == cur ? cb.AtomB : cb.AtomA;
                 if (next == null || parent.ContainsKey(next)) continue;
                 parent[next] = cur;
@@ -733,6 +734,29 @@ public class SigmaBondFormation : MonoBehaviour
         if (!TryBuildShortestSigmaPath(guide, nonGuide, out var pathAtoms) || pathAtoms == null) return false;
         cycleSize = pathAtoms.Count;
         return cycleSize >= 3 && cycleSize <= 6;
+    }
+
+    /// <summary>
+    /// True when this σ-line bond lies on a simple ring of size 3–6: with this bond excluded from traversal, the
+    /// endpoints are still connected by a shortest σ-only path; <paramref name="ringSize"/> is that path’s vertex count
+    /// (including both endpoints), i.e. the ring size.
+    /// </summary>
+    public static bool TryGetCyclicSigmaBondBreakRingSize(CovalentBond sigmaBond, out int ringSize)
+    {
+        ringSize = 0;
+        if (sigmaBond == null || !sigmaBond.IsSigmaBondLine()) return false;
+        var a = sigmaBond.AtomA;
+        var b = sigmaBond.AtomB;
+        if (a == null || b == null) return false;
+        if (!TryBuildShortestSigmaPath(a, b, out var pathAtoms, sigmaBond) || pathAtoms == null) return false;
+        ringSize = pathAtoms.Count;
+        return ringSize >= 3 && ringSize <= 6;
+    }
+
+    /// <summary>Shortest σ-line path between endpoints (e.g. along a ring after the direct bond was removed).</summary>
+    public static bool TryGetSigmaShortestPathBetween(AtomFunction start, AtomFunction end, out List<AtomFunction> path)
+    {
+        return TryBuildShortestSigmaPath(start, end, out path, excludeSigmaBond: null);
     }
 
     static void BuildPhase1RedistributeTemplatePreviewVisuals(
