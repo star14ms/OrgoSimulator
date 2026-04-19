@@ -953,6 +953,8 @@ public static class OrbitalRedistribution
 
     /// <summary>
     /// Build redistribution plan inputs for non-guide phase 1. Empty op orbital (0e) is counted as occupied nonbonding for VSEPR group count.
+    /// When <paramref name="formingPiPrecursorAlignTrigonalPartnerPlane"/> is true (π drag phase 1 only), coplanar trigonal alignment
+    /// uses the guide’s σ-plane even though the π <see cref="CovalentBond"/> line is not registered yet.
     /// </summary>
     public static RedistributionAnimation BuildOrbitalRedistribution(
         AtomFunction atom,
@@ -964,7 +966,8 @@ public static class OrbitalRedistribution
         System.Func<float, Vector3> atomMoveAnimation = null,
         HashSet<AtomFunction> visitedAtoms = null,
         bool isBondingEvent = true,
-        CyclicRedistributionContext cyclicContext = null)
+        CyclicRedistributionContext cyclicContext = null,
+        bool formingPiPrecursorAlignTrigonalPartnerPlane = false)
     {
         if (atom == null) return new RedistributionAnimation(null);
         _ = atomMoveAnimation;
@@ -1141,7 +1144,9 @@ public static class OrbitalRedistribution
                 guideDirLocal,
                 atom,
                 guideAtom,
-                nVseprGroup);
+                nVseprGroup,
+                staggerRefInPlaneNonGuideLocalFromChainTargets: null,
+                formingPiPrecursorAlignTrigonalPartnerPlane: formingPiPrecursorAlignTrigonalPartnerPlane);
         GroupEntry guideGroupForMatching = usePrecookedDirectionTemplate ? null : guideGroup;
 
         int[] bestPerm = FindBestCombinationVSEPRGroupToFinalDirection(
@@ -2540,7 +2545,8 @@ public static class OrbitalRedistribution
         AtomFunction nonGuideAtom,
         AtomFunction guideAtom,
         int nVseprGroup,
-        Vector3? staggerRefInPlaneNonGuideLocalFromChainTargets = null)
+        Vector3? staggerRefInPlaneNonGuideLocalFromChainTargets = null,
+        bool formingPiPrecursorAlignTrigonalPartnerPlane = false)
     {
         var aligned = new List<Vector3>();
         if (finalDirectionsTemplate == null || finalDirectionsTemplate.Count == 0)
@@ -2582,23 +2588,26 @@ public static class OrbitalRedistribution
         }
         else
         {
+            // Trigonal π partner (e.g. acyl C): use guide’s σ-plane as twist reference when a π edge exists, or during
+            // π formation phase 1 before CovalentBond adds the π line (<see cref="formingPiPrecursorAlignTrigonalPartnerPlane"/>).
+            bool piWithTrigonalGuide = guideAtom != null
+                && CountVseprGroupsForAtom(guideAtom) == 3
+                && finalDirectionsTemplate.Count >= 2
+                && nVseprGroup >= 3
+                && (HasPiBondBetweenAtoms(nonGuideAtom, guideAtom) || formingPiPrecursorAlignTrigonalPartnerPlane);
+
             Vector3? refTrig = staggerRefInPlaneNonGuideLocalFromChainTargets;
             if (!refTrig.HasValue
-                && nVseprGroup == 3
-                && guideAtom != null
-                && CountVseprGroupsForAtom(guideAtom) == 3
-                && HasPiBondBetweenAtoms(nonGuideAtom, guideAtom)
-                && finalDirectionsTemplate.Count >= 2
+                && piWithTrigonalGuide
+                && TryGetPiPartnerTrigonalPlaneRefInNonGuideLocal(nonGuideAtom, guideAtom, axisLocal, out Vector3 trigonalRefFromPartnerPlane))
+                refTrig = trigonalRefFromPartnerPlane;
+            if (!refTrig.HasValue
+                && piWithTrigonalGuide
                 && TryGetGuideTetrahedralStaggerReferenceInNonGuideLocal(
                     nonGuideAtom, guideAtom, axisLocal, out Vector3 trigonalRefLegacy))
                 refTrig = trigonalRefLegacy;
 
-            if (refTrig.HasValue
-                && nVseprGroup == 3
-                && guideAtom != null
-                && CountVseprGroupsForAtom(guideAtom) == 3
-                && HasPiBondBetweenAtoms(nonGuideAtom, guideAtom)
-                && finalDirectionsTemplate.Count >= 2)
+            if (refTrig.HasValue && piWithTrigonalGuide)
             {
                 Vector3 trigonalRefInPlaneLocal = refTrig.Value;
                 Vector3 v1 = (qAlign * finalDirectionsTemplate[1]).normalized;
@@ -2663,6 +2672,113 @@ public static class OrbitalRedistribution
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// For π-linked trigonal redistribution on <paramref name="nonGuideAtom"/>, in-plane twist reference in non-guide
+    /// local space derived from <paramref name="guideAtom"/>'s trigonal molecular plane (two σ substituents other than
+    /// the non-guide), so the redistributed sp² plane matches the π partner's plane rather than a lone σ ray or lone pair.
+    /// </summary>
+    static bool TryGetPiPartnerTrigonalPlaneRefInNonGuideLocal(
+        AtomFunction nonGuideAtom,
+        AtomFunction guideAtom,
+        Vector3 axisLocalNonGuideTowardGuide,
+        out Vector3 refInPlaneLocal)
+    {
+        refInPlaneLocal = default;
+        if (nonGuideAtom == null || guideAtom == null) return false;
+        Vector3 axisWorld = nonGuideAtom.transform.TransformDirection(axisLocalNonGuideTowardGuide).normalized;
+        if (axisWorld.sqrMagnitude < 1e-12f) return false;
+        Vector3 towardNonGuideWorld = (nonGuideAtom.transform.position - guideAtom.transform.position).normalized;
+        if (towardNonGuideWorld.sqrMagnitude < 1e-12f) return false;
+
+        const float sigmaAxisMaxDeg = 18f;
+        var entries = new List<(Vector3 dw, int id)>(3);
+        foreach (var cb in guideAtom.CovalentBonds)
+        {
+            if (cb == null || cb.Orbital == null || !cb.IsSigmaBondLine()) continue;
+            AtomFunction other = cb.AtomA == guideAtom ? cb.AtomB : cb.AtomA;
+            if (other == null || other == nonGuideAtom) continue;
+            Vector3 dw = (cb.Orbital.transform.position - guideAtom.transform.position).normalized;
+            if (Vector3.Angle(dw, towardNonGuideWorld) < sigmaAxisMaxDeg) continue;
+            entries.Add((dw, other.GetInstanceID()));
+        }
+
+        Vector3 nPlane = default;
+        bool haveNPlane = false;
+
+        if (entries.Count >= 2)
+        {
+            entries.Sort((a, b) => a.id.CompareTo(b.id));
+            Vector3 d0 = entries[0].dw;
+            Vector3 d1 = entries[1].dw;
+            nPlane = Vector3.Cross(d0, d1);
+            if (nPlane.sqrMagnitude < 1e-14f && entries.Count > 2)
+                nPlane = Vector3.Cross(d0, entries[2].dw);
+            haveNPlane = nPlane.sqrMagnitude > 1e-14f;
+        }
+        else if (entries.Count == 1)
+        {
+            // Acyl C with only one heavy σ besides =O (e.g. Cα before –OH): plane = span(bond into π partner, that σ).
+            nPlane = Vector3.Cross(towardNonGuideWorld, entries[0].dw);
+            haveNPlane = nPlane.sqrMagnitude > 1e-14f;
+        }
+        else
+        {
+            // e.g. nonGuide=C, guide=O: carbonyl O has no second heavy σ — use the acyl C’s σ legs other than O.
+            Vector3 towardGuideFromNon = (guideAtom.transform.position - nonGuideAtom.transform.position).normalized;
+            if (towardGuideFromNon.sqrMagnitude < 1e-14f)
+                haveNPlane = false;
+            else
+            {
+                var legs = new List<(Vector3 dw, int id)>(3);
+                foreach (var cb in nonGuideAtom.CovalentBonds)
+                {
+                    if (cb == null || cb.Orbital == null || !cb.IsSigmaBondLine()) continue;
+                    AtomFunction other = cb.AtomA == nonGuideAtom ? cb.AtomB : cb.AtomA;
+                    if (other == null || other == guideAtom) continue;
+                    Vector3 dw = (cb.Orbital.transform.position - nonGuideAtom.transform.position).normalized;
+                    if (Vector3.Angle(dw, towardGuideFromNon) < sigmaAxisMaxDeg) continue;
+                    legs.Add((dw, other.GetInstanceID()));
+                }
+
+                if (legs.Count >= 2)
+                {
+                    legs.Sort((a, b) => a.id.CompareTo(b.id));
+                    nPlane = Vector3.Cross(legs[0].dw, legs[1].dw);
+                    if (nPlane.sqrMagnitude < 1e-14f && legs.Count > 2)
+                        nPlane = Vector3.Cross(legs[0].dw, legs[2].dw);
+                    haveNPlane = nPlane.sqrMagnitude > 1e-14f;
+                }
+                else if (legs.Count == 1)
+                {
+                    nPlane = Vector3.Cross(towardGuideFromNon, legs[0].dw);
+                    haveNPlane = nPlane.sqrMagnitude > 1e-14f;
+                }
+            }
+        }
+
+        if (!haveNPlane)
+            return false;
+
+        nPlane.Normalize();
+        // In-plane direction on the guide's trigonal plane, ⊥ bond axis (axis lies in that plane).
+        Vector3 inPlaneRefWorld = Vector3.Cross(axisWorld, nPlane);
+        if (inPlaneRefWorld.sqrMagnitude < 1e-12f)
+        {
+            inPlaneRefWorld = Vector3.Cross(nPlane, axisWorld);
+            if (inPlaneRefWorld.sqrMagnitude < 1e-12f)
+            {
+                inPlaneRefWorld = Vector3.ProjectOnPlane(towardNonGuideWorld, axisWorld);
+                if (inPlaneRefWorld.sqrMagnitude < 1e-12f) return false;
+            }
+        }
+
+        inPlaneRefWorld.Normalize();
+        refInPlaneLocal = nonGuideAtom.transform.InverseTransformDirection(inPlaneRefWorld).normalized;
+        if (refInPlaneLocal.sqrMagnitude < 1e-10f) return false;
+
+        return true;
     }
 
     static bool TryGetSigmaChainTargetWorldPosition(

@@ -1001,6 +1001,54 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         return true;
     }
 
+    /// <summary>
+    /// Programmatic lone-lobe aim with exactly one σ neighbor: same snapped spin as <see cref="ApplyLoneOrbitalSpinAroundSigmaAxis"/>
+    /// after a drag (<see cref="ApplyVseprRotationAfterDrag"/>), but uses <b>current</b> lobe directions (no pointer-down cache).
+    /// <paramref name="tipWorld"/> is any world point defining the desired radial (same as drag tip).
+    /// </summary>
+    public static bool TrySpinLoneOrbitalsAroundSingleSigmaFromWorldTip(
+        AtomFunction atom,
+        ElectronOrbitalFunction referenceLoneNonbond,
+        Vector3 tipWorld)
+    {
+        if (atom == null || referenceLoneNonbond == null || referenceLoneNonbond.Bond != null) return false;
+        if (!atom.TryGetSingleSigmaNeighbor(out var neighbor) || neighbor == null) return false;
+
+        Vector3 sigmaW = neighbor.transform.position - atom.transform.position;
+        if (sigmaW.sqrMagnitude < 1e-10f) return false;
+        sigmaW.Normalize();
+
+        Vector3 dDragW = WorldOrbitalRadialDirection(referenceLoneNonbond.transform, atom);
+        Vector3 dTargetW = WorldTargetDirectionFromTip(atom, tipWorld);
+
+        Vector3 u0 = dDragW - sigmaW * Vector3.Dot(dDragW, sigmaW);
+        Vector3 u1 = dTargetW - sigmaW * Vector3.Dot(dTargetW, sigmaW);
+        if (u0.sqrMagnitude < 1e-8f || u1.sqrMagnitude < 1e-8f)
+            return false;
+        u0.Normalize();
+        u1.Normalize();
+
+        float delta = Vector3.SignedAngle(u0, u1, sigmaW);
+        float snapped = Mathf.Round(delta / RotateStepDeg) * RotateStepDeg;
+        Quaternion rWorld = Mathf.Abs(snapped) < 0.01f ? Quaternion.identity : Quaternion.AngleAxis(snapped, sigmaW);
+
+        foreach (var orb in atom.GetComponentsInChildren<ElectronOrbitalFunction>())
+        {
+            if (orb.transform.parent != atom.transform) continue;
+            if (orb.Bond != null) continue;
+            Vector3 dW = WorldOrbitalRadialDirection(orb.transform, atom);
+            Vector3 dNewW = (rWorld * dW).normalized;
+            Vector3 localDir = atom.transform.InverseTransformDirection(dNewW);
+            if (localDir.sqrMagnitude < 1e-10f) continue;
+            localDir.Normalize();
+            var specSpin = NucleusLobeSpec.ForCanonicalSlotAlongTipNoRollHint(localDir, atom.BondRadius);
+            NucleusLobePose.ApplyToNucleusChild(atom, orb, specSpin);
+        }
+
+        RefreshAllOrbitalElectronSlotPositions3D(atom);
+        return true;
+    }
+
     ElectronOrbitalFunction TryFindSwapTarget(AtomFunction atom, Vector3 tip)
     {
         if (atom == null || bond != null) return null;
@@ -1039,6 +1087,34 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         transform.localRotation = other.transform.localRotation;
         other.transform.localPosition = originalLocalPosition;
         other.transform.localRotation = originalLocalRotation;
+    }
+
+    /// <summary>
+    /// Same eligibility as lone-on-lone drag <see cref="TryFindSwapTarget"/>: both occupied or both empty; exchange current
+    /// local poses (symmetric). Drag uses <see cref="SwapPositionsWith"/> with pointer-down originals on the drop target.
+    /// </summary>
+    public static bool TrySwapNonbondNucleusChildLocalPoses(ElectronOrbitalFunction a, ElectronOrbitalFunction b)
+    {
+        if (a == null || b == null || ReferenceEquals(a, b)) return false;
+        if (a.Bond != null || b.Bond != null) return false;
+        if ((a.ElectronCount == 0) != (b.ElectronCount == 0)) return false;
+        if (a.transform.parent == null || a.transform.parent != b.transform.parent) return false;
+        var atom = a.transform.parent.GetComponent<AtomFunction>();
+        if (atom == null) return false;
+
+        Vector3 lpA = a.transform.localPosition;
+        Quaternion lrA = a.transform.localRotation;
+        Vector3 lsA = a.transform.localScale;
+        a.transform.localPosition = b.transform.localPosition;
+        a.transform.localRotation = b.transform.localRotation;
+        a.transform.localScale = b.transform.localScale;
+        b.transform.localPosition = lpA;
+        b.transform.localRotation = lrA;
+        b.transform.localScale = lsA;
+
+        RefreshAllOrbitalElectronSlotPositions3D(atom);
+        atom.RefreshCharge();
+        return true;
     }
 
     /// <summary>

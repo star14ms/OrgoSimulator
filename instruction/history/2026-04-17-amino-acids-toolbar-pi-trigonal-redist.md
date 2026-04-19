@@ -1,0 +1,9 @@
+# Summary (since last /compact)
+
+Adds **proteinogenic amino-acid construction** (non-cyclic) via new `AminoAcidMoleculeLibrary`: backbone NH₂–CH(R)–COOH with deterministic carbonyl O placement, π promotion, hydroxyl attach, side-chain growth by edit-mode rules, backbone amine lone-pair alignment, and post-π `BuildOrbitalRedistribution` in `EnforceTrigonalPlanarAtDoubleBond` so instant promote paths get the same planar alignment as drag-π.
+
+**Orbital redistribution:** `OrbitalRedistribution` gains π-partner trigonal plane references (`TryGetPiPartnerTrigonalPlaneRefInNonGuideLocal`) with **G1/NG1** fallbacks when the acyl center has only one other σ before –OH or when the guide is carbonyl O; `AlignFinalDirectionsTemplateToGuide` supports **π precursor** alignment via `formingPiPrecursorAlignTrigonalPartnerPlane` and **`nVseprGroup >= 3`** with a trigonal π partner. `SigmaBondFormation` wires π phase-1 redistribute with cyclic context, guide direction, and optional template preview visuals.
+
+**UI / selection:** `AtomQuickAddUI` adds an **Amino acids** dropdown (20 abbreviations), moves free-electron spawn to row 1, replaces cycloalkane labels with **polygon icons**, widens row 2. `EditModeManager` adds BFS-based continue-bonding pick, `SelectLoneOrbitalTowardDirection`, and related attach/orbital selection behavior; `ElectronOrbitalFunction` adds programmatic lone spin and non-bond pose swap helpers used by the library.
+
+**Other:** `MoleculeBuilder.ForceTrigonalPlanarNeighborPositionsForPiCenter` is **public**, co-rotates fragment **rotation** with position and refreshes hybrid alignment per moved atom. `AtomFunction` sulfur VSEPR slot count fix for organic S(IV), `UnityEngine.Object` qualification for FindObjects. `.gitignore` adds `.vercel`; `deploy-webgl.sh` tweak; new Unity build profile assets; TMP fallback asset touched.

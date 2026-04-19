@@ -562,8 +562,10 @@ public class MoleculeBuilder : MonoBehaviour
     /// Hard-enforce trigonal-planar neighbor positions (120°) for π C/N FG centers after final redistribute.
     /// This is a deterministic fallback for cases where TryComputeTrigonalPlanarSigmaNeighborRelaxTargets returns targets
     /// but maps to near-zero world movement due to rigid-fragment mapping/gauge.
+    /// Rigid motion applies the same <see cref="Quaternion"/> to each fragment atom’s <b>rotation</b> as well as position
+    /// (otherwise sp³ substituents like backbone –OH oxygen keep a stale local hybrid frame and look “non-tetrahedral”).
     /// </summary>
-    static void ForceTrigonalPlanarNeighborPositionsForPiCenter(AtomFunction center, AtomFunction towardParentPartner)
+    public static void ForceTrigonalPlanarNeighborPositionsForPiCenter(AtomFunction center, AtomFunction towardParentPartner)
     {
         if (center == null || towardParentPartner == null) return;
         int z = center.AtomicNumber;
@@ -643,6 +645,12 @@ public class MoleculeBuilder : MonoBehaviour
                 {
                     if (a == null) continue;
                     a.transform.position = center.transform.position + r * (a.transform.position - center.transform.position);
+                    a.transform.rotation = r * a.transform.rotation;
+                }
+                foreach (var a in frag)
+                {
+                    if (a == null) continue;
+                    a.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(center);
                 }
             }
             else

@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -15,6 +16,72 @@ using UnityEngine.InputSystem;
 /// </summary>
 public class EditModeManager : MonoBehaviour
 {
+    /// <summary>
+    /// BFS over σ-connected atoms from <paramref name="start"/>, skipping <paramref name="explored"/> (built as we go).
+    /// First atom with any 1e non-bond lone gets <see cref="AtomFunction.GetOrbitalClosestToAngle"/> for highlight.
+    /// When expanding <paramref name="start"/> only, visit <paramref name="preferNeighborFirst"/> first (bond-back bias toward anchor).
+    /// </summary>
+    static bool TryPickAtomForContinueBondingBfs(
+        AtomFunction start,
+        AtomFunction preferNeighborFirst,
+        out AtomFunction pickedAtom,
+        out ElectronOrbitalFunction pickedOrbital)
+    {
+        pickedAtom = null;
+        pickedOrbital = null;
+        if (start == null) return false;
+
+        var explored = new HashSet<AtomFunction>();
+        var q = new Queue<AtomFunction>();
+        q.Enqueue(start);
+
+        while (q.Count > 0)
+        {
+            var a = q.Dequeue();
+            if (a == null || !explored.Add(a)) continue;
+
+            if (a.GetLoneOrbitalsWithOneElectronSortedByAngle().Count > 0)
+            {
+                var orb = a.GetOrbitalClosestToAngle(0f);
+                if (orb == null) continue;
+                pickedAtom = a;
+                pickedOrbital = orb;
+                return true;
+            }
+
+            var neigh = a.GetDistinctSigmaNeighborAtoms();
+            if (neigh == null || neigh.Count == 0) continue;
+
+            var ordered = new List<AtomFunction>();
+            if (ReferenceEquals(a, start) && preferNeighborFirst != null && neigh.Contains(preferNeighborFirst))
+            {
+                ordered.Add(preferNeighborFirst);
+                foreach (var n in neigh)
+                {
+                    if (n != null && !ReferenceEquals(n, preferNeighborFirst))
+                        ordered.Add(n);
+                }
+            }
+            else
+            {
+                foreach (var n in neigh)
+                {
+                    if (n != null)
+                        ordered.Add(n);
+                }
+                ordered.Sort((x, y) => x.GetInstanceID().CompareTo(y.GetInstanceID()));
+            }
+
+            foreach (var n in ordered)
+            {
+                if (explored.Contains(n)) continue;
+                q.Enqueue(n);
+            }
+        }
+
+        return false;
+    }
+
     [SerializeField] GameObject atomPrefab;
     bool editModeActive = true;
     bool hAutoMode;
@@ -418,7 +485,7 @@ public class EditModeManager : MonoBehaviour
         selectedOrbital = null;
         selectedMolecule = null;
 
-        var atoms = Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
+        var atoms = UnityEngine.Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
         var seen = new HashSet<AtomFunction>();
         foreach (var a in atoms)
         {
@@ -560,16 +627,27 @@ public class EditModeManager : MonoBehaviour
         return TryReplaceHydrogenWithAtom(atomicNumber);
     }
 
+    /// <summary>Select the current atom's 1e lone orbital nearest a world-space direction.</summary>
+    public bool SelectLoneOrbitalTowardDirection(Vector3 worldDirection)
+    {
+        if (selectedAtom == null) return false;
+        if (worldDirection.sqrMagnitude < 1e-10f) return false;
+        var orb = selectedAtom.GetLoneOrbitalWithOneElectron(worldDirection.normalized);
+        if (orb == null) return false;
+        OnOrbitalClicked(selectedAtom, orb);
+        return true;
+    }
+
     /// <summary>
     /// Periodic table / toolbar: bond a new atom to the selection — terminal H replacement, or σ bond from the
     /// selected lone (1e) orbital (or closest valid lone orbital when none highlighted).
     /// </summary>
-    public bool TryAddAtomToSelected(int atomicNumber)
+    public bool TryAddAtomToSelected(int atomicNumber, int initialChargeOverride = 0)
     {
         if (selectedAtom == null || atomPrefab == null || Camera.main == null) return false;
 
         if (selectedAtom.AtomicNumber == 1 && !orbitalExplicitlySelected)
-            return TryReplaceHydrogenWithAtom(atomicNumber);
+            return TryReplaceHydrogenWithAtom(atomicNumber, initialChargeOverride);
 
         // Bond from anchor only when there is a usable 1e lone. If the user explicitly picked an orbital that is no
         // longer 1e (bonded / filled), do not silently fall back to another lobe — spawn nearby and select the new atom instead.
@@ -637,6 +715,7 @@ public class EditModeManager : MonoBehaviour
             return false;
         }
         newAtom.AtomicNumber = atomicNumber;
+        newAtom.Charge = initialChargeOverride;
         newAtom.ForceInitialize();
         if (atomicNumber == 6)
             AtomPoseDirectionDebugLog.LogCarbonSpawn(newAtom, "EditModeManager.TryAddAtomToSelected");
@@ -702,14 +781,33 @@ public class EditModeManager : MonoBehaviour
             if (newAtom.AtomicNumber > 1)
                 newAtom.TryStaggerNewmanRelativeToPartner(anchor);
 
-            // Same-element heavy (e.g. C on C): continue from the new tip so repeated toolbar adds extend the chain.
+            // Same-element heavy (e.g. C on C): prefer continuing from newAtom; if it has no 1e lone, BFS back through σ net.
             bool sameHeavyExtend = atomicNumber > 1 && anchor.AtomicNumber == atomicNumber;
             if (sameHeavyExtend)
             {
                 anchor.SetSelectionHighlight(false);
-                selectedAtom = newAtom;
-                selectedMolecule = newAtom.GetConnectedMolecule();
-                selectedOrbital = newAtom.GetOrbitalClosestToAngle(0f);
+                if (TryPickAtomForContinueBondingBfs(newAtom, anchor, out var picked, out var pickedOrb))
+                {
+                    selectedAtom = picked;
+                    selectedMolecule = picked.GetConnectedMolecule();
+                    selectedOrbital = pickedOrb;
+                    orbitalExplicitlySelected = selectedOrbital != null;
+                }
+                else
+                {
+                    selectedAtom = newAtom;
+                    selectedMolecule = newAtom.GetConnectedMolecule();
+                    selectedOrbital = newAtom.GetOrbitalClosestToAngle(0f);
+                }
+            }
+            else if (TryPickAtomForContinueBondingBfs(newAtom, anchor, out var pickedB, out var pickedOrbB))
+            {
+                if (!ReferenceEquals(pickedB, anchor))
+                    anchor.SetSelectionHighlight(false);
+                selectedAtom = pickedB;
+                selectedMolecule = pickedB.GetConnectedMolecule();
+                selectedOrbital = pickedOrbB;
+                orbitalExplicitlySelected = selectedOrbital != null;
             }
             else
             {
@@ -749,7 +847,7 @@ public class EditModeManager : MonoBehaviour
         return true;
     }
 
-    bool TryReplaceHydrogenWithAtom(int atomicNumber)
+    bool TryReplaceHydrogenWithAtom(int atomicNumber, int initialChargeOverride = 0)
     {
         var hydrogen = selectedAtom;
         AtomFunction parentAtom = null;
@@ -775,6 +873,7 @@ public class EditModeManager : MonoBehaviour
             return false;
         }
         newAtom.AtomicNumber = atomicNumber;
+        newAtom.Charge = initialChargeOverride;
         newAtom.ForceInitialize();
 
         Vector3 dirToNewAtom = (newAtom.transform.position - parentAtom.transform.position).normalized;

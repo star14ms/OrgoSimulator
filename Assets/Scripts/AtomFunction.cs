@@ -4,7 +4,6 @@ using UnityEngine.Rendering;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Text;
 using TMPro;
@@ -180,7 +179,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (atomicNumber > 10 && group == 15)
             return 5;
 
-        // Period 3+ group 16: six slots for SF₆, SO₄²⁻, etc.
+        // Sulfur in organic thiols / thioethers: two lone pairs + two σ slots (like oxygen); avoid six empty σ lobes.
+        if (atomicNumber == 16)
+            return 4;
+
+        // Period 3+ group 16 (other): six slots for SF₆, SO₄²⁻, etc.
         if (atomicNumber > 10 && group == 16)
             return 6;
 
@@ -361,7 +364,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public static void RefreshAllDisplayedCharges()
     {
-        foreach (var atom in Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None))
+        foreach (var atom in UnityEngine.Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None))
             atom.RefreshCharge();
     }
 
@@ -1162,7 +1165,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (partner == null) return false;
         // Allow ψ for π-bearing centers (carbonyl, nitrile, etc.): ApplyNewmanStaggerTwistProgress only reseats σ-H and
         // occupied non-bond lobes; bond formation / break coroutines still gate Newman with their own GetPiBondCount()==0.
-        if (requireSigmaBondToPartner && !GetDistinctSigmaNeighborAtoms().Contains(partner)) return false;
+        if (requireSigmaBondToPartner && !GetDistinctSigmaNeighborAtoms().Contains(partner))
+            return false;
 
         Vector3 axis = partner.transform.position - transform.position;
         if (axis.sqrMagnitude < 1e-10f) return false;
@@ -1183,7 +1187,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             if (p.sqrMagnitude < 1e-8f) continue;
             parentProj.Add(p.normalized);
         }
-        if (parentProj.Count == 0) return false;
+        if (parentProj.Count == 0)
+            return false;
 
         // Score using σ→H directions and occupied lone/radical lobes only. Empty (0e) non-bond slots share tetrahedral
         // geometry but are not physical stagger targets — including them biases the twist (~30° vs true 60° Newman stagger).
@@ -1203,7 +1208,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             if (dW.sqrMagnitude < 1e-10f) continue;
             childRadialForScore.Add(dW.normalized);
         }
-        if (childRadialForScore.Count == 0) return false;
+        if (childRadialForScore.Count == 0)
+            return false;
 
         var childHDirWorld = new List<Vector3>();
         foreach (var n in GetDistinctSigmaNeighborAtoms())
@@ -1265,7 +1271,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 bestPsi = psiPick;
         }
 
-        if (Mathf.Abs(bestPsi) < 0.01f) return false;
+        if (Mathf.Abs(bestPsi) < 0.01f)
+            return false;
         psiDeg = bestPsi;
         return true;
     }
@@ -1353,7 +1360,8 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public bool TryStaggerNewmanRelativeToPartner(AtomFunction partner)
     {
         if (partner == null) return false;
-        if (!TryComputeNewmanStaggerPsi(partner, true, out float psi)) return false;
+        if (!TryComputeNewmanStaggerPsi(partner, true, out float psi))
+            return false;
         Vector3 axis = partner.transform.position - transform.position;
         if (axis.sqrMagnitude < 1e-10f) return false;
         axis.Normalize();
@@ -5642,7 +5650,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         if (sourceAtom == null || sourceOrbital == null) return null;
         var cam = Camera.main;
-        var atoms = Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
+        var atoms = UnityEngine.Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
         AtomFunction best = null;
         float bestMetric = float.MaxValue;
 
@@ -5715,7 +5723,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             if (orb == null) continue;
             allElectrons.AddRange(orb.GetComponentsInChildren<ElectronFunction>());
         }
-        foreach (var e in Object.FindObjectsByType<ElectronFunction>(FindObjectsSortMode.None))
+        foreach (var e in UnityEngine.Object.FindObjectsByType<ElectronFunction>(FindObjectsSortMode.None))
         {
             if (e != null && !allElectrons.Contains(e))
                 allElectrons.Add(e);
@@ -5724,7 +5732,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     public static void SetupGlobalIgnoreCollisions()
     {
-        var atoms = Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
+        var atoms = UnityEngine.Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
         BuildCollisionUniverse(atoms, out var atomColliders, out var orbitals, out var allElectrons);
 
         for (int i = 0; i < atomColliders.Count; i++)
@@ -5783,7 +5791,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         foreach (var a in involvedAtoms)
             if (a != null) involved.Add(a);
 
-        var sceneAtoms = Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
+        var sceneAtoms = UnityEngine.Object.FindObjectsByType<AtomFunction>(FindObjectsSortMode.None);
         BuildCollisionUniverse(sceneAtoms, out var atomColliders, out var orbitals, out var allElectrons);
 
         var invAtomColliders = new List<(Collider2D c2d, Collider c3d)>();

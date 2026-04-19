@@ -14,9 +14,11 @@ using UnityEngine;
 public class SigmaBondFormation : MonoBehaviour
 {
     static GameObject phase1DebugTemplatePreviewRoot;
+    static GameObject piPhase1DebugTemplatePreviewRoot;
 
     [SerializeField] EditModeManager editModeManager;
     [SerializeField] bool debugDisableCyclicSigmaPhase1Redistribution = false;
+    [SerializeField] bool debugShowCyclicPiPhase1RedistributeTemplates = true;
 
     void Awake()
     {
@@ -374,7 +376,9 @@ public class SigmaBondFormation : MonoBehaviour
         AtomFunction guideAtom,
         AtomFunction nonGuideAtom,
         ElectronOrbitalFunction guideOp,
-        ElectronOrbitalFunction nonGuideOp)
+        ElectronOrbitalFunction nonGuideOp,
+        OrbitalRedistribution.CyclicRedistributionContext cyclicContext,
+        Vector3 finalDirectionForGuideOrbital)
     {
         var animation = OrbitalRedistribution.BuildOrbitalRedistribution(
             nonGuideAtom,
@@ -382,7 +386,10 @@ public class SigmaBondFormation : MonoBehaviour
             guideOp,
             nonGuideOp,
             guideOrbitalPredetermined: null,
-            isBondingEvent: true);
+            finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
+            isBondingEvent: true,
+            cyclicContext: cyclicContext,
+            formingPiPrecursorAlignTrigonalPartnerPlane: true);
         return new Phase1ParallelTrack
         {
             ApplySmoothStep = s => animation?.Apply(s),
@@ -1137,13 +1144,55 @@ public class SigmaBondFormation : MonoBehaviour
         if (guide == null || nonGuide == null)
             yield break;
 
+        var sigmaBetween = TryFindSigmaBondBetween(sourceAtom, targetAtom);
+        TryBuildPiPhase1CyclicRedistributionContext(
+            sourceAtom,
+            targetAtom,
+            guide,
+            nonGuide,
+            sigmaBetween,
+            out var piPhase1CyclicContext,
+            out _,
+            out var piTargetC2,
+            out var piTargetC3,
+            out var piGuideDirLocal);
+
+        if (debugShowCyclicPiPhase1RedistributeTemplates
+            && sigmaBetween != null
+            && TryBuildShortestSigmaPath(sourceAtom, targetAtom, out var ringPath, sigmaBetween)
+            && ringPath != null
+            && ringPath.Count >= 4)
+        {
+            BuildPiPhase1RedistributeTemplatePreviewVisuals(
+                guide,
+                nonGuide,
+                guideOp,
+                nonGuideOp,
+                piPhase1CyclicContext,
+                piGuideDirLocal);
+        }
+        else
+        {
+            ClearPiPhase1RedistributeTemplatePreviewVisuals();
+        }
+
         var tracks = new List<Phase1ParallelTrack>(2)
         {
-            BuildPhase1OrbitalRedistributeForPiFormationPhase1(guide, nonGuide, guideOp, nonGuideOp)
+            BuildPhase1OrbitalRedistributeForPiFormationPhase1(
+                guide,
+                nonGuide,
+                guideOp,
+                nonGuideOp,
+                piPhase1CyclicContext,
+                piGuideDirLocal)
         };
 
-        var sigmaBetween = TryFindSigmaBondBetween(sourceAtom, targetAtom);
-        Phase1ParallelTrack cyclicCoplanarTrack = BuildPhase1PiCyclicCoplanarTrack(sourceAtom, targetAtom, sigmaBetween);
+        Phase1ParallelTrack cyclicCoplanarTrack = BuildPhase1PiCyclicCoplanarTrack(
+            sourceAtom,
+            targetAtom,
+            sigmaBetween,
+            piTargetC2,
+            piTargetC3);
         if (cyclicCoplanarTrack != null)
             tracks.Add(cyclicCoplanarTrack);
         Phase1ParallelTrack piCylinderTrack = BuildPhase1PiCylinderTrackFromOpFinalPose(
@@ -1168,6 +1217,174 @@ public class SigmaBondFormation : MonoBehaviour
         }
     }
 
+    static void BuildPiPhase1RedistributeTemplatePreviewVisuals(
+        AtomFunction guideAtom,
+        AtomFunction nonGuideAtom,
+        ElectronOrbitalFunction guideOp,
+        ElectronOrbitalFunction nonGuideOp,
+        OrbitalRedistribution.CyclicRedistributionContext cyclicContext,
+        Vector3 finalDirectionForGuideOrbital)
+    {
+        ClearPiPhase1RedistributeTemplatePreviewVisuals();
+        if (guideAtom == null || nonGuideAtom == null)
+            return;
+
+        OrbitalRedistribution.BeginDebugTemplateCapture();
+        try
+        {
+            _ = OrbitalRedistribution.BuildOrbitalRedistribution(
+                nonGuideAtom,
+                guideAtom,
+                guideOp,
+                nonGuideOp,
+                guideOrbitalPredetermined: null,
+                finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
+                isBondingEvent: true,
+                cyclicContext: cyclicContext,
+                formingPiPrecursorAlignTrigonalPartnerPlane: true);
+        }
+        finally
+        {
+            // capture closed below
+        }
+
+        var snapshots = OrbitalRedistribution.EndDebugTemplateCapture();
+        if (snapshots == null || snapshots.Count == 0)
+            return;
+
+        piPhase1DebugTemplatePreviewRoot = new GameObject("PiPhase1RedistributeTemplatePreview");
+        if (piPhase1DebugTemplatePreviewRoot.GetComponent<BondFormationTemplatePreviewInput>() == null)
+            piPhase1DebugTemplatePreviewRoot.AddComponent<BondFormationTemplatePreviewInput>();
+
+        for (int i = 0; i < snapshots.Count; i++)
+        {
+            var snap = snapshots[i];
+            if (snap == null || snap.Atom == null || snap.TemplateLocal == null || snap.TemplateLocal.Count == 0)
+                continue;
+
+            Vector3 center = snap.Atom.transform.position;
+            float len = Mathf.Max(0.125f, snap.Atom.BondRadius * 0.55f);
+            for (int di = 0; di < snap.TemplateLocal.Count; di++)
+            {
+                Vector3 dirWorld = snap.Atom.transform.TransformDirection(snap.TemplateLocal[di]).normalized;
+                if (dirWorld.sqrMagnitude < 1e-12f) continue;
+                Vector3 end = center + dirWorld * len;
+                ElectronOrbitalFunction linkedOrbital = FindAssignedOrbitalForTemplateIndex(snap, di);
+                CreateDebugTemplateCylinder(
+                    piPhase1DebugTemplatePreviewRoot.transform,
+                    center,
+                    end,
+                    snap.Atom.GetInstanceID(),
+                    di,
+                    linkedOrbital);
+            }
+        }
+    }
+
+    static bool TryBuildPiPhase1CyclicRedistributionContext(
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        AtomFunction guideAtom,
+        AtomFunction nonGuideAtom,
+        CovalentBond sigmaBetween,
+        out OrbitalRedistribution.CyclicRedistributionContext cyclicContext,
+        out Dictionary<AtomFunction, Vector3> finalWorldByAtom,
+        out Vector3 targetC2,
+        out Vector3 targetC3,
+        out Vector3 finalDirectionForGuideOrbital)
+    {
+        cyclicContext = null;
+        finalWorldByAtom = null;
+        targetC2 = Vector3.zero;
+        targetC3 = Vector3.zero;
+        finalDirectionForGuideOrbital = Vector3.zero;
+        if (sourceAtom == null || targetAtom == null || guideAtom == null || nonGuideAtom == null)
+            return false;
+        if (sigmaBetween == null)
+            return false;
+        if (!TryBuildShortestSigmaPath(sourceAtom, targetAtom, out var ringPath, sigmaBetween))
+            return false;
+        if (ringPath == null || ringPath.Count < 4)
+            return false;
+
+        AtomFunction c2 = sourceAtom;
+        AtomFunction c3 = targetAtom;
+        AtomFunction c1 = ringPath[1];
+        AtomFunction c4 = ringPath[ringPath.Count - 2];
+        if (c1 == null || c4 == null || c1 == c2 || c1 == c3 || c4 == c2 || c4 == c3 || c1 == c4)
+            return false;
+
+        var cycleAtoms = new List<AtomFunction>(ringPath.Count + 1) { sourceAtom };
+        for (int i = 1; i < ringPath.Count; i++)
+            cycleAtoms.Add(ringPath[i]);
+
+        if (!TryComputePiCyclicCoplanarTargets(
+            cycleAtoms,
+            c1.transform.position,
+            c2.transform.position,
+            c3.transform.position,
+            c4.transform.position,
+            out targetC2,
+            out targetC3))
+            return false;
+
+        finalWorldByAtom = new Dictionary<AtomFunction, Vector3>(cycleAtoms.Count);
+        for (int i = 0; i < cycleAtoms.Count; i++)
+        {
+            AtomFunction a = cycleAtoms[i];
+            if (a == null) continue;
+            Vector3 w = a.transform.position;
+            if (a == c2) w = targetC2;
+            else if (a == c3) w = targetC3;
+            finalWorldByAtom[a] = w;
+        }
+
+        AtomFunction cycleNeighborB = null;
+        if (ReferenceEquals(nonGuideAtom, sourceAtom) && ringPath.Count >= 2)
+            cycleNeighborB = ringPath[1];
+        else if (ReferenceEquals(nonGuideAtom, targetAtom) && ringPath.Count >= 2)
+            cycleNeighborB = ringPath[ringPath.Count - 2];
+        if (cycleNeighborB == null)
+            cycleNeighborB = c1;
+
+        Vector3 centerAccum = Vector3.zero;
+        int centerCount = 0;
+        foreach (var kv in finalWorldByAtom)
+        {
+            centerAccum += kv.Value;
+            centerCount++;
+        }
+        Vector3 cycleCenterWorld = centerCount > 0 ? centerAccum / centerCount : nonGuideAtom.transform.position;
+
+        if (finalWorldByAtom.TryGetValue(nonGuideAtom, out Vector3 nonGuideFinal)
+            && finalWorldByAtom.TryGetValue(guideAtom, out Vector3 guideFinal))
+        {
+            Vector3 leg = guideFinal - nonGuideFinal;
+            if (leg.sqrMagnitude > 1e-12f)
+                finalDirectionForGuideOrbital = nonGuideAtom.transform.InverseTransformDirection(leg.normalized).normalized;
+        }
+
+        cyclicContext = new OrbitalRedistribution.CyclicRedistributionContext
+        {
+            PivotAtom = nonGuideAtom,
+            CycleNeighborA = guideAtom,
+            CycleNeighborB = cycleNeighborB,
+            FinalWorldByAtom = finalWorldByAtom,
+            CycleCenterWorld = cycleCenterWorld,
+            ChainRedistributionBlockedAtoms = new HashSet<AtomFunction>(finalWorldByAtom.Keys)
+        };
+        return true;
+    }
+
+    static void ClearPiPhase1RedistributeTemplatePreviewVisuals()
+    {
+        if (piPhase1DebugTemplatePreviewRoot != null)
+        {
+            UnityEngine.Object.Destroy(piPhase1DebugTemplatePreviewRoot);
+            piPhase1DebugTemplatePreviewRoot = null;
+        }
+    }
+
     /// <summary>
     /// For cyclic π formation on an existing σ edge, move the operation-pair atoms (C2/C3)
     /// toward a shared plane during phase 1.
@@ -1177,7 +1394,9 @@ public class SigmaBondFormation : MonoBehaviour
     static Phase1ParallelTrack BuildPhase1PiCyclicCoplanarTrack(
         AtomFunction sourceAtom,
         AtomFunction targetAtom,
-        CovalentBond sigmaBetween)
+        CovalentBond sigmaBetween,
+        Vector3 predictedTargetC2,
+        Vector3 predictedTargetC3)
     {
         if (sourceAtom == null || targetAtom == null || sigmaBetween == null || !sigmaBetween.IsSigmaBondLine())
             return null;
@@ -1198,9 +1417,9 @@ public class SigmaBondFormation : MonoBehaviour
 
         Vector3 startC2 = c2.transform.position;
         Vector3 startC3 = c3.transform.position;
-        bool targetsBuilt = false;
-        Vector3 targetC2 = startC2;
-        Vector3 targetC3 = startC3;
+        bool targetsBuilt = predictedTargetC2.sqrMagnitude > 1e-12f && predictedTargetC3.sqrMagnitude > 1e-12f;
+        Vector3 targetC2 = targetsBuilt ? predictedTargetC2 : startC2;
+        Vector3 targetC3 = targetsBuilt ? predictedTargetC3 : startC3;
 
         return new Phase1ParallelTrack
         {

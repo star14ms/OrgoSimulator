@@ -3,7 +3,7 @@
 # Prerequisites:
 #   1. Build in Unity: File > Build Settings > WebGL > Build
 #   2. Set compression to Brotli: Edit > Project Settings > Player > Web > Publishing Settings
-#   3. Install Vercel CLI: npm i -g vercel
+#   3. Node/npm available (script runs Vercel via npx)
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,4 +76,4 @@ fi
 
 echo "Deploying to Vercel..."
 cd "$DEPLOY_DIR"
-vercel --prod
+npx vercel@latest --prod

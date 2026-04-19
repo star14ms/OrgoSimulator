@@ -4,8 +4,8 @@ using UnityEngine.InputSystem;
 using TMPro;
 
 /// <summary>
-/// Builds the molecule construction toolbar: Row 1 (H, C, N, O, S, F, Cl, Br, I, More),
-/// Row 2 (FG ▼ [edit mode], Cycloalkanes dropdown, Benzene, free-electron spawn). "More" opens the full periodic table.
+/// Builds the molecule construction toolbar: Row 1 (H, C, N, O, S, F, Cl, Br, I, More, free-electron spawn),
+/// Row 2 (FG ▼ [edit mode], ring-shape dropdown, Benzene, amino-acid dropdown). "More" opens the full periodic table.
 /// </summary>
 public class AtomQuickAddUI : MonoBehaviour
 {
@@ -39,6 +39,8 @@ public class AtomQuickAddUI : MonoBehaviour
     Canvas hudCanvas;
     RectTransform cycloDropdownButtonRect;
     RectTransform cycloDropdownPanelRect;
+    RectTransform aminoDropdownButtonRect;
+    RectTransform aminoDropdownPanelRect;
     RectTransform funcGroupDropdownButtonRect;
     RectTransform funcGroupDropdownPanelRect;
     Button funcGroupMainButton;
@@ -151,6 +153,7 @@ public class AtomQuickAddUI : MonoBehaviour
         }
 
         CloseIfOutside(cycloDropdownPanel, cycloDropdownButtonRect, cycloDropdownPanelRect);
+        CloseIfOutside(aminoDropdownPanel, aminoDropdownButtonRect, aminoDropdownPanelRect);
         CloseIfOutside(funcGroupDropdownPanel, funcGroupDropdownButtonRect, funcGroupDropdownPanelRect);
     }
 
@@ -548,6 +551,9 @@ public class AtomQuickAddUI : MonoBehaviour
         var moreBtn = CreateMoreButton();
         moreBtn.transform.SetParent(row.transform, false);
 
+        var electronTestBtn = CreateElectronTestButton();
+        electronTestBtn.transform.SetParent(row.transform, false);
+
         return row;
     }
 
@@ -555,7 +561,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var row = new GameObject("Row2");
         var rect = row.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(Px(780f), layoutButtonSize);
+        rect.sizeDelta = new Vector2(Px(920f), layoutButtonSize);
 
         var hLayout = row.AddComponent<HorizontalLayoutGroup>();
         hLayout.spacing = layoutSpacing;
@@ -574,14 +580,15 @@ public class AtomQuickAddUI : MonoBehaviour
         var benzeneBtn = CreateBenzeneButton();
         benzeneBtn.transform.SetParent(row.transform, false);
 
-        var electronTestBtn = CreateElectronTestButton();
-        electronTestBtn.transform.SetParent(row.transform, false);
+        var aminoDropdown = CreateAminoAcidsDropdown();
+        aminoDropdown.transform.SetParent(row.transform, false);
 
         return row;
     }
 
     GameObject cycloDropdownPanel;
     GameObject funcGroupDropdownPanel;
+    GameObject aminoDropdownPanel;
 
     GameObject CreateFunctionalGroupDropdown()
     {
@@ -639,7 +646,7 @@ public class AtomQuickAddUI : MonoBehaviour
 
         var vLayout = funcGroupDropdownPanel.AddComponent<VerticalLayoutGroup>();
         vLayout.spacing = Mathf.Max(1, PxI(2f));
-        int dPad = PxI(4f);
+        int dPad = PxI(2f);
         vLayout.padding = new RectOffset(dPad, dPad, dPad, dPad);
         vLayout.childAlignment = TextAnchor.UpperCenter;
         vLayout.childControlWidth = true;
@@ -675,6 +682,8 @@ public class AtomQuickAddUI : MonoBehaviour
         if (editModeManager == null || !editModeManager.FunctionalGroupAttachmentReady()) return;
         if (cycloDropdownPanel != null)
             cycloDropdownPanel.SetActive(false);
+        if (aminoDropdownPanel != null)
+            aminoDropdownPanel.SetActive(false);
         if (funcGroupDropdownPanel != null)
             funcGroupDropdownPanel.SetActive(!funcGroupDropdownPanel.activeSelf);
     }
@@ -727,7 +736,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var container = new GameObject("CycloalkanesDropdown");
         var containerRect = container.AddComponent<RectTransform>();
-        containerRect.sizeDelta = new Vector2(Px(140f), layoutButtonSize);
+        containerRect.sizeDelta = new Vector2(Px(50f), layoutButtonSize);
 
         var mainBtn = new GameObject("CycloalkanesButton");
         mainBtn.transform.SetParent(container.transform, false);
@@ -752,13 +761,33 @@ public class AtomQuickAddUI : MonoBehaviour
         labelRect.offsetMin = Vector2.zero;
         labelRect.offsetMax = Vector2.zero;
 
-        var tmp = labelGo.AddComponent<TextMeshProUGUI>();
-        tmp.font = AtomFunction.GetDefaultFont();
-        tmp.text = "Cycloalkanes \u25BC";
-        tmp.fontSize = Mathf.Max(8, layoutFontSize - 2);
-        tmp.alignment = TextAlignmentOptions.Center;
-        tmp.raycastTarget = false;
-        tmp.color = Color.white;
+        // Draw a hexagon icon manually with line segments (no special font glyphs).
+        var iconGo = new GameObject("ShapeIcon");
+        iconGo.transform.SetParent(mainBtn.transform, false);
+        var iconRect = iconGo.AddComponent<RectTransform>();
+        iconRect.anchorMin = new Vector2(0.5f, 0.5f);
+        iconRect.anchorMax = new Vector2(0.5f, 0.5f);
+        iconRect.pivot = new Vector2(0.5f, 0.5f);
+        iconRect.anchoredPosition = new Vector2(-Px(8f), 0f);
+        iconRect.sizeDelta = new Vector2(Px(18f), Px(18f));
+        BuildPolygonLineIcon(iconGo, 6, Color.white, Mathf.Max(1f, Px(1.6f)));
+
+        var caretGo = new GameObject("CaretLabel");
+        caretGo.transform.SetParent(mainBtn.transform, false);
+        var caretRect = caretGo.AddComponent<RectTransform>();
+        caretRect.anchorMin = new Vector2(1f, 0.5f);
+        caretRect.anchorMax = new Vector2(1f, 0.5f);
+        caretRect.pivot = new Vector2(1f, 0.5f);
+        caretRect.anchoredPosition = new Vector2(-Px(6f), 0f);
+        caretRect.sizeDelta = new Vector2(Px(10f), layoutButtonSize);
+
+        var caretTmp = caretGo.AddComponent<TextMeshProUGUI>();
+        caretTmp.font = AtomFunction.GetDefaultFont();
+        caretTmp.text = "▼";
+        caretTmp.fontSize = Mathf.Max(8, layoutFontSize - 1);
+        caretTmp.alignment = TextAlignmentOptions.Center;
+        caretTmp.raycastTarget = false;
+        caretTmp.color = Color.white;
 
         cycloDropdownPanel = new GameObject("DropdownPanel");
         cycloDropdownPanel.transform.SetParent(container.transform, false);
@@ -775,7 +804,7 @@ public class AtomQuickAddUI : MonoBehaviour
 
         var vLayout = cycloDropdownPanel.AddComponent<VerticalLayoutGroup>();
         vLayout.spacing = Mathf.Max(1, PxI(2f));
-        int dPad = PxI(4f);
+        int dPad = PxI(2f);
         vLayout.padding = new RectOffset(dPad, dPad, dPad, dPad);
         vLayout.childAlignment = TextAnchor.UpperCenter;
         vLayout.childControlWidth = true;
@@ -783,10 +812,9 @@ public class AtomQuickAddUI : MonoBehaviour
         vLayout.childForceExpandWidth = true;
         vLayout.childForceExpandHeight = false;
 
-        string[] names = { "Cyclopropane", "Cyclobutane", "Cyclopentane", "Cyclohexane" };
         for (int n = 3; n <= 6; n++)
         {
-            var itemBtn = CreateCycloalkaneDropdownItem(names[n - 3], n);
+            var itemBtn = CreateCycloalkaneDropdownItem(n);
             itemBtn.transform.SetParent(cycloDropdownPanel.transform, false);
         }
 
@@ -799,13 +827,15 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         if (funcGroupDropdownPanel != null)
             funcGroupDropdownPanel.SetActive(false);
+        if (aminoDropdownPanel != null)
+            aminoDropdownPanel.SetActive(false);
         if (cycloDropdownPanel != null)
             cycloDropdownPanel.SetActive(!cycloDropdownPanel.activeSelf);
     }
 
-    GameObject CreateCycloalkaneDropdownItem(string label, int ringSize)
+    GameObject CreateCycloalkaneDropdownItem(int ringSize)
     {
-        var go = new GameObject($"Item_{label}");
+        var go = new GameObject($"Item_{ringSize}");
         var rect = go.AddComponent<RectTransform>();
         rect.sizeDelta = new Vector2(0, layoutButtonSize - Px(4f));
 
@@ -821,6 +851,166 @@ public class AtomQuickAddUI : MonoBehaviour
                 cycloDropdownPanel.SetActive(false);
         });
 
+        var iconGo = new GameObject("ShapeIcon");
+        iconGo.transform.SetParent(go.transform, false);
+        var iconRect = iconGo.AddComponent<RectTransform>();
+        iconRect.anchorMin = new Vector2(0.5f, 0.5f);
+        iconRect.anchorMax = new Vector2(0.5f, 0.5f);
+        iconRect.pivot = new Vector2(0.5f, 0.5f);
+        iconRect.anchoredPosition = Vector2.zero;
+        iconRect.sizeDelta = new Vector2(Px(20f), Px(20f));
+        BuildPolygonLineIcon(iconGo, ringSize, Color.white, Mathf.Max(1f, Px(1.6f)));
+
+        return go;
+    }
+
+    static void BuildPolygonLineIcon(GameObject parent, int sides, Color color, float thickness)
+    {
+        if (parent == null || sides < 3) return;
+        const float radius = 0.42f;
+        var pts = new Vector2[sides];
+        for (int i = 0; i < sides; i++)
+        {
+            float a = (Mathf.PI * 2f * i / sides) - Mathf.PI * 0.5f;
+            Vector2 p = new Vector2(Mathf.Cos(a), Mathf.Sin(a)) * radius;
+            if (sides == 3 || sides == 5)
+                p.y = -p.y; // Vertically flip triangle and pentagon only.
+            pts[i] = p;
+        }
+
+        for (int i = 0; i < sides; i++)
+        {
+            Vector2 a = pts[i];
+            Vector2 b = pts[(i + 1) % sides];
+            Vector2 mid = (a + b) * 0.5f;
+            Vector2 d = b - a;
+            float len = d.magnitude;
+            if (len < 1e-5f) continue;
+
+            var edgeGo = new GameObject("Edge");
+            edgeGo.transform.SetParent(parent.transform, false);
+            var edgeRect = edgeGo.AddComponent<RectTransform>();
+            edgeRect.anchorMin = new Vector2(0.5f, 0.5f);
+            edgeRect.anchorMax = new Vector2(0.5f, 0.5f);
+            edgeRect.pivot = new Vector2(0.5f, 0.5f);
+            edgeRect.anchoredPosition = new Vector2(mid.x * parent.GetComponent<RectTransform>().rect.width, mid.y * parent.GetComponent<RectTransform>().rect.height);
+            edgeRect.sizeDelta = new Vector2(len * parent.GetComponent<RectTransform>().rect.width, thickness);
+            edgeRect.localRotation = Quaternion.Euler(0f, 0f, Mathf.Atan2(d.y, d.x) * Mathf.Rad2Deg);
+
+            var img = edgeGo.AddComponent<Image>();
+            img.color = color;
+            img.raycastTarget = false;
+        }
+    }
+
+    GameObject CreateAminoAcidsDropdown()
+    {
+        var container = new GameObject("AminoAcidsDropdown");
+        var containerRect = container.AddComponent<RectTransform>();
+        containerRect.sizeDelta = new Vector2(Px(116f), layoutButtonSize);
+
+        var mainBtn = new GameObject("AminoAcidsButton");
+        mainBtn.transform.SetParent(container.transform, false);
+        var mainRect = mainBtn.AddComponent<RectTransform>();
+        mainRect.anchorMin = Vector2.zero;
+        mainRect.anchorMax = new Vector2(1, 1);
+        mainRect.offsetMin = Vector2.zero;
+        mainRect.offsetMax = Vector2.zero;
+        aminoDropdownButtonRect = mainRect;
+
+        var image = mainBtn.AddComponent<Image>();
+        image.color = new Color(0.42f, 0.42f, 0.47f);
+
+        var btn = mainBtn.AddComponent<Button>();
+        btn.onClick.AddListener(ToggleAminoAcidsDropdown);
+
+        var labelGo = new GameObject("Label");
+        labelGo.transform.SetParent(mainBtn.transform, false);
+        var labelRect = labelGo.AddComponent<RectTransform>();
+        labelRect.anchorMin = Vector2.zero;
+        labelRect.anchorMax = Vector2.one;
+        labelRect.offsetMin = Vector2.zero;
+        labelRect.offsetMax = Vector2.zero;
+
+        var tmp = labelGo.AddComponent<TextMeshProUGUI>();
+        tmp.font = AtomFunction.GetDefaultFont();
+        tmp.text = "Amino \u25BC";
+        tmp.fontSize = Mathf.Max(8, layoutFontSize - 2);
+        tmp.alignment = TextAlignmentOptions.Center;
+        tmp.raycastTarget = false;
+        tmp.color = Color.white;
+
+        aminoDropdownPanel = new GameObject("AminoDropdownPanel");
+        aminoDropdownPanel.transform.SetParent(container.transform, false);
+        var panelRect = aminoDropdownPanel.AddComponent<RectTransform>();
+        panelRect.anchorMin = new Vector2(0.5f, 0);
+        panelRect.anchorMax = new Vector2(0.5f, 0);
+        panelRect.pivot = new Vector2(0.5f, 1);
+        panelRect.anchoredPosition = new Vector2(0, 0);
+        int nItems = AminoAcidMoleculeLibrary.ThreeLetterAbbreviations.Count;
+        int columns = 2;
+        int rows = Mathf.CeilToInt(nItems / (float)columns);
+        // Match CreateAminoAcidDropdownItem / GridLayoutGroup cell height (not full layoutButtonSize).
+        float aminoDropdownItemHeight = layoutButtonSize - Px(4f);
+        int dPad = PxI(2f);
+        float rowGapY = Mathf.Max(1f, Px(2f));
+        float panelHeight =
+            aminoDropdownItemHeight * rows
+            + rowGapY * Mathf.Max(0, rows - 1)
+            + dPad * 2f;
+        panelRect.sizeDelta = new Vector2(Px(120f), panelHeight);
+        aminoDropdownPanelRect = panelRect;
+
+        var panelImage = aminoDropdownPanel.AddComponent<Image>();
+        panelImage.color = new Color(0.5f, 0.5f, 0.56f);
+
+        var grid = aminoDropdownPanel.AddComponent<GridLayoutGroup>();
+        grid.spacing = new Vector2(layoutSpacing, rowGapY);
+        grid.padding = new RectOffset(dPad, dPad, dPad, dPad);
+        grid.childAlignment = TextAnchor.UpperCenter;
+        grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+        grid.constraintCount = columns;
+        float cellWidth = (panelRect.sizeDelta.x - dPad * 2f - layoutSpacing * (columns - 1)) / columns;
+        grid.cellSize = new Vector2(cellWidth, aminoDropdownItemHeight);
+
+        foreach (var abbr in AminoAcidMoleculeLibrary.ThreeLetterAbbreviations)
+        {
+            var itemBtn = CreateAminoAcidDropdownItem(abbr);
+            itemBtn.transform.SetParent(aminoDropdownPanel.transform, false);
+        }
+
+        aminoDropdownPanel.SetActive(false);
+        return container;
+    }
+
+    void ToggleAminoAcidsDropdown()
+    {
+        if (funcGroupDropdownPanel != null)
+            funcGroupDropdownPanel.SetActive(false);
+        if (cycloDropdownPanel != null)
+            cycloDropdownPanel.SetActive(false);
+        if (aminoDropdownPanel != null)
+            aminoDropdownPanel.SetActive(!aminoDropdownPanel.activeSelf);
+    }
+
+    GameObject CreateAminoAcidDropdownItem(string abbreviation)
+    {
+        var go = new GameObject($"AA_{abbreviation}");
+        var rect = go.AddComponent<RectTransform>();
+        rect.sizeDelta = new Vector2(0, layoutButtonSize - Px(4f));
+
+        var image = go.AddComponent<Image>();
+        image.color = new Color(0.56f, 0.56f, 0.62f);
+
+        var btn = go.AddComponent<Button>();
+        string label = abbreviation;
+        btn.onClick.AddListener(() =>
+        {
+            OnAminoAcidClicked(label);
+            if (aminoDropdownPanel != null)
+                aminoDropdownPanel.SetActive(false);
+        });
+
         var labelGo = new GameObject("Label");
         labelGo.transform.SetParent(go.transform, false);
         var labelRect = labelGo.AddComponent<RectTransform>();
@@ -831,7 +1021,7 @@ public class AtomQuickAddUI : MonoBehaviour
 
         var tmp = labelGo.AddComponent<TextMeshProUGUI>();
         tmp.font = AtomFunction.GetDefaultFont();
-        tmp.text = label;
+        tmp.text = abbreviation;
         tmp.fontSize = Mathf.Max(8, layoutFontSize - 2);
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.raycastTarget = false;
@@ -910,7 +1100,7 @@ public class AtomQuickAddUI : MonoBehaviour
     {
         var go = new GameObject("Btn_Benzene");
         var rect = go.AddComponent<RectTransform>();
-        rect.sizeDelta = new Vector2(Px(100f), layoutButtonSize);
+        rect.sizeDelta = new Vector2(Px(50f), layoutButtonSize);
 
         var image = go.AddComponent<Image>();
         image.color = new Color(0.45f, 0.45f, 0.5f);
@@ -918,21 +1108,25 @@ public class AtomQuickAddUI : MonoBehaviour
         var btn = go.AddComponent<Button>();
         btn.onClick.AddListener(OnBenzeneClicked);
 
-        var labelGo = new GameObject("Label");
-        labelGo.transform.SetParent(go.transform, false);
-        var labelRect = labelGo.AddComponent<RectTransform>();
-        labelRect.anchorMin = Vector2.zero;
-        labelRect.anchorMax = Vector2.one;
-        labelRect.offsetMin = Vector2.zero;
-        labelRect.offsetMax = Vector2.zero;
+        var iconGo = new GameObject("BenzeneIcon");
+        iconGo.transform.SetParent(go.transform, false);
+        var iconRect = iconGo.AddComponent<RectTransform>();
+        iconRect.anchorMin = new Vector2(0.5f, 0.5f);
+        iconRect.anchorMax = new Vector2(0.5f, 0.5f);
+        iconRect.pivot = new Vector2(0.5f, 0.5f);
+        iconRect.anchoredPosition = Vector2.zero;
+        iconRect.sizeDelta = new Vector2(Px(24f), Px(24f));
+        BuildPolygonLineIcon(iconGo, 6, Color.white, Mathf.Max(1f, Px(1.4f)));
 
-        var tmp = labelGo.AddComponent<TextMeshProUGUI>();
-        tmp.font = AtomFunction.GetDefaultFont();
-        tmp.text = "Benzene";
-        tmp.fontSize = Mathf.Max(8, layoutFontSize - 2);
-        tmp.alignment = TextAlignmentOptions.Center;
-        tmp.raycastTarget = false;
-        tmp.color = Color.white;
+        var innerRingGo = new GameObject("AromaticRing");
+        innerRingGo.transform.SetParent(iconGo.transform, false);
+        var innerRect = innerRingGo.AddComponent<RectTransform>();
+        innerRect.anchorMin = new Vector2(0.5f, 0.5f);
+        innerRect.anchorMax = new Vector2(0.5f, 0.5f);
+        innerRect.pivot = new Vector2(0.5f, 0.5f);
+        innerRect.anchoredPosition = Vector2.zero;
+        innerRect.sizeDelta = new Vector2(Px(12f), Px(12f));
+        BuildPolygonLineIcon(innerRingGo, 18, Color.white, Mathf.Max(1f, Px(1.2f)));
 
         return go;
     }
@@ -1001,6 +1195,19 @@ public class AtomQuickAddUI : MonoBehaviour
             moleculeBuilder.CreateBenzene();
     }
 
+    void OnAminoAcidClicked(string abbreviation)
+    {
+        Vector3 center = PlanarPointerInteraction.SnapWorldToWorkPlaneIfPresent(GetRandomPositionInView());
+        if (AminoAcidMoleculeLibrary.TryCreate(
+                abbreviation,
+                center,
+                moleculeBuilder,
+                editModeManager,
+                (z, pos, q) => CreateAtomAtWorldPosition(z, pos, autoHydrogen: false, initialCharge: q),
+                out var alpha) && editModeManager != null && alpha != null)
+            editModeManager.OnAtomClicked(alpha);
+    }
+
     void ShowPeriodicTable()
     {
         if (periodicTable == null) return;
@@ -1011,22 +1218,37 @@ public class AtomQuickAddUI : MonoBehaviour
 
     public void CreateAtomAtViewport(int atomicNumber)
     {
-        GameObject prefab = GetAtomPrefab();
-        if (prefab == null || Camera.main == null) return;
-
+        if (Camera.main == null) return;
         Vector3 pos = PlanarPointerInteraction.SnapWorldToWorkPlaneIfPresent(GetRandomPositionInView());
-        var atomObj = Instantiate(prefab, pos, Quaternion.identity);
-        if (atomObj.TryGetComponent<AtomFunction>(out var atom))
-        {
-            atom.AtomicNumber = atomicNumber;
-            atom.ForceInitialize();
-            if (atomicNumber == 6)
-                AtomPoseDirectionDebugLog.LogCarbonSpawn(atom, "AtomQuickAddUI.CreateAtomAtViewport");
-            if (editModeManager != null && editModeManager.HAutoMode)
-                editModeManager.SaturateWithHydrogen(atom);
-            if (editModeManager != null)
-                editModeManager.OnAtomClicked(atom);
-        }
+        var atom = CreateAtomAtWorldPosition(atomicNumber, pos, autoHydrogen: true);
+        if (editModeManager != null && atom != null)
+            editModeManager.OnAtomClicked(atom);
+    }
+
+    AtomFunction CreateAtomAtWorldPosition(int atomicNumber, Vector3 worldPos, bool autoHydrogen, int initialCharge = 0)
+    {
+        GameObject prefab = GetAtomPrefab();
+        if (prefab == null) return null;
+        var atomObj = Instantiate(prefab, worldPos, Quaternion.identity);
+        if (!atomObj.TryGetComponent<AtomFunction>(out var atom))
+            return null;
+
+        atom.AtomicNumber = atomicNumber;
+        atom.Charge = initialCharge;
+        atom.ForceInitialize();
+        if (atomicNumber == 6)
+            AtomPoseDirectionDebugLog.LogCarbonSpawn(atom, "AtomQuickAddUI.CreateAtomAtWorldPosition");
+        if (autoHydrogen && editModeManager != null && editModeManager.HAutoMode)
+            editModeManager.SaturateWithHydrogen(atom);
+        return atom;
+    }
+
+    float GetBondLengthForSpawn()
+    {
+        GameObject prefab = GetAtomPrefab();
+        if (prefab != null && prefab.TryGetComponent<AtomFunction>(out var a))
+            return 1.2f * a.BondRadius;
+        return 0.96f;
     }
 
     Vector3 GetRandomPositionInView() => PlanarPointerInteraction.RandomWorldPointInMarginedViewport(viewportMargin);
