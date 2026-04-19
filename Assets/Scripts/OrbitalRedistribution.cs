@@ -1158,6 +1158,34 @@ public static class OrbitalRedistribution
             disableLegacyGuidePreassign: usePrecookedDirectionTemplate);
         TryCaptureDebugTemplate(atom, alignedTemplate, groupsForMatching, bestPerm);
         var finalDirectionsEmptyOrbital = BuildFinalDirectionsEmptyOrbitalTemplate(alignedTemplate);
+        Debug.Log("[σ-p1-redist] buildPlan atom=" + atom.GetInstanceID() + " Z=" + atom.AtomicNumber
+            + " bondGroups=" + bondingGroups.Count + " nonbondOcc=" + nonbondingOccupied.Count + " emptyOrbs=" + emptyOrbitals.Count
+            + " nVsepr=" + nVseprGroup + " cyclicTpl=" + (hasCyclicTemplate ? "1" : "0") + " chainTpl=" + (hasChainBreakContributorTemplate ? "1" : "0")
+            + " usedProvidedGuideDir=" + (finalDirectionForGuideOrbital.sqrMagnitude > 1e-12f ? "1" : "0")
+            + " emptyTplDirs=" + (finalDirectionsEmptyOrbital != null ? finalDirectionsEmptyOrbital.Count.ToString() : "0")
+            + " permLen=" + (bestPerm != null ? bestPerm.Length.ToString() : "0"));
+        // #region agent log
+        ProjectAgentDebugLog.AppendDebugModeNdjson(
+            "debug-115e1e.log",
+            "115e1e",
+            "H_build",
+            "OrbitalRedistribution.BuildOrbitalRedistribution",
+            "buildPlan",
+            "{"
+            + "\"atomId\":" + atom.GetInstanceID().ToString()
+            + ",\"atomicNumber\":" + atom.AtomicNumber.ToString()
+            + ",\"bondGroups\":" + bondingGroups.Count.ToString()
+            + ",\"nonbondOcc\":" + nonbondingOccupied.Count.ToString()
+            + ",\"emptyOrbs\":" + emptyOrbitals.Count.ToString()
+            + ",\"nVsepr\":" + nVseprGroup.ToString()
+            + ",\"cyclicTpl\":" + (hasCyclicTemplate ? "1" : "0")
+            + ",\"chainTpl\":" + (hasChainBreakContributorTemplate ? "1" : "0")
+            + ",\"usedProvidedGuideDir\":" + (finalDirectionForGuideOrbital.sqrMagnitude > 1e-12f ? "1" : "0")
+            + ",\"emptyTplDirs\":" + (finalDirectionsEmptyOrbital != null ? finalDirectionsEmptyOrbital.Count.ToString() : "0")
+            + ",\"permLen\":" + (bestPerm != null ? bestPerm.Length.ToString() : "0")
+            + "}",
+            "pre-fix");
+        // #endregion
         var animation = BuildRedistributionAnimation(
             groupsForMatching,
             emptyOrbitals,
@@ -1378,7 +1406,21 @@ public static class OrbitalRedistribution
                     bool isOpPath = IsOperationPathGroup(atom, g, atomOrbitalOp);
                     if (!isOpPath)
                     {
-                        Debug.Log(atom.GetInstanceID() + " " + adjacentAtom.GetInstanceID());
+                        Debug.Log("[σ-p1-redist] childRedistRecursive nonOpPath parentAtom=" + atom.GetInstanceID() + " adjacent=" + adjacentAtom.GetInstanceID() + " templateIdx=" + ti);
+                        // #region agent log
+                        ProjectAgentDebugLog.AppendDebugModeNdjson(
+                            "debug-115e1e.log",
+                            "115e1e",
+                            "H_childRec",
+                            "OrbitalRedistribution.BuildRedistributionAnimation",
+                            "childRedistRecursive_nonOpPath",
+                            "{"
+                            + "\"parentAtomId\":" + atom.GetInstanceID().ToString()
+                            + ",\"adjacentId\":" + adjacentAtom.GetInstanceID().ToString()
+                            + ",\"templateIdx\":" + ti.ToString()
+                            + "}",
+                            "pre-fix");
+                        // #endregion
                         Vector3 childGuideDirWorld = atom.transform.TransformDirection((-alignedTemplate[ti]).normalized);
                         Vector3 childGuideDirLocal = adjacentAtom.transform.InverseTransformDirection(childGuideDirWorld).normalized;
                         var childAnim = BuildOrbitalRedistribution(
@@ -1402,6 +1444,27 @@ public static class OrbitalRedistribution
                     && cyclicContext.ChainRedistributionBlockedAtoms.Contains(adjacentAtom);
                 if (!isCycleBlocked)
                 {
+                    Vector3 tgtW = atom.transform.TransformDirection(alignedTemplate[ti].normalized);
+                    float bindCorridorDeg = Vector3.Angle(tgtW, startNbrDir);
+                    if (bindCorridorDeg < 32f)
+                    {
+                        Debug.Log("[σ-p1-redist] bondTargetNearInternuc atom=" + atom.GetInstanceID() + " bond=" + (g.Bond != null ? g.Bond.GetInstanceID().ToString() : "0") + " angleDeg=" + bindCorridorDeg.ToString("F1") + " ti=" + ti);
+                        // #region agent log
+                        ProjectAgentDebugLog.AppendDebugModeNdjson(
+                            "debug-115e1e.log",
+                            "115e1e",
+                            "H_nearInternuc",
+                            "OrbitalRedistribution.BuildRedistributionAnimation",
+                            "bondTargetNearInternuc",
+                            "{"
+                            + "\"atomId\":" + atom.GetInstanceID().ToString()
+                            + ",\"bondId\":" + (g.Bond != null ? g.Bond.GetInstanceID().ToString() : "0")
+                            + ",\"angleDeg\":" + ProjectAgentDebugLog.JsonFloatInvariant(bindCorridorDeg)
+                            + ",\"templateIdx\":" + ti.ToString()
+                            + "}",
+                            "pre-fix");
+                        // #endregion
+                    }
                     anim.AddOrbitalTarget(
                         g.Orbital,
                         g.CurrentDirWorld,
@@ -1483,6 +1546,24 @@ public static class OrbitalRedistribution
             }
             if (!overlapsOccupied)
                 remainingDirs.Add(d);
+        }
+        if (remainingDirs.Count == 0 && finalDirectionsEmptyOrbital != null && finalDirectionsEmptyOrbital.Count > 0)
+        {
+            Debug.Log("[σ-p1-empty] allEmptyDirsFilteredOverlapOccupied atom=" + atom.GetInstanceID() + " occupiedSlots=" + occupiedNonEmpty.Count + " candDirs=" + finalDirectionsEmptyOrbital.Count);
+            // #region agent log
+            ProjectAgentDebugLog.AppendDebugModeNdjson(
+                "debug-115e1e.log",
+                "115e1e",
+                "H_emptyFilter",
+                "OrbitalRedistribution.AppendEmptyOrbitalAssignments",
+                "allEmptyDirsFilteredOverlapOccupied",
+                "{"
+                + "\"atomId\":" + atom.GetInstanceID().ToString()
+                + ",\"occupiedSlots\":" + occupiedNonEmpty.Count.ToString()
+                + ",\"candDirs\":" + finalDirectionsEmptyOrbital.Count.ToString()
+                + "}",
+                "pre-fix");
+            // #endregion
         }
         if (remainingDirs.Count == 0) return;
 
@@ -2282,6 +2363,16 @@ public static class OrbitalRedistribution
         List<GroupEntry> emptyOrbitals,
         ElectronOrbitalFunction atomOrbitalOp)
     {
+        if (atomOrbitalOp != null)
+        {
+            GroupEntry direct = TryFindGroupEntryWithOrbital(bondingGroups, atomOrbitalOp);
+            if (direct != null) return direct;
+            direct = TryFindGroupEntryWithOrbital(nonbondingOccupied, atomOrbitalOp);
+            if (direct != null) return direct;
+            direct = TryFindGroupEntryWithOrbital(emptyOrbitals, atomOrbitalOp);
+            if (direct != null) return direct;
+        }
+
         GroupEntry best = null;
         float bestMass = float.NegativeInfinity;
 
@@ -2335,7 +2426,21 @@ public static class OrbitalRedistribution
         VisitOpPath(bondingGroups);
         VisitOpPath(nonbondingOccupied);
         VisitOpPath(emptyOrbitals);
+        if (opPathBest != null)
+            return opPathBest;
         return best;
+    }
+
+    static GroupEntry TryFindGroupEntryWithOrbital(List<GroupEntry> rows, ElectronOrbitalFunction orb)
+    {
+        if (rows == null || orb == null) return null;
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            if (row != null && ReferenceEquals(row.Orbital, orb))
+                return row;
+        }
+        return null;
     }
 
     static void ApplyEventSpecificGroupAdjustments(

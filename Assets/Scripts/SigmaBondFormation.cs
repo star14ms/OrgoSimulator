@@ -361,6 +361,24 @@ public class SigmaBondFormation : MonoBehaviour
             finalDirectionForGuideOrbital,
             isBondingEvent: true,
             cyclicContext: redistCycleContext);
+        Debug.Log("[σ-p1-redist] phase1OrbitalRedistTrack guide=" + guideAtom.GetInstanceID() + " nonGuide=" + nonGuideAtom.GetInstanceID()
+            + " cyclicCtx=" + (redistCycleContext != null ? "1" : "0")
+            + " finalGuideDirMag2=" + finalDirectionForGuideOrbital.sqrMagnitude.ToString("G4"));
+        // #region agent log
+        ProjectAgentDebugLog.AppendDebugModeNdjson(
+            "debug-115e1e.log",
+            "115e1e",
+            "H_phase1_track",
+            "SigmaBondFormation.BuildPhase1OrbitalRedistributeForSigmaFormationPhase1",
+            "phase1OrbitalRedistTrack",
+            "{"
+            + "\"guideId\":" + guideAtom.GetInstanceID().ToString()
+            + ",\"nonGuideId\":" + nonGuideAtom.GetInstanceID().ToString()
+            + ",\"cyclicCtx\":" + (redistCycleContext != null ? "1" : "0")
+            + ",\"finalGuideDirMag2\":" + ProjectAgentDebugLog.JsonFloatInvariant(finalDirectionForGuideOrbital.sqrMagnitude)
+            + "}",
+            "pre-fix");
+        // #endregion
         return new Phase1ParallelTrack
         {
             ApplySmoothStep = s => animation?.Apply(s),

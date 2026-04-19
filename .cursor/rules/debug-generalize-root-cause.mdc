@@ -1,5 +1,5 @@
 ---
-description: Prefer generalizing shared domain/geometry logic over narrow conditionals that only silence a repro.
+description: 
 alwaysApply: true
 ---
 

@@ -1,5 +1,5 @@
 ---
-description: After vertex 0 is aligned to the guide group, joint world rotation must not drift vertex 0; factor DOF or constrain rotation.
+description: 
 alwaysApply: true
 ---
 

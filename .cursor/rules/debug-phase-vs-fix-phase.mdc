@@ -1,5 +1,5 @@
 ---
-description: Separate debug instrumentation from behavioral fixes; require chat permission before fix phase; avoid narrow workaround branches.
+description: 
 alwaysApply: true
 ---
 

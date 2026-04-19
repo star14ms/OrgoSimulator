@@ -1,6 +1,5 @@
 ---
-description: Electron redistribution / σ debugging without Game view — pivot→orbital-group rays, template dirs, pairwise angles
-globs: "**/*.cs"
+description: 
 alwaysApply: true
 ---
 

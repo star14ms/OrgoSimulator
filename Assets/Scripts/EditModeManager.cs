@@ -1,6 +1,5 @@
 using System.Collections;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -140,11 +139,14 @@ public class EditModeManager : MonoBehaviour
 
         AtomFunction keeperAtom = null;
         ElectronOrbitalFunction orbitalTowardRemoved = null;
+        Vector3 lastDeletedNeighborWorld = default;
+        bool haveLastDeletedNeighborWorld = false;
 
         for (int guard = 0; guard < 64; guard++)
         {
             CovalentBond bridge = null;
             AtomFunction keeper = null;
+            AtomFunction bridgeRemoveAtom = null;
             foreach (var a in remove)
             {
                 if (a == null) continue;
@@ -156,6 +158,7 @@ public class EditModeManager : MonoBehaviour
                     if (remove.Contains(other)) continue;
                     bridge = bond;
                     keeper = other;
+                    bridgeRemoveAtom = a;
                     break;
                 }
                 if (bridge != null) break;
@@ -163,6 +166,11 @@ public class EditModeManager : MonoBehaviour
             if (bridge == null) break;
             keeperAtom = keeper;
             orbitalTowardRemoved = bridge.Orbital;
+            if (bridgeRemoveAtom != null && keeper != null)
+            {
+                lastDeletedNeighborWorld = bridgeRemoveAtom.transform.position;
+                haveLastDeletedNeighborWorld = true;
+            }
             bridge.BreakBond(keeper, instantRedistributionForDestroyPartner: true);
         }
 
@@ -177,6 +185,21 @@ public class EditModeManager : MonoBehaviour
             {
                 selectedOrbital = orbitalTowardRemoved;
                 orbitalExplicitlySelected = true;
+                // σ returned from BreakBond can have +X anti-parallel to the vacancy (keeper→deleted); keep the same
+                // orbital instance but align its lobe toward the deleted neighbor so edit-mode adds extend correctly.
+                if (haveLastDeletedNeighborWorld && orbitalTowardRemoved != null)
+                {
+                    var wantDir = (lastDeletedNeighborWorld - keeperAtom.transform.position).normalized;
+                    if (wantDir.sqrMagnitude > 1e-8f)
+                    {
+                        var lobe = OrbitalAngleUtility.GetOrbitalDirectionWorld(orbitalTowardRemoved.transform);
+                        if (Vector3.Dot(lobe, wantDir) < 0f)
+                        {
+                            orbitalTowardRemoved.transform.rotation =
+                                Quaternion.FromToRotation(lobe, wantDir) * orbitalTowardRemoved.transform.rotation;
+                        }
+                    }
+                }
             }
             else
             {

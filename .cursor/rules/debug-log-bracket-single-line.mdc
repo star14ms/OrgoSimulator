@@ -1,6 +1,5 @@
 ---
-description: Debug / triage logs — leading [category] tag for grep, one line per message, no brackets inside the body
-globs: "**/*.cs"
+description: 
 alwaysApply: true
 ---
 

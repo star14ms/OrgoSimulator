@@ -220,12 +220,27 @@ public static class AminoAcidMoleculeLibrary
                 break;
             case "Leu":
             {
+                // γ is CH(Me)₂: first Me uses α→β stagger; second must bond from a different sp³ lobe (swap + out-of-plane pref).
                 var g = AddByEditMode(beta, 6, editModeManager, amineN, alphaHydrogenLikeDir);
-                if (g != null)
+                if (g == null) break;
+                var me1 = AddByEditMode(g, 6, editModeManager, beta, alphaToBetaDir);
+                if (me1 == null) break;
+                Vector3 uB = beta.transform.position - g.transform.position;
+                Vector3 uM = me1.transform.position - g.transform.position;
+                Vector3 pref2 = Vector3.Cross(uB, uM);
+                if (pref2.sqrMagnitude < 1e-12f)
                 {
-                    AddByEditMode(g, 6, editModeManager, beta, alphaToBetaDir);
-                    AddByEditMode(g, 6, editModeManager, beta);
+                    Vector3 aux = alphaToBetaDir.sqrMagnitude > 1e-12f ? alphaToBetaDir : alphaHydrogenLikeDir;
+                    pref2 = Vector3.Cross(uB, aux);
                 }
+                if (pref2.sqrMagnitude > 1e-12f)
+                {
+                    pref2.Normalize();
+                    SwapAnchorNonbondLobesForBondDirectionTowardWorld(g, pref2);
+                    AddByEditMode(g, 6, editModeManager, beta, pref2);
+                }
+                else
+                    AddByEditMode(g, 6, editModeManager, beta);
                 break;
             }
             case "Ile":
