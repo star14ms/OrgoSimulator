@@ -4,7 +4,8 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// σ / π formation from <b>orbital drag</b>: σ runs phase 1 pre-bond (non-guide fragment translates toward guide op head target),
+/// σ / π formation from <b>orbital drag</b> or the same pipeline <b>without animation</b> (<see cref="TryBeginOrbitalDragSigmaFormation"/> /
+/// <see cref="TryBeginOrbitalDragPiFormation"/> with <c>animate: false</c>): σ runs phase 1 pre-bond (non-guide fragment or cyclic targets),
 /// then bond formation (cylinder + orbital→line), then post-bond guide hybrid lerp. π uses the same three phases with
 /// <b>no</b> rigid fragment translation in phase 1 (σ already links the pair).
 /// Independent of edit mode; add this component to the scene (e.g. next to <see cref="EditModeManager"/>).
@@ -157,7 +158,8 @@ public class SigmaBondFormation : MonoBehaviour
         AtomFunction nonGuide,
         ElectronOrbitalFunction guideOp,
         ElectronOrbitalFunction nonGuideOp,
-        float phase1Sec)
+        float phase1Sec,
+        bool allowSteppedDebug)
     {
         if (guide == null || nonGuide == null)
             yield break;
@@ -198,7 +200,7 @@ public class SigmaBondFormation : MonoBehaviour
             cyclicContext,
             disablePhase1Redistribution);
 
-        if (BondFormationDebugController.SteppedModeEnabled)
+        if (allowSteppedDebug && BondFormationDebugController.SteppedModeEnabled)
         {
             BuildPhase1RedistributeTemplatePreviewVisuals(
                 guide,
@@ -221,6 +223,86 @@ public class SigmaBondFormation : MonoBehaviour
         {
             SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, false);
         }
+    }
+
+    /// <summary>σ phase 1 with no coroutine yields (for <see cref="RunOrbitalDragSigmaFormationThreePhaseImmediate"/>).</summary>
+    static void RunOrbitalDragSigmaPhase1PrebondSynchronously(
+        AtomFunction guide,
+        AtomFunction nonGuide,
+        ElectronOrbitalFunction guideOp,
+        ElectronOrbitalFunction nonGuideOp,
+        float phase1Sec,
+        bool disableCyclicSigmaPhase1RedistributionDebug)
+    {
+        if (guide == null || nonGuide == null)
+            return;
+
+        float bl = DefaultSigmaBondLengthForPair(guide, nonGuide);
+        CyclicPhase1Context cyclicContext = TryBuildCyclicPhase1Context(guide, nonGuide, bl);
+        bool disablePhase1Redistribution = disableCyclicSigmaPhase1RedistributionDebug && cyclicContext != null;
+        Vector3 nTarget = Phase1NonGuideNucleusTargetOnGuideOpOutboundRay(guide, guideOp, bl);
+        Vector3 deltaTotal = nTarget - nonGuide.transform.position;
+        if (cyclicContext == null && deltaTotal.sqrMagnitude < 1e-16f)
+            return;
+
+        var toMove = cyclicContext != null
+            ? new List<AtomFunction>(cyclicContext.TargetWorldByAtom.Keys)
+            : BuildNonGuideFragmentAtomsForApproach(guide, nonGuide);
+        if (cyclicContext != null && toMove.Count == 0)
+            return;
+        var initialWorld = new Dictionary<AtomFunction, Vector3>(toMove.Count);
+        foreach (var a in toMove)
+        {
+            if (a == null) continue;
+            initialWorld[a] = a.transform.position;
+        }
+
+        var mol = nonGuide.GetConnectedMolecule();
+        float dur = Mathf.Max(0f, phase1Sec);
+
+        IReadOnlyList<Phase1ParallelTrack> tracks = BuildPhase1ParallelAnimationList(
+            guide,
+            nonGuide,
+            guideOp,
+            nonGuideOp,
+            initialWorld,
+            toMove,
+            deltaTotal,
+            nTarget,
+            mol,
+            cyclicContext,
+            disablePhase1Redistribution);
+
+        SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, true);
+        try
+        {
+            if (dur >= 1e-5f)
+                throw new InvalidOperationException(
+                    "RunOrbitalDragSigmaPhase1PrebondSynchronously expects zero-duration phase 1 (immediate bonding).");
+            ExecutePhase1ParallelAnimationsImmediate(tracks, mol, dur);
+        }
+        finally
+        {
+            SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, false);
+        }
+    }
+
+    static void DrainCoroutineToCompletion(IEnumerator routine)
+    {
+        if (routine == null)
+            return;
+        while (routine.MoveNext())
+        {
+        }
+    }
+
+    /// <summary>π row only: after phase-2 cylinder completes (called from <see cref="ElectronOrbitalFunction.AnimateBondFormationOperationOrbitalsTowardBondCylinder"/> end), hide the source OP shell and suppress the bond's shared orbital mesh so π line/cylinders stay visible (<see cref="CovalentBond.SetSuppressSharedOrbitalVisualForPiHandoff"/>).</summary>
+    internal static void HidePiOperationOrbitalsAfterPhase2Cylinder(CovalentBond bond, ElectronOrbitalFunction sourceOrbital)
+    {
+        if (bond != null && bond.GetBondIndex() > 0)
+            bond.SetSuppressSharedOrbitalVisualForPiHandoff(true);
+        if (sourceOrbital != null)
+            sourceOrbital.SetVisualsEnabled(false);
     }
 
     /// <summary>Assembles phase-1 parallel lanes: atom fragment approach + non-guide orbital redistribution.</summary>
@@ -415,6 +497,26 @@ public class SigmaBondFormation : MonoBehaviour
         };
     }
 
+    /// <summary>Applies phase-1 tracks at completion in one step (smoothstep 1 + finalize). Use only when <paramref name="dur"/> is ~0.</summary>
+    static void ExecutePhase1ParallelAnimationsImmediate(
+        IReadOnlyList<Phase1ParallelTrack> tracks,
+        ICollection<AtomFunction> molForBondLines,
+        float dur)
+    {
+        if (tracks == null || tracks.Count == 0)
+            return;
+        if (dur >= 1e-5f)
+            throw new InvalidOperationException(
+                "ExecutePhase1ParallelAnimationsImmediate requires dur < 1e-5f; use CoExecutePhase1ParallelAnimations as a coroutine for animated phase 1.");
+
+        for (int i = 0; i < tracks.Count; i++)
+            tracks[i].ApplySmoothStep?.Invoke(1f);
+        if (molForBondLines != null && molForBondLines.Count > 0)
+            AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(molForBondLines);
+        for (int i = 0; i < tracks.Count; i++)
+            tracks[i].FinalizeAfterTimeline?.Invoke();
+    }
+
     /// <summary>Runs all <paramref name="tracks"/> with the same smoothstep timeline; updates σ line visuals once per frame after all applies.</summary>
     static IEnumerator CoExecutePhase1ParallelAnimations(
         IReadOnlyList<Phase1ParallelTrack> tracks,
@@ -426,12 +528,7 @@ public class SigmaBondFormation : MonoBehaviour
 
         if (dur < 1e-5f)
         {
-            for (int i = 0; i < tracks.Count; i++)
-                tracks[i].ApplySmoothStep?.Invoke(1f);
-            if (molForBondLines != null && molForBondLines.Count > 0)
-                AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(molForBondLines);
-            for (int i = 0; i < tracks.Count; i++)
-                tracks[i].FinalizeAfterTimeline?.Invoke();
+            ExecutePhase1ParallelAnimationsImmediate(tracks, molForBondLines, dur);
             yield break;
         }
 
@@ -952,26 +1049,36 @@ public class SigmaBondFormation : MonoBehaviour
     }
 
     /// <summary>
-    /// True if the orbital-drag σ coroutine was started. When <see cref="editModeManager"/> is null, returns false.
+    /// True if the σ formation pipeline was started (animated coroutine) or completed (immediate). When <see cref="editModeManager"/> is null, returns false.
     /// </summary>
+    /// <param name="animate">When false, runs the same phases as orbital-drag σ without animation or frame waits (library / tooling).</param>
     public bool TryBeginOrbitalDragSigmaFormation(
         AtomFunction atomA,
         AtomFunction atomB,
         ElectronOrbitalFunction orbA,
         ElectronOrbitalFunction orbB,
-        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital)
+        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital,
+        bool animate = true)
     {
         if (editModeManager == null)
         {
             Debug.LogWarning("[sigma-drag] SigmaBondFormation: no EditModeManager reference; cannot run σ formation pipeline.");
             return false;
         }
+        if (!animate)
+            return RunOrbitalDragSigmaFormationThreePhaseImmediate(
+                atomA,
+                atomB,
+                orbA,
+                orbB,
+                redistributionGuideTieBreakDraggedOrbital);
         StartCoroutine(CoOrbitalDragSigmaFormationThreePhase(
             atomA,
             atomB,
             orbA,
             orbB,
-            redistributionGuideTieBreakDraggedOrbital));
+            redistributionGuideTieBreakDraggedOrbital,
+            animate: true));
         return true;
     }
 
@@ -983,7 +1090,8 @@ public class SigmaBondFormation : MonoBehaviour
         AtomFunction atomB,
         ElectronOrbitalFunction orbA,
         ElectronOrbitalFunction orbB,
-        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital)
+        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital,
+        bool animate)
     {
         var timingOrb = TimingSourceOrbital(orbA, orbB, redistributionGuideTieBreakDraggedOrbital);
         float phase1Sec = timingOrb != null ? timingOrb.SigmaFormationPhase1PrebondSeconds : 1f;
@@ -1001,19 +1109,22 @@ public class SigmaBondFormation : MonoBehaviour
 
         try
         {
-            // Pointer-up can still leave the dragged lobe at the drop world pose in the same frame StartCoroutine runs.
-            // Snap to pre-drag locals, then wait one frame so bond animation reads nuclei and orbitals from the restored configuration.
-            var draggedLobeToRestore = redistributionGuideTieBreakDraggedOrbital != null
-                ? redistributionGuideTieBreakDraggedOrbital
-                : orbA;
-            if (draggedLobeToRestore != null)
-                draggedLobeToRestore.SnapToOriginal();
-            yield return null;
+            if (animate)
+            {
+                // Pointer-up can still leave the dragged lobe at the drop world pose in the same frame StartCoroutine runs.
+                // Snap to pre-drag locals, then wait one frame so bond animation reads nuclei and orbitals from the restored configuration.
+                var draggedLobeToRestore = redistributionGuideTieBreakDraggedOrbital != null
+                    ? redistributionGuideTieBreakDraggedOrbital
+                    : orbA;
+                if (draggedLobeToRestore != null)
+                    draggedLobeToRestore.SnapToOriginal();
+                yield return null;
+            }
 
             int merged = orbA.ElectronCount + orbB.ElectronCount;
             var guideOrb = redistributionGuideTieBreakDraggedOrbital != null ? redistributionGuideTieBreakDraggedOrbital : orbA;
             ElectronRedistributionGuide.ResolveGuideAtomForPair(atomA, atomB, guideOrb, out var guide, out var nonGuide);
-            bool prebondCycleCandidate = TryGetPrebondCycleSize(guide, nonGuide, out int prebondCycleSize);
+            bool prebondCycleCandidate = TryGetPrebondCycleSize(guide, nonGuide, out _);
 
             if (guide == null || nonGuide == null || ReferenceEquals(guide, nonGuide))
             {
@@ -1027,14 +1138,12 @@ public class SigmaBondFormation : MonoBehaviour
                     pinSigmaRelaxForAtomA: null,
                     pinSigmaRelaxForAtomB: null,
                     freezeSigmaNeighborSubtreeRoot: null,
-                    orbitalDragPostbondGuideHybridLerp: true,
+                    orbitalDragPostbondGuideHybridLerp: animate,
                     redistributionGuideTieBreakDraggedOrbital,
-                    phase3GuideLerpSecondsOverride: phase3Sec);
+                    phase3GuideLerpSecondsOverride: animate ? phase3Sec : null,
+                    skipHydrogenSigmaNeighborSnapAfterTail: !animate);
                 yield break;
             }
-
-            int sigmaDragSavedNonGuideOpElectrons = nonGuide == atomA ? orbA.ElectronCount : orbB.ElectronCount;
-            int sigmaDragSavedGuideOpElectrons = guide == atomA ? orbA.ElectronCount : orbB.ElectronCount;
 
             ElectronOrbitalFunction guideOpPhase1 = guide == atomA ? orbA : orbB;
             ElectronOrbitalFunction nonGuideOpPhase1 = nonGuide == atomA ? orbA : orbB;
@@ -1043,13 +1152,14 @@ public class SigmaBondFormation : MonoBehaviour
                 nonGuide,
                 guideOpPhase1,
                 nonGuideOpPhase1,
-                phase1Sec));
+                animate ? phase1Sec : 0f,
+                allowSteppedDebug: animate));
 
             // Phase 2: bond creation + cylinder + orbital→line. Durations from sigmaFormationPhase2* (resolved, non-negative).
 
             atomA.UnbondOrbital(orbA);
             atomB.UnbondOrbital(orbB);
-            var bond = CovalentBond.Create(atomA, atomB, orbA, atomA, animateOrbitalToBond: true);
+            var bond = CovalentBond.Create(atomA, atomB, orbA, atomA, animateOrbitalToBond: animate);
             if (bond == null)
                 yield break;
             bond.SkipNonGuideExecuteSigmaFormation12HybridPass = true;
@@ -1059,8 +1169,8 @@ public class SigmaBondFormation : MonoBehaviour
             atomA.RefreshCharge();
             atomB.RefreshCharge();
 
-            float tCyl = Mathf.Max(0f, phase2CylinderSec);
-            float tLine = Mathf.Max(0f, phase2OrbitalToLineSec);
+            float tCyl = Mathf.Max(0f, animate ? phase2CylinderSec : 0f);
+            float tLine = Mathf.Max(0f, animate ? phase2OrbitalToLineSec : 0f);
 
             yield return StartCoroutine(orbA.AnimateBondFormationOperationOrbitalsTowardBondCylinder(
                 atomA, atomB, orbB, orbA, bond, tCyl));
@@ -1082,26 +1192,133 @@ public class SigmaBondFormation : MonoBehaviour
                     isBondingEvent: true);
                 if (phase3GuideRedistribution != null)
                 {
-                    float t3 = 0f;
-                    while (t3 < phase3Sec)
+                    if (animate)
                     {
-                        t3 += Time.deltaTime;
-                        float s3 = Mathf.Clamp01(t3 / phase3Sec);
-                        float smooth3 = s3 * s3 * (3f - 2f * s3);
-                        phase3GuideRedistribution.Apply(smooth3);
-                        AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(guide.GetConnectedMolecule());
-                        yield return null;
+                        float t3 = 0f;
+                        while (t3 < phase3Sec)
+                        {
+                            t3 += Time.deltaTime;
+                            float s3 = Mathf.Clamp01(t3 / phase3Sec);
+                            float smooth3 = s3 * s3 * (3f - 2f * s3);
+                            phase3GuideRedistribution.Apply(smooth3);
+                            AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(guide.GetConnectedMolecule());
+                            yield return null;
+                        }
                     }
 
                     phase3GuideRedistribution.Apply(1f);
                     AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(guide.GetConnectedMolecule());
                 }
+
             }
 
             editModeManager.FinishSigmaBondInstantTail(
                 atomA,
                 atomB,
                 skipHydrogenSigmaNeighborSnapAfterOrbitalDragThreePhase: true);
+        }
+        finally
+        {
+            foreach (var a in atomsToBlock)
+                if (a != null) a.SetInteractionBlocked(false);
+        }
+    }
+
+    bool RunOrbitalDragSigmaFormationThreePhaseImmediate(
+        AtomFunction atomA,
+        AtomFunction atomB,
+        ElectronOrbitalFunction orbA,
+        ElectronOrbitalFunction orbB,
+        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital)
+    {
+        var timingOrb = TimingSourceOrbital(orbA, orbB, redistributionGuideTieBreakDraggedOrbital);
+        float phase3Sec = timingOrb != null ? timingOrb.SigmaFormationPhase3PostbondGuideSeconds : 1f;
+
+        var atomsToBlock = new HashSet<AtomFunction>();
+        foreach (var a in atomA.GetConnectedMolecule())
+            if (a != null) atomsToBlock.Add(a);
+        foreach (var a in atomB.GetConnectedMolecule())
+            if (a != null) atomsToBlock.Add(a);
+        foreach (var a in atomsToBlock)
+            a.SetInteractionBlocked(true);
+
+        try
+        {
+            int merged = orbA.ElectronCount + orbB.ElectronCount;
+            var guideOrb = redistributionGuideTieBreakDraggedOrbital != null ? redistributionGuideTieBreakDraggedOrbital : orbA;
+            ElectronRedistributionGuide.ResolveGuideAtomForPair(atomA, atomB, guideOrb, out var guide, out var nonGuide);
+            bool prebondCycleCandidate = TryGetPrebondCycleSize(guide, nonGuide, out _);
+
+            if (guide == null || nonGuide == null || ReferenceEquals(guide, nonGuide))
+            {
+                editModeManager.FormSigmaBondInstantBody(
+                    atomA,
+                    atomB,
+                    orbA,
+                    orbB,
+                    redistributeAtomA: true,
+                    redistributeAtomB: true,
+                    pinSigmaRelaxForAtomA: null,
+                    pinSigmaRelaxForAtomB: null,
+                    freezeSigmaNeighborSubtreeRoot: null,
+                    orbitalDragPostbondGuideHybridLerp: false,
+                    redistributionGuideTieBreakDraggedOrbital,
+                    phase3GuideLerpSecondsOverride: null,
+                    skipHydrogenSigmaNeighborSnapAfterTail: true);
+                return true;
+            }
+
+            ElectronOrbitalFunction guideOpPhase1 = guide == atomA ? orbA : orbB;
+            ElectronOrbitalFunction nonGuideOpPhase1 = nonGuide == atomA ? orbA : orbB;
+            RunOrbitalDragSigmaPhase1PrebondSynchronously(
+                guide,
+                nonGuide,
+                guideOpPhase1,
+                nonGuideOpPhase1,
+                0f,
+                debugDisableCyclicSigmaPhase1Redistribution);
+
+            atomA.UnbondOrbital(orbA);
+            atomB.UnbondOrbital(orbB);
+            var bond = CovalentBond.Create(atomA, atomB, orbA, atomA, animateOrbitalToBond: false);
+            if (bond == null)
+                return false;
+            bond.SkipNonGuideExecuteSigmaFormation12HybridPass = true;
+
+            orbA.transform.SetParent(null, worldPositionStays: true);
+            bond.SetOrbitalBeingFaded(orbB);
+            atomA.RefreshCharge();
+            atomB.RefreshCharge();
+
+            DrainCoroutineToCompletion(orbA.AnimateBondFormationOperationOrbitalsTowardBondCylinder(
+                atomA, atomB, orbB, orbA, bond, 0f));
+            bond.animatingOrbitalToBondPosition = false;
+            DrainCoroutineToCompletion(bond.AnimateOrbitalToLine(0f, orbB));
+            orbA.ElectronCount = merged;
+            atomA.RefreshCharge();
+            atomB.RefreshCharge();
+
+            if (guide.AtomicNumber > 1 && phase3Sec > 1e-5f && !prebondCycleCandidate)
+            {
+                var phase3GuideOp = bond.Orbital != null ? bond.Orbital : guideOpPhase1;
+                var phase3GuideRedistribution = OrbitalRedistribution.BuildOrbitalRedistribution(
+                    guide,
+                    nonGuide,
+                    atomOrbitalOp: phase3GuideOp,
+                    isBondingEvent: true);
+                if (phase3GuideRedistribution != null)
+                {
+                    phase3GuideRedistribution.Apply(1f);
+                    AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(guide.GetConnectedMolecule());
+                }
+
+            }
+
+            editModeManager.FinishSigmaBondInstantTail(
+                atomA,
+                atomB,
+                skipHydrogenSigmaNeighborSnapAfterOrbitalDragThreePhase: true);
+            return true;
         }
         finally
         {
@@ -1123,26 +1340,36 @@ public class SigmaBondFormation : MonoBehaviour
     }
 
     /// <summary>
-    /// Orbital-drag π: phase 1 redistribution on the non-guide center only (no rigid fragment translation), then cylinder + orbital→line, then post-bond guide lerp.
+    /// True if the π formation pipeline was started (animated) or completed (immediate). When <see cref="editModeManager"/> is null, returns false.
     /// </summary>
+    /// <param name="animate">When false, runs the same phases as orbital-drag π without animation or frame waits.</param>
     public bool TryBeginOrbitalDragPiFormation(
         AtomFunction sourceAtom,
         AtomFunction targetAtom,
         ElectronOrbitalFunction sourceOrbital,
         ElectronOrbitalFunction targetOrbital,
-        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital)
+        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital,
+        bool animate = true)
     {
         if (editModeManager == null)
         {
             Debug.LogWarning("[pi-drag] SigmaBondFormation: no EditModeManager reference; cannot run π formation pipeline.");
             return false;
         }
+        if (!animate)
+            return RunOrbitalDragPiFormationThreePhaseImmediate(
+                sourceAtom,
+                targetAtom,
+                sourceOrbital,
+                targetOrbital,
+                redistributionGuideTieBreakDraggedOrbital);
         StartCoroutine(CoOrbitalDragPiFormationThreePhase(
             sourceAtom,
             targetAtom,
             sourceOrbital,
             targetOrbital,
-            redistributionGuideTieBreakDraggedOrbital));
+            redistributionGuideTieBreakDraggedOrbital,
+            animate: true));
         return true;
     }
 
@@ -1157,10 +1384,14 @@ public class SigmaBondFormation : MonoBehaviour
         ElectronOrbitalFunction sourceOrbital,
         ElectronOrbitalFunction targetOrbital,
         float phase1Sec,
-        ICollection<AtomFunction> molForBondLines)
+        ICollection<AtomFunction> molForBondLines,
+        bool buildPhase1TemplatePreviews)
     {
         if (guide == null || nonGuide == null)
             yield break;
+        OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
+        Vector3 sourceStart = sourceAtom != null ? sourceAtom.transform.position : Vector3.zero;
+        Vector3 targetStart = targetAtom != null ? targetAtom.transform.position : Vector3.zero;
 
         var sigmaBetween = TryFindSigmaBondBetween(sourceAtom, targetAtom);
         TryBuildPiPhase1CyclicRedistributionContext(
@@ -1175,7 +1406,8 @@ public class SigmaBondFormation : MonoBehaviour
             out var piTargetC3,
             out var piGuideDirLocal);
 
-        if (debugShowCyclicPiPhase1RedistributeTemplates
+        if (buildPhase1TemplatePreviews
+            && debugShowCyclicPiPhase1RedistributeTemplates
             && sigmaBetween != null
             && TryBuildShortestSigmaPath(sourceAtom, targetAtom, out var ringPath, sigmaBetween)
             && ringPath != null
@@ -1194,25 +1426,17 @@ public class SigmaBondFormation : MonoBehaviour
             ClearPiPhase1RedistributeTemplatePreviewVisuals();
         }
 
-        var tracks = new List<Phase1ParallelTrack>(2)
-        {
-            BuildPhase1OrbitalRedistributeForPiFormationPhase1(
-                guide,
-                nonGuide,
-                guideOp,
-                nonGuideOp,
-                piPhase1CyclicContext,
-                piGuideDirLocal)
-        };
+        var tracks = new List<Phase1ParallelTrack>(1);
+        Phase1ParallelTrack piPhase1RedistributionTrack = BuildPhase1OrbitalRedistributeForPiFormationPhase1(
+            guide,
+            nonGuide,
+            guideOp,
+            nonGuideOp,
+            piPhase1CyclicContext,
+            piGuideDirLocal);
+        if (piPhase1RedistributionTrack != null)
+            tracks.Add(piPhase1RedistributionTrack);
 
-        Phase1ParallelTrack cyclicCoplanarTrack = BuildPhase1PiCyclicCoplanarTrack(
-            sourceAtom,
-            targetAtom,
-            sigmaBetween,
-            piTargetC2,
-            piTargetC3);
-        if (cyclicCoplanarTrack != null)
-            tracks.Add(cyclicCoplanarTrack);
         Phase1ParallelTrack piCylinderTrack = BuildPhase1PiCylinderTrackFromOpFinalPose(
             sourceAtom,
             targetAtom,
@@ -1222,17 +1446,336 @@ public class SigmaBondFormation : MonoBehaviour
             molForBondLines);
         if (piCylinderTrack != null)
             tracks.Add(piCylinderTrack);
+        // #region agent log
+        ProjectAgentDebugLog.AppendDebugModeNdjson(
+            "debug-446955.log",
+            "446955",
+            "H9",
+            "SigmaBondFormation.cs:CoOrbitalDragPiPhase1RedistributionOnly",
+            "pi_phase1_track_composition",
+            "{"
+            + "\"sourceId\":" + (sourceAtom != null ? sourceAtom.GetInstanceID().ToString() : "0")
+            + ",\"targetId\":" + (targetAtom != null ? targetAtom.GetInstanceID().ToString() : "0")
+            + ",\"guideId\":" + (guide != null ? guide.GetInstanceID().ToString() : "0")
+            + ",\"guideIsSource\":" + (ReferenceEquals(guide, sourceAtom) ? "1" : "0")
+            + ",\"hasPiCylinderTrack\":" + (piCylinderTrack != null ? "1" : "0")
+            + ",\"hasPhase1RedistributionTrack\":" + (piPhase1RedistributionTrack != null ? "1" : "0")
+            + ",\"phase1Sec\":" + ProjectAgentDebugLog.JsonFloatInvariant(phase1Sec)
+            + "}",
+            "hypothesis-run");
+        // #endregion
 
         SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, true);
         try
         {
             yield return StartCoroutine(
                 CoExecutePhase1ParallelAnimations(tracks, molForBondLines, Mathf.Max(0f, phase1Sec)));
+            if (sourceAtom != null
+                && targetAtom != null
+                && sourceOrbital != null
+                && TryComputePlaneNormalForPiProbe(sourceAtom, targetAtom, out var sourcePlaneN))
+            {
+                Vector3 sourceOpDir = (sourceOrbital.transform.position - sourceAtom.transform.position).normalized;
+                // #region agent log
+                ProjectAgentDebugLog.AppendDebugModeNdjson(
+                    "debug-446955.log",
+                    "446955",
+                    "H16",
+                    "SigmaBondFormation.cs:CoOrbitalDragPiPhase1RedistributionOnly",
+                    "pi_plusz_vs_phase1_plane_probe_source",
+                    "{"
+                    + "\"atomId\":" + sourceAtom.GetInstanceID().ToString()
+                    + ",\"partnerId\":" + targetAtom.GetInstanceID().ToString()
+                    + ",\"absDotOpVsPlaneNormal\":" + ProjectAgentDebugLog.JsonFloatInvariant(Mathf.Abs(Vector3.Dot(sourceOpDir, sourcePlaneN)))
+                    + "}",
+                    "hypothesis-run");
+                // #endregion
+            }
+            else if (sourceAtom != null && targetAtom != null)
+            {
+                // #region agent log
+                ProjectAgentDebugLog.AppendDebugModeNdjson(
+                    "debug-446955.log",
+                    "446955",
+                    "H16",
+                    "SigmaBondFormation.cs:CoOrbitalDragPiPhase1RedistributionOnly",
+                    "pi_plusz_vs_phase1_plane_probe_source_missing_plane",
+                    "{"
+                    + "\"atomId\":" + sourceAtom.GetInstanceID().ToString()
+                    + ",\"partnerId\":" + targetAtom.GetInstanceID().ToString()
+                    + ",\"hasPlane\":0"
+                    + "}",
+                    "hypothesis-run");
+                // #endregion
+            }
+            if (sourceAtom != null
+                && targetAtom != null
+                && targetOrbital != null
+                && TryComputePlaneNormalForPiProbe(targetAtom, sourceAtom, out var targetPlaneN))
+            {
+                Vector3 targetOpDir = (targetOrbital.transform.position - targetAtom.transform.position).normalized;
+                // #region agent log
+                ProjectAgentDebugLog.AppendDebugModeNdjson(
+                    "debug-446955.log",
+                    "446955",
+                    "H16",
+                    "SigmaBondFormation.cs:CoOrbitalDragPiPhase1RedistributionOnly",
+                    "pi_plusz_vs_phase1_plane_probe_target",
+                    "{"
+                    + "\"atomId\":" + targetAtom.GetInstanceID().ToString()
+                    + ",\"partnerId\":" + sourceAtom.GetInstanceID().ToString()
+                    + ",\"absDotOpVsPlaneNormal\":" + ProjectAgentDebugLog.JsonFloatInvariant(Mathf.Abs(Vector3.Dot(targetOpDir, targetPlaneN)))
+                    + "}",
+                    "hypothesis-run");
+                // #endregion
+            }
+            else if (sourceAtom != null && targetAtom != null)
+            {
+                // #region agent log
+                ProjectAgentDebugLog.AppendDebugModeNdjson(
+                    "debug-446955.log",
+                    "446955",
+                    "H16",
+                    "SigmaBondFormation.cs:CoOrbitalDragPiPhase1RedistributionOnly",
+                    "pi_plusz_vs_phase1_plane_probe_target_missing_plane",
+                    "{"
+                    + "\"atomId\":" + targetAtom.GetInstanceID().ToString()
+                    + ",\"partnerId\":" + sourceAtom.GetInstanceID().ToString()
+                    + ",\"hasPlane\":0"
+                    + "}",
+                    "hypothesis-run");
+                // #endregion
+            }
+            // #region agent log
+            ProjectAgentDebugLog.AppendDebugModeNdjson(
+                "debug-446955.log",
+                "446955",
+                "H1",
+                "SigmaBondFormation.cs:CoOrbitalDragPiPhase1RedistributionOnly",
+                "pi_phase1_atom_motion_probe",
+                "{"
+                + "\"sourceId\":" + (sourceAtom != null ? sourceAtom.GetInstanceID().ToString() : "0")
+                + ",\"targetId\":" + (targetAtom != null ? targetAtom.GetInstanceID().ToString() : "0")
+                + ",\"sourceMove\":" + ProjectAgentDebugLog.JsonFloatInvariant(sourceAtom != null ? Vector3.Distance(sourceStart, sourceAtom.transform.position) : 0f)
+                + ",\"targetMove\":" + ProjectAgentDebugLog.JsonFloatInvariant(targetAtom != null ? Vector3.Distance(targetStart, targetAtom.transform.position) : 0f)
+                + ",\"trackCount\":" + tracks.Count.ToString()
+                + "}",
+                "pre-fix");
+            // #endregion
         }
         finally
         {
             SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, false);
         }
+    }
+
+    static void RunOrbitalDragPiPhase1RedistributionSynchronously(
+        AtomFunction guide,
+        AtomFunction nonGuide,
+        ElectronOrbitalFunction guideOp,
+        ElectronOrbitalFunction nonGuideOp,
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        ElectronOrbitalFunction sourceOrbital,
+        ElectronOrbitalFunction targetOrbital,
+        ICollection<AtomFunction> molForBondLines)
+    {
+        if (guide == null || nonGuide == null)
+            return;
+        OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
+        Vector3 sourceStart = sourceAtom != null ? sourceAtom.transform.position : Vector3.zero;
+        Vector3 targetStart = targetAtom != null ? targetAtom.transform.position : Vector3.zero;
+
+        var sigmaBetween = TryFindSigmaBondBetween(sourceAtom, targetAtom);
+        TryBuildPiPhase1CyclicRedistributionContext(
+            sourceAtom,
+            targetAtom,
+            guide,
+            nonGuide,
+            sigmaBetween,
+            out var piPhase1CyclicContext,
+            out _,
+            out var piTargetC2,
+            out var piTargetC3,
+            out var piGuideDirLocal);
+
+        ClearPiPhase1RedistributeTemplatePreviewVisuals();
+
+        var tracks = new List<Phase1ParallelTrack>(1);
+        Phase1ParallelTrack piPhase1RedistributionTrack = BuildPhase1OrbitalRedistributeForPiFormationPhase1(
+            guide,
+            nonGuide,
+            guideOp,
+            nonGuideOp,
+            piPhase1CyclicContext,
+            piGuideDirLocal);
+        if (piPhase1RedistributionTrack != null)
+            tracks.Add(piPhase1RedistributionTrack);
+
+        Phase1ParallelTrack piCylinderTrack = BuildPhase1PiCylinderTrackFromOpFinalPose(
+            sourceAtom,
+            targetAtom,
+            sourceOrbital,
+            targetOrbital,
+            sigmaBetween,
+            molForBondLines);
+        if (piCylinderTrack != null)
+            tracks.Add(piCylinderTrack);
+        // #region agent log
+        ProjectAgentDebugLog.AppendDebugModeNdjson(
+            "debug-446955.log",
+            "446955",
+            "H9",
+            "SigmaBondFormation.cs:RunOrbitalDragPiPhase1RedistributionSynchronously",
+            "pi_phase1_track_composition_sync",
+            "{"
+            + "\"sourceId\":" + (sourceAtom != null ? sourceAtom.GetInstanceID().ToString() : "0")
+            + ",\"targetId\":" + (targetAtom != null ? targetAtom.GetInstanceID().ToString() : "0")
+            + ",\"guideId\":" + (guide != null ? guide.GetInstanceID().ToString() : "0")
+            + ",\"guideIsSource\":" + (ReferenceEquals(guide, sourceAtom) ? "1" : "0")
+            + ",\"hasPiCylinderTrack\":" + (piCylinderTrack != null ? "1" : "0")
+            + ",\"hasPhase1RedistributionTrack\":" + (piPhase1RedistributionTrack != null ? "1" : "0")
+            + "}",
+            "hypothesis-run");
+        // #endregion
+
+        SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, true);
+        try
+        {
+            ExecutePhase1ParallelAnimationsImmediate(tracks, molForBondLines, 0f);
+            if (sourceAtom != null
+                && targetAtom != null
+                && sourceOrbital != null
+                && TryComputePlaneNormalForPiProbe(sourceAtom, targetAtom, out var sourcePlaneN))
+            {
+                Vector3 sourceOpDir = (sourceOrbital.transform.position - sourceAtom.transform.position).normalized;
+                // #region agent log
+                ProjectAgentDebugLog.AppendDebugModeNdjson(
+                    "debug-446955.log",
+                    "446955",
+                    "H16",
+                    "SigmaBondFormation.cs:RunOrbitalDragPiPhase1RedistributionSynchronously",
+                    "pi_plusz_vs_phase1_plane_probe_source_sync",
+                    "{"
+                    + "\"atomId\":" + sourceAtom.GetInstanceID().ToString()
+                    + ",\"partnerId\":" + targetAtom.GetInstanceID().ToString()
+                    + ",\"absDotOpVsPlaneNormal\":" + ProjectAgentDebugLog.JsonFloatInvariant(Mathf.Abs(Vector3.Dot(sourceOpDir, sourcePlaneN)))
+                    + "}",
+                    "hypothesis-run");
+                // #endregion
+            }
+            else if (sourceAtom != null && targetAtom != null)
+            {
+                // #region agent log
+                ProjectAgentDebugLog.AppendDebugModeNdjson(
+                    "debug-446955.log",
+                    "446955",
+                    "H16",
+                    "SigmaBondFormation.cs:RunOrbitalDragPiPhase1RedistributionSynchronously",
+                    "pi_plusz_vs_phase1_plane_probe_source_missing_plane_sync",
+                    "{"
+                    + "\"atomId\":" + sourceAtom.GetInstanceID().ToString()
+                    + ",\"partnerId\":" + targetAtom.GetInstanceID().ToString()
+                    + ",\"hasPlane\":0"
+                    + "}",
+                    "hypothesis-run");
+                // #endregion
+            }
+            if (sourceAtom != null
+                && targetAtom != null
+                && targetOrbital != null
+                && TryComputePlaneNormalForPiProbe(targetAtom, sourceAtom, out var targetPlaneN))
+            {
+                Vector3 targetOpDir = (targetOrbital.transform.position - targetAtom.transform.position).normalized;
+                // #region agent log
+                ProjectAgentDebugLog.AppendDebugModeNdjson(
+                    "debug-446955.log",
+                    "446955",
+                    "H16",
+                    "SigmaBondFormation.cs:RunOrbitalDragPiPhase1RedistributionSynchronously",
+                    "pi_plusz_vs_phase1_plane_probe_target_sync",
+                    "{"
+                    + "\"atomId\":" + targetAtom.GetInstanceID().ToString()
+                    + ",\"partnerId\":" + sourceAtom.GetInstanceID().ToString()
+                    + ",\"absDotOpVsPlaneNormal\":" + ProjectAgentDebugLog.JsonFloatInvariant(Mathf.Abs(Vector3.Dot(targetOpDir, targetPlaneN)))
+                    + "}",
+                    "hypothesis-run");
+                // #endregion
+            }
+            else if (sourceAtom != null && targetAtom != null)
+            {
+                // #region agent log
+                ProjectAgentDebugLog.AppendDebugModeNdjson(
+                    "debug-446955.log",
+                    "446955",
+                    "H16",
+                    "SigmaBondFormation.cs:RunOrbitalDragPiPhase1RedistributionSynchronously",
+                    "pi_plusz_vs_phase1_plane_probe_target_missing_plane_sync",
+                    "{"
+                    + "\"atomId\":" + targetAtom.GetInstanceID().ToString()
+                    + ",\"partnerId\":" + sourceAtom.GetInstanceID().ToString()
+                    + ",\"hasPlane\":0"
+                    + "}",
+                    "hypothesis-run");
+                // #endregion
+            }
+            // #region agent log
+            ProjectAgentDebugLog.AppendDebugModeNdjson(
+                "debug-446955.log",
+                "446955",
+                "H1",
+                "SigmaBondFormation.cs:RunOrbitalDragPiPhase1RedistributionSynchronously",
+                "pi_phase1_atom_motion_probe_sync",
+                "{"
+                + "\"sourceId\":" + (sourceAtom != null ? sourceAtom.GetInstanceID().ToString() : "0")
+                + ",\"targetId\":" + (targetAtom != null ? targetAtom.GetInstanceID().ToString() : "0")
+                + ",\"sourceMove\":" + ProjectAgentDebugLog.JsonFloatInvariant(sourceAtom != null ? Vector3.Distance(sourceStart, sourceAtom.transform.position) : 0f)
+                + ",\"targetMove\":" + ProjectAgentDebugLog.JsonFloatInvariant(targetAtom != null ? Vector3.Distance(targetStart, targetAtom.transform.position) : 0f)
+                + ",\"trackCount\":" + tracks.Count.ToString()
+                + "}",
+                "pre-fix");
+            // #endregion
+        }
+        finally
+        {
+            SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, false);
+        }
+    }
+
+    static bool TryComputePlaneNormalForPiProbe(AtomFunction centerAtom, AtomFunction bondedPartnerToExclude, out Vector3 normalWorld)
+    {
+        normalWorld = Vector3.zero;
+        if (centerAtom == null)
+            return false;
+
+        Vector3 a = Vector3.zero;
+        Vector3 b = Vector3.zero;
+        int picked = 0;
+        foreach (var cb in centerAtom.CovalentBonds)
+        {
+            if (cb == null || !cb.IsSigmaBondLine())
+                continue;
+            AtomFunction other = cb.AtomA == centerAtom ? cb.AtomB : cb.AtomA;
+            if (other == null || other == bondedPartnerToExclude)
+                continue;
+            Vector3 v = other.transform.position - centerAtom.transform.position;
+            if (v.sqrMagnitude < 1e-10f)
+                continue;
+            if (picked == 0) a = v.normalized;
+            else if (picked == 1)
+            {
+                b = v.normalized;
+                break;
+            }
+            picked++;
+        }
+        if (picked < 2)
+            return false;
+        normalWorld = Vector3.Cross(a, b);
+        if (normalWorld.sqrMagnitude < 1e-10f)
+            return false;
+        normalWorld.Normalize();
+        return true;
     }
 
     static void BuildPiPhase1RedistributeTemplatePreviewVisuals(
@@ -1392,6 +1935,86 @@ public class SigmaBondFormation : MonoBehaviour
             ChainRedistributionBlockedAtoms = new HashSet<AtomFunction>(finalWorldByAtom.Keys)
         };
         return true;
+    }
+
+    static Vector3 ComputePiPerpendicularGuideDirectionLocal(
+        AtomFunction nonGuideAtom,
+        AtomFunction guideAtom,
+        ElectronOrbitalFunction nonGuideOp)
+    {
+        if (nonGuideAtom == null || guideAtom == null)
+            return Vector3.zero;
+        Vector3 sigmaAxisWorld = guideAtom.transform.position - nonGuideAtom.transform.position;
+        if (sigmaAxisWorld.sqrMagnitude < 1e-12f)
+            return Vector3.zero;
+        sigmaAxisWorld.Normalize();
+
+        Vector3 planeRefWorld = Vector3.zero;
+        const float sigmaAxisMaxDeg = 18f;
+        foreach (var cb in guideAtom.CovalentBonds)
+        {
+            if (cb == null || cb.Orbital == null || !cb.IsSigmaBondLine()) continue;
+            AtomFunction other = cb.AtomA == guideAtom ? cb.AtomB : cb.AtomA;
+            if (other == null || other == nonGuideAtom) continue;
+            Vector3 dw = (cb.Orbital.transform.position - guideAtom.transform.position).normalized;
+            Vector3 projected = Vector3.ProjectOnPlane(dw, sigmaAxisWorld);
+            if (projected.sqrMagnitude < 1e-10f) continue;
+            if (Vector3.Angle(dw, -sigmaAxisWorld) < sigmaAxisMaxDeg) continue;
+            planeRefWorld = projected.normalized;
+            break;
+        }
+
+        if (planeRefWorld.sqrMagnitude < 1e-12f)
+        {
+            foreach (var orb in guideAtom.BondedOrbitals)
+            {
+                if (orb == null || orb.Bond != null || orb.transform.parent != guideAtom.transform) continue;
+                if (orb.ElectronCount <= 0) continue;
+                Vector3 dw = (orb.transform.position - guideAtom.transform.position).normalized;
+                Vector3 projected = Vector3.ProjectOnPlane(dw, sigmaAxisWorld);
+                if (projected.sqrMagnitude < 1e-10f) continue;
+                planeRefWorld = projected.normalized;
+                break;
+            }
+        }
+
+        if (planeRefWorld.sqrMagnitude < 1e-12f)
+            planeRefWorld = Vector3.ProjectOnPlane(nonGuideAtom.transform.up, sigmaAxisWorld).normalized;
+        if (planeRefWorld.sqrMagnitude < 1e-12f)
+            planeRefWorld = Vector3.ProjectOnPlane(nonGuideAtom.transform.right, sigmaAxisWorld).normalized;
+        if (planeRefWorld.sqrMagnitude < 1e-12f)
+            return Vector3.zero;
+
+        Vector3 normalWorld = Vector3.Cross(sigmaAxisWorld, planeRefWorld);
+        if (normalWorld.sqrMagnitude < 1e-12f)
+            return Vector3.zero;
+        normalWorld.Normalize();
+
+        if (nonGuideOp != null)
+        {
+            Vector3 opDir = (nonGuideOp.transform.position - nonGuideAtom.transform.position).normalized;
+            if (opDir.sqrMagnitude > 1e-12f && Vector3.Dot(opDir, normalWorld) < 0f)
+                normalWorld = -normalWorld;
+        }
+
+        Vector3 resultLocal = nonGuideAtom.transform.InverseTransformDirection(normalWorld).normalized;
+        // #region agent log
+        ProjectAgentDebugLog.AppendDebugModeNdjson(
+            "debug-446955.log",
+            "446955",
+            "H3",
+            "SigmaBondFormation.cs:ComputePiPerpendicularGuideDirectionLocal",
+            "computed_pi_perpendicular_dir",
+            "{"
+            + "\"nonGuideId\":" + nonGuideAtom.GetInstanceID().ToString()
+            + ",\"guideId\":" + guideAtom.GetInstanceID().ToString()
+            + ",\"dotNormalVsSigma\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Dot(normalWorld, sigmaAxisWorld))
+            + ",\"dotPlaneRefVsSigma\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Dot(planeRefWorld, sigmaAxisWorld))
+            + ",\"usedNonGuideOpSign\":" + (nonGuideOp != null ? "1" : "0")
+            + "}",
+            "pre-fix");
+        // #endregion
+        return resultLocal;
     }
 
     static void ClearPiPhase1RedistributeTemplatePreviewVisuals()
@@ -1642,10 +2265,12 @@ public class SigmaBondFormation : MonoBehaviour
         AtomFunction sourceAtom,
         AtomFunction targetAtom,
         ElectronOrbitalFunction sourceOrbital,
-        ElectronOrbitalFunction targetOrbital)
+        ElectronOrbitalFunction targetOrbital,
+        bool animate)
     {
         if (sourceAtom == null || targetAtom == null || sourceOrbital == null || targetOrbital == null)
             yield break;
+        OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
 
         int mergedElectrons = sourceOrbital.ElectronCount + targetOrbital.ElectronCount;
         int ecnPiEvent = AtomFunction.AllocateMoleculeEcnEventId();
@@ -1655,7 +2280,7 @@ public class SigmaBondFormation : MonoBehaviour
         sourceAtom.UnbondOrbital(sourceOrbital);
         targetAtom.UnbondOrbital(targetOrbital);
 
-        var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, targetAtom, animateOrbitalToBond: true);
+        var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, targetAtom, animateOrbitalToBond: animate);
         if (bond == null)
             yield break;
         bond.SkipNonGuideExecuteSigmaFormation12HybridPass = true;
@@ -1671,14 +2296,69 @@ public class SigmaBondFormation : MonoBehaviour
         foreach (var a in sourceAtom.GetConnectedMolecule()) if (a != null) mol.Add(a);
         foreach (var a in targetAtom.GetConnectedMolecule()) if (a != null) mol.Add(a);
 
+        float cylDur = animate ? -1f : 0f;
+        float lineDur = animate ? sourceOrbital.BondFormationOrbitalToLineDurationResolved : 0f;
         yield return StartCoroutine(sourceOrbital.AnimateBondFormationOperationOrbitalsTowardBondCylinder(
-            sourceAtom, targetAtom, sourceOrbital, targetOrbital, bond, -1f, mol));
+            sourceAtom, targetAtom, sourceOrbital, targetOrbital, bond, cylDur, mol));
 
         if (bond != null)
         {
             bond.animatingOrbitalToBondPosition = false;
-            yield return bond.AnimateOrbitalToLine(
-                sourceOrbital.BondFormationOrbitalToLineDurationResolved, sourceOrbital, mol);
+            yield return bond.AnimateOrbitalToLine(lineDur, sourceOrbital, mol);
+            targetOrbital.ElectronCount = mergedElectrons;
+        }
+        else
+        {
+            Destroy(sourceOrbital.gameObject);
+        }
+
+        sourceAtom.RefreshCharge();
+        targetAtom.RefreshCharge();
+        if (bond != null)
+            AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
+                sourceAtom, targetAtom, "afterPiBond", ecnPiEvent, bond, "pi");
+    }
+
+    void RunOrbitalDragPiFormationLegacyFallbackImmediate(
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        ElectronOrbitalFunction sourceOrbital,
+        ElectronOrbitalFunction targetOrbital)
+    {
+        if (sourceAtom == null || targetAtom == null || sourceOrbital == null || targetOrbital == null)
+            return;
+        OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
+
+        int mergedElectrons = sourceOrbital.ElectronCount + targetOrbital.ElectronCount;
+        int ecnPiEvent = AtomFunction.AllocateMoleculeEcnEventId();
+        AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
+            sourceAtom, targetAtom, "beforePiBond", ecnPiEvent, null, "pi");
+
+        sourceAtom.UnbondOrbital(sourceOrbital);
+        targetAtom.UnbondOrbital(targetOrbital);
+
+        var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, targetAtom, animateOrbitalToBond: false);
+        if (bond == null)
+            return;
+        bond.SkipNonGuideExecuteSigmaFormation12HybridPass = true;
+
+        sourceOrbital.transform.SetParent(null, worldPositionStays: true);
+        bond.SetOrbitalBeingFaded(sourceOrbital);
+        sourceAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
+        targetAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
+        sourceAtom.RefreshCharge();
+        targetAtom.RefreshCharge();
+
+        var mol = new HashSet<AtomFunction>();
+        foreach (var a in sourceAtom.GetConnectedMolecule()) if (a != null) mol.Add(a);
+        foreach (var a in targetAtom.GetConnectedMolecule()) if (a != null) mol.Add(a);
+
+        DrainCoroutineToCompletion(sourceOrbital.AnimateBondFormationOperationOrbitalsTowardBondCylinder(
+            sourceAtom, targetAtom, sourceOrbital, targetOrbital, bond, 0f, mol));
+        if (bond != null)
+        {
+            bond.animatingOrbitalToBondPosition = false;
+            DrainCoroutineToCompletion(bond.AnimateOrbitalToLine(0f, sourceOrbital, mol));
             targetOrbital.ElectronCount = mergedElectrons;
         }
         else
@@ -1698,8 +2378,25 @@ public class SigmaBondFormation : MonoBehaviour
         AtomFunction targetAtom,
         ElectronOrbitalFunction sourceOrbital,
         ElectronOrbitalFunction targetOrbital,
-        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital)
+        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital,
+        bool animate)
     {
+        Vector3 sourceStartAll = sourceAtom != null ? sourceAtom.transform.position : Vector3.zero;
+        Vector3 targetStartAll = targetAtom != null ? targetAtom.transform.position : Vector3.zero;
+        // #region agent log
+        ProjectAgentDebugLog.AppendDebugModeNdjson(
+            "debug-446955.log",
+            "446955",
+            "H5",
+            "SigmaBondFormation.cs:CoOrbitalDragPiFormationThreePhase",
+            "pi_three_phase_entry",
+            "{"
+            + "\"sourceId\":" + (sourceAtom != null ? sourceAtom.GetInstanceID().ToString() : "0")
+            + ",\"targetId\":" + (targetAtom != null ? targetAtom.GetInstanceID().ToString() : "0")
+            + ",\"animate\":" + (animate ? "1" : "0")
+            + "}",
+            "pre-fix");
+        // #endregion
         var timingOrb = TimingSourceOrbital(sourceOrbital, targetOrbital, redistributionGuideTieBreakDraggedOrbital);
         float phase1Sec = timingOrb != null ? timingOrb.SigmaFormationPhase1PrebondSeconds : 1f;
         float phase2CylinderSec = timingOrb != null ? timingOrb.SigmaFormationPhase2CylinderSecondsResolved : 0.55f;
@@ -1716,12 +2413,15 @@ public class SigmaBondFormation : MonoBehaviour
 
         try
         {
-            var draggedLobeToRestore = redistributionGuideTieBreakDraggedOrbital != null
-                ? redistributionGuideTieBreakDraggedOrbital
-                : sourceOrbital;
-            if (draggedLobeToRestore != null)
-                draggedLobeToRestore.SnapToOriginal();
-            yield return null;
+            if (animate)
+            {
+                var draggedLobeToRestore = redistributionGuideTieBreakDraggedOrbital != null
+                    ? redistributionGuideTieBreakDraggedOrbital
+                    : sourceOrbital;
+                if (draggedLobeToRestore != null)
+                    draggedLobeToRestore.SnapToOriginal();
+                yield return null;
+            }
 
             var guideOrb = redistributionGuideTieBreakDraggedOrbital != null ? redistributionGuideTieBreakDraggedOrbital : sourceOrbital;
             ElectronRedistributionGuide.ResolveGuideAtomForPair(sourceAtom, targetAtom, guideOrb, out var guide, out var nonGuide);
@@ -1729,7 +2429,7 @@ public class SigmaBondFormation : MonoBehaviour
             if (guide == null || nonGuide == null || ReferenceEquals(guide, nonGuide))
             {
                 yield return StartCoroutine(CoOrbitalDragPiFormationLegacyFallback(
-                    sourceAtom, targetAtom, sourceOrbital, targetOrbital));
+                    sourceAtom, targetAtom, sourceOrbital, targetOrbital, animate));
                 yield break;
             }
 
@@ -1745,8 +2445,9 @@ public class SigmaBondFormation : MonoBehaviour
                 targetAtom,
                 sourceOrbital,
                 targetOrbital,
-                phase1Sec,
-                molForBondLines));
+                animate ? phase1Sec : 0f,
+                molForBondLines,
+                buildPhase1TemplatePreviews: animate));
 
             int mergedElectrons = sourceOrbital.ElectronCount + targetOrbital.ElectronCount;
             int ecnPiEvent = AtomFunction.AllocateMoleculeEcnEventId();
@@ -1756,7 +2457,7 @@ public class SigmaBondFormation : MonoBehaviour
             sourceAtom.UnbondOrbital(sourceOrbital);
             targetAtom.UnbondOrbital(targetOrbital);
 
-            var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, targetAtom, animateOrbitalToBond: true);
+            var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, targetAtom, animateOrbitalToBond: animate);
             if (bond == null)
                 yield break;
             bond.SkipNonGuideExecuteSigmaFormation12HybridPass = true;
@@ -1768,8 +2469,8 @@ public class SigmaBondFormation : MonoBehaviour
             sourceAtom.RefreshCharge();
             targetAtom.RefreshCharge();
 
-            float tCyl = Mathf.Max(0f, phase2CylinderSec);
-            float tLine = Mathf.Max(0f, phase2OrbitalToLineSec);
+            float tCyl = Mathf.Max(0f, animate ? phase2CylinderSec : 0f);
+            float tLine = Mathf.Max(0f, animate ? phase2OrbitalToLineSec : 0f);
 
             yield return StartCoroutine(sourceOrbital.AnimateBondFormationOperationOrbitalsTowardBondCylinder(
                 sourceAtom, targetAtom, sourceOrbital, targetOrbital, bond, tCyl, molForBondLines));
@@ -1777,7 +2478,7 @@ public class SigmaBondFormation : MonoBehaviour
             if (bond != null)
             {
                 bond.animatingOrbitalToBondPosition = false;
-                float lineDur = tLine > 1e-6f ? tLine : sourceOrbital.BondFormationOrbitalToLineDurationResolved;
+                float lineDur = !animate ? 0f : (tLine > 1e-6f ? tLine : sourceOrbital.BondFormationOrbitalToLineDurationResolved);
                 yield return bond.AnimateOrbitalToLine(lineDur, sourceOrbital, molForBondLines);
                 targetOrbital.ElectronCount = mergedElectrons;
             }
@@ -1800,17 +2501,37 @@ public class SigmaBondFormation : MonoBehaviour
                     nonGuide,
                     atomOrbitalOp: phase3GuideOp,
                     isBondingEvent: true);
+                // #region agent log
+                ProjectAgentDebugLog.AppendDebugModeNdjson(
+                    "debug-446955.log",
+                    "446955",
+                    "H7",
+                    "SigmaBondFormation.cs:CoOrbitalDragPiFormationThreePhase",
+                    "pi_phase3_guide_selection",
+                    "{"
+                    + "\"sourceId\":" + (sourceAtom != null ? sourceAtom.GetInstanceID().ToString() : "0")
+                    + ",\"targetId\":" + (targetAtom != null ? targetAtom.GetInstanceID().ToString() : "0")
+                    + ",\"guideId\":" + (guide != null ? guide.GetInstanceID().ToString() : "0")
+                    + ",\"nonGuideId\":" + (nonGuide != null ? nonGuide.GetInstanceID().ToString() : "0")
+                    + ",\"guideIsSource\":" + (ReferenceEquals(guide, sourceAtom) ? "1" : "0")
+                    + ",\"phase3Built\":" + (phase3GuideRedistribution != null ? "1" : "0")
+                    + "}",
+                    "pre-fix");
+                // #endregion
                 if (phase3GuideRedistribution != null)
                 {
-                    float t3 = 0f;
-                    while (t3 < phase3Sec)
+                    if (animate)
                     {
-                        t3 += Time.deltaTime;
-                        float s3 = Mathf.Clamp01(t3 / phase3Sec);
-                        float smooth3 = s3 * s3 * (3f - 2f * s3);
-                        phase3GuideRedistribution.Apply(smooth3);
-                        AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(guide.GetConnectedMolecule());
-                        yield return null;
+                        float t3 = 0f;
+                        while (t3 < phase3Sec)
+                        {
+                            t3 += Time.deltaTime;
+                            float s3 = Mathf.Clamp01(t3 / phase3Sec);
+                            float smooth3 = s3 * s3 * (3f - 2f * s3);
+                            phase3GuideRedistribution.Apply(smooth3);
+                            AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(guide.GetConnectedMolecule());
+                            yield return null;
+                        }
                     }
 
                     phase3GuideRedistribution.Apply(1f);
@@ -1822,9 +2543,181 @@ public class SigmaBondFormation : MonoBehaviour
                 sourceAtom,
                 targetAtom,
                 skipHydrogenSigmaNeighborSnapAfterOrbitalDragThreePhase: true);
+            // #region agent log
+            ProjectAgentDebugLog.AppendDebugModeNdjson(
+                "debug-446955.log",
+                "446955",
+                "H5",
+                "SigmaBondFormation.cs:CoOrbitalDragPiFormationThreePhase",
+                "pi_three_phase_exit_motion",
+                "{"
+                + "\"sourceMoveTotal\":" + ProjectAgentDebugLog.JsonFloatInvariant(sourceAtom != null ? Vector3.Distance(sourceStartAll, sourceAtom.transform.position) : 0f)
+                + ",\"targetMoveTotal\":" + ProjectAgentDebugLog.JsonFloatInvariant(targetAtom != null ? Vector3.Distance(targetStartAll, targetAtom.transform.position) : 0f)
+                + "}",
+                "pre-fix");
+            // #endregion
         }
         finally
         {
+            OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
+            foreach (var a in atomsToBlock)
+                if (a != null) a.SetInteractionBlocked(false);
+            editModeManager?.RefreshSelectedMoleculeAfterBondChange();
+        }
+    }
+
+    bool RunOrbitalDragPiFormationThreePhaseImmediate(
+        AtomFunction sourceAtom,
+        AtomFunction targetAtom,
+        ElectronOrbitalFunction sourceOrbital,
+        ElectronOrbitalFunction targetOrbital,
+        ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital)
+    {
+        Vector3 sourceStartAll = sourceAtom != null ? sourceAtom.transform.position : Vector3.zero;
+        Vector3 targetStartAll = targetAtom != null ? targetAtom.transform.position : Vector3.zero;
+        // #region agent log
+        ProjectAgentDebugLog.AppendDebugModeNdjson(
+            "debug-446955.log",
+            "446955",
+            "H5",
+            "SigmaBondFormation.cs:RunOrbitalDragPiFormationThreePhaseImmediate",
+            "pi_three_phase_immediate_entry",
+            "{"
+            + "\"sourceId\":" + (sourceAtom != null ? sourceAtom.GetInstanceID().ToString() : "0")
+            + ",\"targetId\":" + (targetAtom != null ? targetAtom.GetInstanceID().ToString() : "0")
+            + "}",
+            "pre-fix");
+        // #endregion
+        var timingOrb = TimingSourceOrbital(sourceOrbital, targetOrbital, redistributionGuideTieBreakDraggedOrbital);
+        float phase3Sec = timingOrb != null ? timingOrb.SigmaFormationPhase3PostbondGuideSeconds : 1f;
+
+        var atomsToBlock = new HashSet<AtomFunction>();
+        foreach (var a in sourceAtom.GetConnectedMolecule()) if (a != null) atomsToBlock.Add(a);
+        foreach (var a in targetAtom.GetConnectedMolecule()) if (a != null) atomsToBlock.Add(a);
+        foreach (var a in atomsToBlock) a.SetInteractionBlocked(true);
+
+        var molForBondLines = new List<AtomFunction>(atomsToBlock.Count);
+        foreach (var a in atomsToBlock) if (a != null) molForBondLines.Add(a);
+
+        try
+        {
+            var guideOrb = redistributionGuideTieBreakDraggedOrbital != null ? redistributionGuideTieBreakDraggedOrbital : sourceOrbital;
+            ElectronRedistributionGuide.ResolveGuideAtomForPair(sourceAtom, targetAtom, guideOrb, out var guide, out var nonGuide);
+
+            if (guide == null || nonGuide == null || ReferenceEquals(guide, nonGuide))
+            {
+                RunOrbitalDragPiFormationLegacyFallbackImmediate(sourceAtom, targetAtom, sourceOrbital, targetOrbital);
+                return true;
+            }
+
+            ElectronOrbitalFunction guideOpPhase1 = guide == sourceAtom ? sourceOrbital : targetOrbital;
+            ElectronOrbitalFunction nonGuideOpPhase1 = nonGuide == sourceAtom ? sourceOrbital : targetOrbital;
+
+            RunOrbitalDragPiPhase1RedistributionSynchronously(
+                guide,
+                nonGuide,
+                guideOpPhase1,
+                nonGuideOpPhase1,
+                sourceAtom,
+                targetAtom,
+                sourceOrbital,
+                targetOrbital,
+                molForBondLines);
+
+            int mergedElectrons = sourceOrbital.ElectronCount + targetOrbital.ElectronCount;
+            int ecnPiEvent = AtomFunction.AllocateMoleculeEcnEventId();
+            AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
+                sourceAtom, targetAtom, "beforePiBond", ecnPiEvent, null, "pi");
+
+            sourceAtom.UnbondOrbital(sourceOrbital);
+            targetAtom.UnbondOrbital(targetOrbital);
+
+            var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, targetAtom, animateOrbitalToBond: false);
+            if (bond == null)
+                return false;
+            bond.SkipNonGuideExecuteSigmaFormation12HybridPass = true;
+
+            sourceOrbital.transform.SetParent(null, worldPositionStays: true);
+            bond.SetOrbitalBeingFaded(sourceOrbital);
+            sourceAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
+            targetAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
+            sourceAtom.RefreshCharge();
+            targetAtom.RefreshCharge();
+
+            DrainCoroutineToCompletion(sourceOrbital.AnimateBondFormationOperationOrbitalsTowardBondCylinder(
+                sourceAtom, targetAtom, sourceOrbital, targetOrbital, bond, 0f, molForBondLines));
+            if (bond != null)
+            {
+                bond.animatingOrbitalToBondPosition = false;
+                DrainCoroutineToCompletion(bond.AnimateOrbitalToLine(0f, sourceOrbital, molForBondLines));
+                targetOrbital.ElectronCount = mergedElectrons;
+            }
+            else
+            {
+                Destroy(sourceOrbital.gameObject);
+            }
+
+            sourceAtom.RefreshCharge();
+            targetAtom.RefreshCharge();
+            if (bond != null)
+                AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
+                    sourceAtom, targetAtom, "afterPiBond", ecnPiEvent, bond, "pi");
+
+            if (guide.AtomicNumber > 1 && phase3Sec > 1e-5f && bond != null)
+            {
+                var phase3GuideOp = bond.Orbital != null ? bond.Orbital : guideOpPhase1;
+                var phase3GuideRedistribution = OrbitalRedistribution.BuildOrbitalRedistribution(
+                    guide,
+                    nonGuide,
+                    atomOrbitalOp: phase3GuideOp,
+                    isBondingEvent: true);
+                // #region agent log
+                ProjectAgentDebugLog.AppendDebugModeNdjson(
+                    "debug-446955.log",
+                    "446955",
+                    "H7",
+                    "SigmaBondFormation.cs:RunOrbitalDragPiFormationThreePhaseImmediate",
+                    "pi_phase3_guide_selection_immediate",
+                    "{"
+                    + "\"sourceId\":" + (sourceAtom != null ? sourceAtom.GetInstanceID().ToString() : "0")
+                    + ",\"targetId\":" + (targetAtom != null ? targetAtom.GetInstanceID().ToString() : "0")
+                    + ",\"guideId\":" + (guide != null ? guide.GetInstanceID().ToString() : "0")
+                    + ",\"nonGuideId\":" + (nonGuide != null ? nonGuide.GetInstanceID().ToString() : "0")
+                    + ",\"guideIsSource\":" + (ReferenceEquals(guide, sourceAtom) ? "1" : "0")
+                    + ",\"phase3Built\":" + (phase3GuideRedistribution != null ? "1" : "0")
+                    + "}",
+                    "pre-fix");
+                // #endregion
+                if (phase3GuideRedistribution != null)
+                {
+                    phase3GuideRedistribution.Apply(1f);
+                    AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(guide.GetConnectedMolecule());
+                }
+
+            }
+
+            editModeManager.FinishSigmaBondInstantTail(
+                sourceAtom,
+                targetAtom,
+                skipHydrogenSigmaNeighborSnapAfterOrbitalDragThreePhase: true);
+            // #region agent log
+            ProjectAgentDebugLog.AppendDebugModeNdjson(
+                "debug-446955.log",
+                "446955",
+                "H5",
+                "SigmaBondFormation.cs:RunOrbitalDragPiFormationThreePhaseImmediate",
+                "pi_three_phase_immediate_exit_motion",
+                "{"
+                + "\"sourceMoveTotal\":" + ProjectAgentDebugLog.JsonFloatInvariant(sourceAtom != null ? Vector3.Distance(sourceStartAll, sourceAtom.transform.position) : 0f)
+                + ",\"targetMoveTotal\":" + ProjectAgentDebugLog.JsonFloatInvariant(targetAtom != null ? Vector3.Distance(targetStartAll, targetAtom.transform.position) : 0f)
+                + "}",
+                "pre-fix");
+            // #endregion
+            return true;
+        }
+        finally
+        {
+            OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
             foreach (var a in atomsToBlock)
                 if (a != null) a.SetInteractionBlocked(false);
             editModeManager?.RefreshSelectedMoleculeAfterBondChange();

@@ -11,10 +11,11 @@ This document summarizes the **implemented** orbital-drag σ pipeline (runner, t
 | Step | Behavior |
 |------|----------|
 | Gesture | `ElectronOrbitalFunction.FormCovalentBondSigmaStart` / `FormCovalentBondSigmaStartAsSource` (swap ends when source cannot rearrange). |
-| Primary | `SigmaBondFormation.EnsureRunnerInScene()` then `TryBeginOrbitalDragSigmaFormation(...)`. Pass the **dragged** orbital as `redistributionGuideTieBreakDraggedOrbital` for mass tie-break consistency with `ElectronRedistributionGuide.ResolveGuideAtomForPair`. |
+| Primary | `SigmaBondFormation.EnsureRunnerInScene()` then `TryBeginOrbitalDragSigmaFormation(..., animate: true)` (default). Pass the **dragged** orbital as `redistributionGuideTieBreakDraggedOrbital` for mass tie-break consistency with `ElectronRedistributionGuide.ResolveGuideAtomForPair`. |
+| Immediate (non-gesture) | Same entry point with **`animate: false`**: runs the **same** σ three-phase logic (cyclic phase 1 included) **synchronously** — no `SnapToOriginal` / one-frame wait, no stepped-debug HUD waits, zero-duration phase 1/2/3 applies (`Apply(1f)` for phase 3 when applicable), `FinishSigmaBondInstantTail(..., skipHydrogenSigmaNeighborSnapAfterOrbitalDragThreePhase: true)`. Use for library/builders that are not pointer gestures. **π:** `TryBeginOrbitalDragPiFormation(..., animate: false)` mirrors π three-phase the same way. |
 | Fallback | If no `SigmaBondFormation` runner or `TryBegin…` cannot run (e.g. no `EditModeManager`), fall back to `EditModeManager.FormSigmaBondInstant` (**instant** path, no three-phase animation). |
 
-Timings for phases 1–3 are read from the **timing source orbital** (dragged orbital when set, else `orbA`).
+Timings for phases 1–3 are read from the **timing source orbital** (dragged orbital when set, else `orbA`). With **`animate: false`**, phase 1/2 durations are forced to zero so the pipeline completes on the current stack without timeline animation.
 
 ---
 

@@ -1372,10 +1372,16 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     public struct BondFormationCylinderPrepared
     {
         public Vector3 BondTargetPos;
+        public Vector3 SourceTargetPos;
+        public Vector3 TargetTargetPos;
         public Quaternion SourceTargetRot;
         public Quaternion TargetTargetRot;
         public (Vector3 pos, Quaternion rot) SourceOrbStart;
         public (Vector3 pos, Quaternion rot) TargetOrbStart;
+        /// <summary>World pivot for source OP position lerp: arc around nucleus instead of a straight chord through it.</summary>
+        public Vector3 SourceArcPivot;
+        /// <summary>World pivot for target OP position lerp (see <see cref="SourceArcPivot"/>).</summary>
+        public Vector3 TargetArcPivot;
         public bool SkipCylinderLerp;
     }
 
@@ -1401,17 +1407,84 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         prepared = default;
         if (bond == null) return false;
 
+        // π phase-1 on σ: line index is the row the new π will occupy (1 = first π, 2 = second π / triple), and
+        // bondCount includes that new row so perspective endpoints and offsets match post–Create geometry.
+        int bondsBetween = bond.AtomA != null && bond.AtomB != null ? bond.AtomA.GetBondsTo(bond.AtomB) : 0;
         int lineIndex = piPreBondSecondLineOnSigma && bond.IsSigmaBondLine()
-            ? 1
+            ? bondsBetween
             : bond.GetBondIndex();
         int bondCount = piPreBondSecondLineOnSigma && bond.IsSigmaBondLine()
-            ? Mathf.Max(2, bond.AtomA.GetBondsTo(bond.AtomB))
-            : bond.AtomA.GetBondsTo(bond.AtomB);
+            ? Mathf.Max(2, bondsBetween + 1)
+            : bondsBetween;
 
         bool rotFlip = bond.orbitalRotationFlipped;
         var bt = bond.GetOrbitalTargetWorldStateForLine(lineIndex, bondCount, rotFlip);
         Vector3 bondTargetPos = bt.Item1;
         Quaternion bondTargetRot = bt.Item2;
+        Vector3 sourceTargetPos = bondTargetPos;
+        Vector3 targetTargetPos = bondTargetPos;
+        if (piPreBondSecondLineOnSigma
+            && bond.IsSigmaBondLine()
+            && bond.TryGetPerspectivePiLobeEndpointsForLine(lineIndex, bondCount, out var piLobes))
+        {
+            sourceTargetPos = sourceAtom == bond.AtomA ? piLobes.positiveA : piLobes.positiveB;
+            targetTargetPos = targetAtom == bond.AtomA ? piLobes.positiveA : piLobes.positiveB;
+            // #region agent log
+            ProjectAgentDebugLog.AppendDebugModeNdjson(
+                "debug-446955.log",
+                "446955",
+                "H17",
+                "ElectronOrbitalFunction.cs:TryPrepareBondFormationCylinderStep",
+                "pi_phase1_target_mode_probe",
+                "{"
+                + "\"bondId\":" + bond.GetInstanceID().ToString()
+                + ",\"mode\":\"per_atom_plus_z\""
+                + ",\"sourceToBondCenter\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(sourceTargetPos, bondTargetPos))
+                + ",\"targetToBondCenter\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(targetTargetPos, bondTargetPos))
+                + ",\"sourceToPlusA\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(sourceTargetPos, piLobes.positiveA))
+                + ",\"sourceToPlusB\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(sourceTargetPos, piLobes.positiveB))
+                + ",\"targetToPlusA\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(targetTargetPos, piLobes.positiveA))
+                + ",\"targetToPlusB\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(targetTargetPos, piLobes.positiveB))
+                + "}",
+                "hypothesis-run");
+            // #endregion
+        }
+        else if (piPreBondSecondLineOnSigma && bond.IsSigmaBondLine())
+        {
+            // #region agent log
+            ProjectAgentDebugLog.AppendDebugModeNdjson(
+                "debug-446955.log",
+                "446955",
+                "H17",
+                "ElectronOrbitalFunction.cs:TryPrepareBondFormationCylinderStep",
+                "pi_phase1_target_mode_probe",
+                "{"
+                + "\"bondId\":" + bond.GetInstanceID().ToString()
+                + ",\"mode\":\"bond_center_fallback\""
+                + ",\"sourceToBondCenter\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(sourceTargetPos, bondTargetPos))
+                + ",\"targetToBondCenter\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(targetTargetPos, bondTargetPos))
+                + "}",
+                "hypothesis-run");
+            // #endregion
+        }
+        // #region agent log
+        ProjectAgentDebugLog.AppendDebugModeNdjson(
+            "debug-446955.log",
+            "446955",
+            "H4",
+            "ElectronOrbitalFunction.cs:TryPrepareBondFormationCylinderStep",
+            "pi_cylinder_target_pose_probe",
+            "{"
+            + "\"bondId\":" + bond.GetInstanceID().ToString()
+            + ",\"lineIndex\":" + lineIndex.ToString()
+            + ",\"bondCount\":" + bondCount.ToString()
+            + ",\"piPreBondSecondLineOnSigma\":" + (piPreBondSecondLineOnSigma ? "1" : "0")
+            + ",\"targetPosX\":" + ProjectAgentDebugLog.JsonFloatInvariant(bondTargetPos.x)
+            + ",\"targetPosY\":" + ProjectAgentDebugLog.JsonFloatInvariant(bondTargetPos.y)
+            + ",\"targetPosZ\":" + ProjectAgentDebugLog.JsonFloatInvariant(bondTargetPos.z)
+            + "}",
+            "pre-fix");
+        // #endregion
         (float sourceDiff, float targetDiff) = ComputePiBondAngleDiffs(sourceAtom, targetAtom, bondTargetPos, bondTargetRot, bond);
 
         bool flipTarget = Mathf.Abs(sourceDiff) < Mathf.Abs(targetDiff);
@@ -1483,7 +1556,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
         bool srcMatch = CylinderTargetDelta(
             sourceOrbital,
-            bondTargetPos,
+            sourceTargetPos,
             sourceTargetRot,
             sigmaPhase2SkipLerpPosEps,
             sigmaPhase2SkipLerpDirDeg,
@@ -1492,7 +1565,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             out float srcDirDeg);
         bool tgtMatch = CylinderTargetDelta(
             targetOrbital,
-            bondTargetPos,
+            targetTargetPos,
             targetTargetRot,
             sigmaPhase2SkipLerpPosEps,
             sigmaPhase2SkipLerpDirDeg,
@@ -1501,11 +1574,47 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             out float tgtDirDeg);
 
         prepared.BondTargetPos = bondTargetPos;
+        prepared.SourceTargetPos = sourceTargetPos;
+        prepared.TargetTargetPos = targetTargetPos;
         prepared.SourceTargetRot = sourceTargetRot;
         prepared.TargetTargetRot = targetTargetRot;
+        prepared.SourceArcPivot = sourceAtom != null ? sourceAtom.transform.position : prepared.SourceOrbStart.pos;
+        prepared.TargetArcPivot = targetAtom != null ? targetAtom.transform.position : prepared.TargetOrbStart.pos;
         prepared.SkipCylinderLerp = srcMatch && tgtMatch;
 
         return true;
+    }
+
+    /// <summary>
+    /// Interpolates orbital mesh center from start to end by sweeping around <paramref name="pivot"/> (nucleus):
+    /// slerp the outward direction and lerp radius so the path follows a spherical arc instead of cutting through the atom.
+    /// </summary>
+    static Vector3 LerpOrbitalMeshCenterOnNucleusPivotArc(Vector3 pivot, Vector3 startWorld, Vector3 endWorld, float t)
+    {
+        t = Mathf.Clamp01(t);
+        Vector3 vs = startWorld - pivot;
+        Vector3 ve = endWorld - pivot;
+        float ls = vs.magnitude;
+        float le = ve.magnitude;
+        const float eps = 1e-4f;
+        if (ls < eps || le < eps)
+            return Vector3.Lerp(startWorld, endWorld, t);
+        Vector3 dirs = vs / ls;
+        Vector3 dire = ve / le;
+        float r = Mathf.Lerp(ls, le, t);
+        Vector3 dir;
+        if (Vector3.Dot(dirs, dire) > -0.9995f)
+            dir = Vector3.Slerp(dirs, dire, t);
+        else
+        {
+            Vector3 ortho = Vector3.Cross(dirs, Mathf.Abs(dirs.y) < 0.92f ? Vector3.up : Vector3.forward);
+            if (ortho.sqrMagnitude < 1e-10f)
+                ortho = Vector3.Cross(dirs, Vector3.right);
+            ortho.Normalize();
+            dir = (Quaternion.AngleAxis(180f * t, ortho) * dirs).normalized;
+        }
+
+        return pivot + r * dir;
     }
 
     /// <summary>π phase 1 (pre–π bond): cylinder targets on the σ line using second-line offset; does not flip σ’s stored flag during prep.</summary>
@@ -1540,12 +1649,20 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             s = 1f;
         if (sourceOrbital != null)
         {
-            sourceOrbital.transform.position = Vector3.Lerp(prepared.SourceOrbStart.pos, prepared.BondTargetPos, s);
+            sourceOrbital.transform.position = LerpOrbitalMeshCenterOnNucleusPivotArc(
+                prepared.SourceArcPivot,
+                prepared.SourceOrbStart.pos,
+                prepared.SourceTargetPos,
+                s);
             sourceOrbital.transform.rotation = Quaternion.Slerp(prepared.SourceOrbStart.rot, prepared.SourceTargetRot, rotT);
         }
         if (targetOrbital != null)
         {
-            targetOrbital.transform.position = Vector3.Lerp(prepared.TargetOrbStart.pos, prepared.BondTargetPos, s);
+            targetOrbital.transform.position = LerpOrbitalMeshCenterOnNucleusPivotArc(
+                prepared.TargetArcPivot,
+                prepared.TargetOrbStart.pos,
+                prepared.TargetTargetPos,
+                s);
             targetOrbital.transform.rotation = Quaternion.Slerp(prepared.TargetOrbStart.rot, prepared.TargetTargetRot, rotT);
         }
     }
@@ -1561,9 +1678,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         ICollection<AtomFunction> atomsForPerFrameBondLineUpdate)
     {
         if (sourceOrbital != null)
-            sourceOrbital.transform.SetPositionAndRotation(prepared.BondTargetPos, prepared.SourceTargetRot);
+            sourceOrbital.transform.SetPositionAndRotation(prepared.SourceTargetPos, prepared.SourceTargetRot);
         if (targetOrbital != null)
-            targetOrbital.transform.SetPositionAndRotation(prepared.BondTargetPos, prepared.TargetTargetRot);
+            targetOrbital.transform.SetPositionAndRotation(prepared.TargetTargetPos, prepared.TargetTargetRot);
 
         if (mode == BondFormationCylinderFinalizeMode.ApplyWorldTargetsOnly)
         {
@@ -1630,6 +1747,15 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             bond,
             BondFormationCylinderFinalizeMode.AttachAndSnapToBond,
             atomsForPerFrameBondLineUpdate);
+
+        // π row: hide OP meshes only after cylinder step fully finishes. Always yield once before hide so we never
+        // run Hide in the same MoveNext as Finalize (SkipCylinderLerp runs Finalize immediately — otherwise OP vanishes
+        // the instant phase 2 starts). Timed lerp already had many frames; one extra yield is harmless.
+        if (bond.GetBondIndex() > 0)
+        {
+            yield return null;
+            SigmaBondFormation.HidePiOperationOrbitalsAfterPhase2Cylinder(bond, sourceOrbital);
+        }
     }
 
     static (float sourceDiff, float targetDiff) ComputePiBondAngleDiffs(AtomFunction sourceAtom, AtomFunction targetAtom, Vector3 bondPos, Quaternion bondRot, CovalentBond bond)

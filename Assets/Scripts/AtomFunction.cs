@@ -2371,6 +2371,78 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         ApplyCarbonBreakIdealLocalDirection(emptyO, emptyDir, lockTipToHybridDirection: true);
     }
 
+    /// <summary>
+    /// σ bond break: builds equilateral trigonal σ template dirs in nucleus local. Prefer the same σ-tip coplanarity gate as
+    /// <see cref="SnapCarbocationEmptyPerpendicularToActualSigmaTipPlane"/>; when tips are still ~tetrahedral at plan time
+    /// (<c>tripleVol&gt;0.12</c>), fall back to <paramref name="cleavagePartnerWorld"/> nucleus→partner as the empty-p axis
+    /// (trigonal plane ⊥ cleavage).
+    /// </summary>
+    public bool TryBuildSigmaBreakTrigonalTemplateFromCarbocationSigmaTipPlane(
+        ElectronOrbitalFunction bondBreakGuideLoneOrbital,
+        AtomFunction cleavagePartnerWorld,
+        out List<Vector3> trigonalSigmaDirectionsLocal)
+    {
+        trigonalSigmaDirectionsLocal = null;
+        if (AtomicNumber != 6) return false;
+        if (GetDistinctSigmaNeighborCount() != 3) return false;
+        if (!TryGetCarbocationOneEmptyAndThreeOccupiedDomains(bondBreakGuideLoneOrbital, out var emptyO, out _))
+            return false;
+        if (emptyO == null || emptyO.transform.parent != transform) return false;
+        if (emptyO.ElectronCount != 0 && (bondBreakGuideLoneOrbital == null || bondBreakGuideLoneOrbital != emptyO)) return false;
+
+        GetCarbonSigmaCleavageDomains(out var sig, out _);
+        var tips = new List<Vector3>(3);
+        foreach (var o in sig)
+        {
+            if (o == null || o.ElectronCount <= 0) continue;
+            tips.Add(OrbitalTipDirectionInNucleusLocal(o).normalized);
+        }
+        if (tips.Count != 3) return false;
+
+        float tripleVol = Mathf.Abs(Vector3.Dot(tips[0], Vector3.Cross(tips[1], tips[2])));
+        bool useCleavageAxisFallback = tripleVol > 0.12f
+            && cleavagePartnerWorld != null;
+
+        Vector3 emptyAxisLocal;
+        if (!useCleavageAxisFallback)
+        {
+            if (tripleVol > 0.12f)
+                return false;
+
+            Vector3 n = Vector3.Cross(tips[0], tips[1]);
+            if (n.sqrMagnitude < 1e-10f) n = Vector3.Cross(tips[0], tips[2]);
+            if (n.sqrMagnitude < 1e-10f) n = Vector3.Cross(tips[1], tips[2]);
+            if (n.sqrMagnitude < 1e-10f) return false;
+            n.Normalize();
+
+            Vector3 eTipPlane = OrbitalTipLocalDirection(emptyO);
+            if (eTipPlane.sqrMagnitude < 1e-10f) eTipPlane = n;
+            else eTipPlane.Normalize();
+            emptyAxisLocal = Vector3.Dot(eTipPlane, n) >= 0f ? n : -n;
+        }
+        else
+        {
+            Vector3 wCleav = cleavagePartnerWorld.transform.position - transform.position;
+            if (wCleav.sqrMagnitude < 1e-14f) return false;
+            // Nucleus → former partner: empty p stays on the bond-break side; do not flip to match lobe tip (tip can still
+            // point opposite hybrid +X vs internuclear during early redistribute).
+            emptyAxisLocal = transform.InverseTransformDirection(wCleav.normalized).normalized;
+        }
+
+        // Same canonical trigonal as OrbitalRedistribution.BuildFinalDirectionsTemplate(nVseprGroup==3): XY plane, normal +Z.
+        Vector3 canon0 = Vector3.right;
+        Vector3 canon1 = new Vector3(-0.5f, 0.8660254f, 0f).normalized;
+        Vector3 canon2 = new Vector3(-0.5f, -0.8660254f, 0f).normalized;
+        Quaternion q = Quaternion.FromToRotation(Vector3.forward, emptyAxisLocal);
+        trigonalSigmaDirectionsLocal = new List<Vector3>(3)
+        {
+            (q * canon0).normalized,
+            (q * canon1).normalized,
+            (q * canon2).normalized
+        };
+        return true;
+    }
+
 
 
 

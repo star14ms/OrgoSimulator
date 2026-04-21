@@ -999,7 +999,8 @@ public class EditModeManager : MonoBehaviour
             freezeSigmaNeighborSubtreeRoot,
             orbitalDragPostbondGuideHybridLerp: false,
             redistributionGuideTieBreakDraggedOrbital: null,
-            phase3GuideLerpSecondsOverride: null);
+            phase3GuideLerpSecondsOverride: null,
+            skipHydrogenSigmaNeighborSnapAfterTail: false);
     }
 
     /// <summary>Shared σ bond creation body — also used by <see cref="SigmaBondFormation"/> for degenerate guide/non-guide.</summary>
@@ -1015,7 +1016,8 @@ public class EditModeManager : MonoBehaviour
         AtomFunction freezeSigmaNeighborSubtreeRoot,
         bool orbitalDragPostbondGuideHybridLerp,
         ElectronOrbitalFunction redistributionGuideTieBreakDraggedOrbital,
-        float? phase3GuideLerpSecondsOverride)
+        float? phase3GuideLerpSecondsOverride,
+        bool skipHydrogenSigmaNeighborSnapAfterTail = false)
     {
         AtomPoseDirectionDebugLog.LogCarbonCarbonSigmaBeforeBond(atomA, atomB, "EditModeManager.FormSigmaBondInstantBody");
         _ = freezeSigmaNeighborSubtreeRoot;
@@ -1065,7 +1067,7 @@ public class EditModeManager : MonoBehaviour
                         snapBeforeB,
                         snapAfterB,
                         p3Guide,
-                        () => FinishSigmaBondInstantTail(atomA, atomB)));
+                        () => FinishSigmaBondInstantTail(atomA, atomB, skipHydrogenSigmaNeighborSnapAfterTail)));
                     return;
                 }
 
@@ -1079,7 +1081,7 @@ public class EditModeManager : MonoBehaviour
         }
 
         if (bond != null)
-            FinishSigmaBondInstantTail(atomA, atomB);
+            FinishSigmaBondInstantTail(atomA, atomB, skipHydrogenSigmaNeighborSnapAfterTail);
     }
 
     /// <param name="skipHydrogenSigmaNeighborSnapAfterOrbitalDragThreePhase">

@@ -406,12 +406,66 @@ public static class AminoAcidMoleculeLibrary
             }
             case "His":
             {
-                var c = AddByEditMode(beta, 6, editModeManager, amineN, alphaHydrogenLikeDir);
-                if (c != null)
+                // Imidazole: C₁ = Cβ (beta). Chain C₁–C₂–N₁–C₃–N₂–C₄ with zig-zag from carboxyl→Cα (Lys/Met style), then σ ring C₂–C₄; π N₁=C₃, C₂=C₄.
+                Vector3 zigCarboxylAlpha = carboxylToAlphaDir.sqrMagnitude > 1e-10f ? carboxylToAlphaDir : alphaHydrogenLikeDir;
+                var c2 = AddByEditMode(beta, 6, editModeManager, amineN, zigCarboxylAlpha);
+                if (c2 == null) break;
+                Vector3 betaToC2Meas = Vector3.zero;
+                if (beta != null && c2 != null)
                 {
-                    AddByEditMode(c, 7, editModeManager, beta);
-                    AddByEditMode(c, 7, editModeManager, beta);
+                    Vector3 d = c2.transform.position - beta.transform.position;
+                    if (d.sqrMagnitude > 1e-10f)
+                        betaToC2Meas = d.normalized;
                 }
+                var n1 = AddByEditMode(c2, 7, editModeManager, beta, alphaToBetaDir.sqrMagnitude > 1e-10f ? alphaToBetaDir : zigCarboxylAlpha);
+                if (n1 == null) break;
+                Vector3 c2ToN1Meas = Vector3.zero;
+                if (c2 != null && n1 != null)
+                {
+                    Vector3 d = n1.transform.position - c2.transform.position;
+                    if (d.sqrMagnitude > 1e-10f)
+                        c2ToN1Meas = d.normalized;
+                }
+                // Zig-zag alternation uses N−2→N−1, not the incoming C2→N1 vector.
+                var c3 = AddByEditMode(
+                    n1,
+                    6,
+                    editModeManager,
+                    c2,
+                    betaToC2Meas.sqrMagnitude > 1e-10f ? betaToC2Meas : zigCarboxylAlpha);
+                if (c3 == null) break;
+                Vector3 n1ToC3Meas = Vector3.zero;
+                if (n1 != null && c3 != null)
+                {
+                    Vector3 d = c3.transform.position - n1.transform.position;
+                    if (d.sqrMagnitude > 1e-10f)
+                        n1ToC3Meas = d.normalized;
+                }
+                var n2 = AddByEditMode(
+                    c3,
+                    7,
+                    editModeManager,
+                    n1,
+                    c2ToN1Meas.sqrMagnitude > 1e-10f ? c2ToN1Meas : alphaToBetaDir);
+                if (n2 == null) break;
+                Vector3 c3ToN2Meas = Vector3.zero;
+                if (c3 != null && n2 != null)
+                {
+                    Vector3 d = n2.transform.position - c3.transform.position;
+                    if (d.sqrMagnitude > 1e-10f)
+                        c3ToN2Meas = d.normalized;
+                }
+                var c4 = AddByEditMode(
+                    n2,
+                    6,
+                    editModeManager,
+                    c3,
+                    n1ToC3Meas.sqrMagnitude > 1e-10f ? n1ToC3Meas : zigCarboxylAlpha);
+                if (c4 == null) break;
+                if (!TryBondDirect(c2, c4, editModeManager))
+                    break;
+                // TryPromoteToDoubleBond(n1, c3, editModeManager);
+                // TryPromoteToDoubleBond(c2, c4, editModeManager);
                 break;
             }
             case "Phe":
@@ -424,7 +478,7 @@ public static class AminoAcidMoleculeLibrary
                 var c1 = AddByEditMode(beta, 6, editModeManager, amineN);
                 var c2 = c1 != null ? AddByEditMode(c1, 6, editModeManager, beta) : null;
                 if (c2 != null && amineN != null)
-                    editModeManager.OnAtomClicked(c2); // stay near ring-closure intent path
+                    TryBondDirect(amineN, c2, editModeManager);
                 break;
             }
         }
@@ -437,6 +491,8 @@ public static class AminoAcidMoleculeLibrary
         var c2 = AddByEditMode(r, 6, editModeManager, beta);
         var c3 = c2 != null ? AddByEditMode(c2, 6, editModeManager, r) : null;
         var c4 = c3 != null ? AddByEditMode(c3, 6, editModeManager, c2) : null;
+        if (c4 != null && r != null)
+            TryBondDirect(c4, r, editModeManager);
         if (abbr == "Tyr" && c4 != null) AddByEditMode(c4, 8, editModeManager, c3);
         if (abbr == "Trp" && c4 != null) AddByEditMode(c4, 7, editModeManager, c3);
     }
@@ -450,6 +506,21 @@ public static class AminoAcidMoleculeLibrary
         var oa = atomA.GetLoneOrbitalForBondFormation(dAB);
         var ob = atomB.GetLoneOrbitalForBondFormation(dBA);
         if (oa == null || ob == null) return false;
+        var piRunner = SigmaBondFormation.EnsureRunnerInScene();
+        if (piRunner != null
+            && piRunner.TryBeginOrbitalDragPiFormation(
+                atomA,
+                atomB,
+                oa,
+                ob,
+                redistributionGuideTieBreakDraggedOrbital: oa,
+                animate: false))
+        {
+            bool promoted = atomA.GetBondsTo(atomB) >= 2;
+            if (promoted)
+                EnforceTrigonalPlanarAtDoubleBond(atomA, atomB);
+            return promoted;
+        }
         editModeManager.FormSigmaBondInstant(
             atomA,
             atomB,
@@ -457,10 +528,10 @@ public static class AminoAcidMoleculeLibrary
             ob,
             redistributeAtomA: false,
             redistributeAtomB: false);
-        bool promoted = atomA.GetBondsTo(atomB) >= 2;
-        if (promoted)
+        bool promotedFallback = atomA.GetBondsTo(atomB) >= 2;
+        if (promotedFallback)
             EnforceTrigonalPlanarAtDoubleBond(atomA, atomB);
-        return promoted;
+        return promotedFallback;
     }
 
     static AtomFunction AttachAtomAtPredeterminedPosition(
@@ -530,6 +601,16 @@ public static class AminoAcidMoleculeLibrary
         var oa = atomA.GetLoneOrbitalForBondFormation(dAB);
         var ob = atomB.GetLoneOrbitalForBondFormation(dBA);
         if (oa == null || ob == null) return false;
+        var sigmaRunner = SigmaBondFormation.EnsureRunnerInScene();
+        if (sigmaRunner != null
+            && sigmaRunner.TryBeginOrbitalDragSigmaFormation(
+                atomA,
+                atomB,
+                oa,
+                ob,
+                redistributionGuideTieBreakDraggedOrbital: oa,
+                animate: false))
+            return true;
         editModeManager.FormSigmaBondInstant(
             atomA,
             atomB,

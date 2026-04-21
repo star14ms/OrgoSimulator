@@ -7,6 +7,71 @@ using UnityEngine;
 /// </summary>
 public static class OrbitalRedistribution
 {
+    /// <summary>
+    /// π drag phase 1: world-space normal of the <b>non-guide</b> atom’s aligned trigonal VSEPR template plane from the
+    /// same <see cref="BuildOrbitalRedistribution"/> call that builds the phase-1 animation (see
+    /// <c>formingPiPrecursorAlignTrigonalPartnerPlane</c>). Cleared by <see cref="ClearPiPhase1PrecursorTrigonalTemplatePlane"/>.
+    /// </summary>
+    public static Vector3? PiPhase1PrecursorTrigonalPlaneNormalWorld { get; private set; }
+
+    static int s_piPhase1PrecursorBondAtomIdLow;
+    static int s_piPhase1PrecursorBondAtomIdHigh;
+
+    public static void ClearPiPhase1PrecursorTrigonalTemplatePlane()
+    {
+        PiPhase1PrecursorTrigonalPlaneNormalWorld = null;
+        s_piPhase1PrecursorBondAtomIdLow = 0;
+        s_piPhase1PrecursorBondAtomIdHigh = 0;
+    }
+
+    public static bool TryGetPiPhase1PrecursorTrigonalPlaneNormalWorldForBondPair(
+        AtomFunction a,
+        AtomFunction b,
+        out Vector3 planeNormalWorld)
+    {
+        planeNormalWorld = default;
+        if (a == null || b == null || !PiPhase1PrecursorTrigonalPlaneNormalWorld.HasValue)
+            return false;
+        int lo = Mathf.Min(a.GetInstanceID(), b.GetInstanceID());
+        int hi = Mathf.Max(a.GetInstanceID(), b.GetInstanceID());
+        if (lo != s_piPhase1PrecursorBondAtomIdLow || hi != s_piPhase1PrecursorBondAtomIdHigh)
+            return false;
+        planeNormalWorld = PiPhase1PrecursorTrigonalPlaneNormalWorld.Value;
+        return planeNormalWorld.sqrMagnitude > 1e-12f;
+    }
+
+    static void TryRecordPiPhase1PrecursorTrigonalTemplatePlane(
+        AtomFunction nonGuideAtom,
+        AtomFunction guideAtom,
+        List<Vector3> alignedTemplateLocal,
+        bool formingPiPrecursorAlignTrigonalPartnerPlane)
+    {
+        if (!formingPiPrecursorAlignTrigonalPartnerPlane
+            || nonGuideAtom == null
+            || guideAtom == null
+            || alignedTemplateLocal == null
+            || alignedTemplateLocal.Count < 3)
+            return;
+
+        Vector3 nLocal = Vector3.Cross(alignedTemplateLocal[0], alignedTemplateLocal[1]);
+        if (nLocal.sqrMagnitude < 1e-14f && alignedTemplateLocal.Count > 2)
+            nLocal = Vector3.Cross(alignedTemplateLocal[0], alignedTemplateLocal[2]);
+        if (nLocal.sqrMagnitude < 1e-14f && alignedTemplateLocal.Count > 2)
+            nLocal = Vector3.Cross(alignedTemplateLocal[1], alignedTemplateLocal[2]);
+        if (nLocal.sqrMagnitude < 1e-14f)
+            return;
+        nLocal.Normalize();
+        Vector3 nWorld = nonGuideAtom.transform.TransformDirection(nLocal).normalized;
+        if (nWorld.sqrMagnitude < 1e-12f)
+            return;
+
+        int aid = nonGuideAtom.GetInstanceID();
+        int bid = guideAtom.GetInstanceID();
+        s_piPhase1PrecursorBondAtomIdLow = Mathf.Min(aid, bid);
+        s_piPhase1PrecursorBondAtomIdHigh = Mathf.Max(aid, bid);
+        PiPhase1PrecursorTrigonalPlaneNormalWorld = nWorld;
+    }
+
     public sealed class DebugTemplateSnapshot
     {
         public AtomFunction Atom;
@@ -1137,9 +1202,35 @@ public static class OrbitalRedistribution
                 ? atom.transform.InverseTransformDirection(guideGroup.CurrentDirWorld).normalized
                 : Vector3.right);
         bool usePrecookedDirectionTemplate = hasCyclicTemplate || hasChainBreakContributorTemplate;
-        List<Vector3> alignedTemplate = usePrecookedDirectionTemplate
-            ? new List<Vector3>(finalDirectionsTemplate)
-            : AlignFinalDirectionsTemplateToGuide(
+        bool useSnapSigmaTipPlaneTrigonalTemplate =
+            !isBondingEvent
+            && !usePrecookedDirectionTemplate
+            && !usedProvidedGuideDirection
+            && guideAtom != null
+            && nVseprGroup == 3
+            && bondingGroups.Count == 3;
+
+        List<Vector3> snapTipPlaneTplCandidate = null;
+        bool snapBuildOk = false;
+        if (useSnapSigmaTipPlaneTrigonalTemplate)
+        {
+            snapBuildOk = atom.TryBuildSigmaBreakTrigonalTemplateFromCarbocationSigmaTipPlane(
+                atomOrbitalOp,
+                guideAtom,
+                out snapTipPlaneTplCandidate);
+        }
+
+        bool usedSnapTipPlaneTrigonalTemplateApplied = false;
+        List<Vector3> alignedTemplate;
+        if (usePrecookedDirectionTemplate)
+            alignedTemplate = new List<Vector3>(finalDirectionsTemplate);
+        else if (snapBuildOk && snapTipPlaneTplCandidate != null && snapTipPlaneTplCandidate.Count == 3)
+        {
+            alignedTemplate = snapTipPlaneTplCandidate;
+            usedSnapTipPlaneTrigonalTemplateApplied = true;
+        }
+        else
+            alignedTemplate = AlignFinalDirectionsTemplateToGuide(
                 finalDirectionsTemplate,
                 guideDirLocal,
                 atom,
@@ -1147,6 +1238,11 @@ public static class OrbitalRedistribution
                 nVseprGroup,
                 staggerRefInPlaneNonGuideLocalFromChainTargets: null,
                 formingPiPrecursorAlignTrigonalPartnerPlane: formingPiPrecursorAlignTrigonalPartnerPlane);
+        TryRecordPiPhase1PrecursorTrigonalTemplatePlane(
+            atom,
+            guideAtom,
+            alignedTemplate,
+            formingPiPrecursorAlignTrigonalPartnerPlane);
         GroupEntry guideGroupForMatching = usePrecookedDirectionTemplate ? null : guideGroup;
 
         int[] bestPerm = FindBestCombinationVSEPRGroupToFinalDirection(
@@ -1162,6 +1258,7 @@ public static class OrbitalRedistribution
             + " bondGroups=" + bondingGroups.Count + " nonbondOcc=" + nonbondingOccupied.Count + " emptyOrbs=" + emptyOrbitals.Count
             + " nVsepr=" + nVseprGroup + " cyclicTpl=" + (hasCyclicTemplate ? "1" : "0") + " chainTpl=" + (hasChainBreakContributorTemplate ? "1" : "0")
             + " usedProvidedGuideDir=" + (finalDirectionForGuideOrbital.sqrMagnitude > 1e-12f ? "1" : "0")
+            + " snapTipPlaneTpl=" + (usedSnapTipPlaneTrigonalTemplateApplied ? "1" : "0")
             + " emptyTplDirs=" + (finalDirectionsEmptyOrbital != null ? finalDirectionsEmptyOrbital.Count.ToString() : "0")
             + " permLen=" + (bestPerm != null ? bestPerm.Length.ToString() : "0"));
         // #region agent log
@@ -1181,10 +1278,11 @@ public static class OrbitalRedistribution
             + ",\"cyclicTpl\":" + (hasCyclicTemplate ? "1" : "0")
             + ",\"chainTpl\":" + (hasChainBreakContributorTemplate ? "1" : "0")
             + ",\"usedProvidedGuideDir\":" + (finalDirectionForGuideOrbital.sqrMagnitude > 1e-12f ? "1" : "0")
+            + ",\"snapTipPlaneTpl\":" + (usedSnapTipPlaneTrigonalTemplateApplied ? "1" : "0")
             + ",\"emptyTplDirs\":" + (finalDirectionsEmptyOrbital != null ? finalDirectionsEmptyOrbital.Count.ToString() : "0")
             + ",\"permLen\":" + (bestPerm != null ? bestPerm.Length.ToString() : "0")
             + "}",
-            "pre-fix");
+            "post-fix");
         // #endregion
         var animation = BuildRedistributionAnimation(
             groupsForMatching,
@@ -1490,7 +1588,8 @@ public static class OrbitalRedistribution
             groups,
             alignedTemplate,
             perm,
-            finalDirectionsEmptyOrbital);
+            finalDirectionsEmptyOrbital,
+            bondBreakPinEmptyToStartTipLocal: !isBondingEvent ? atomOrbitalOp : null);
 
         return anim;
     }
@@ -1514,7 +1613,8 @@ public static class OrbitalRedistribution
         List<GroupEntry> groupsForMatching,
         List<Vector3> alignedTemplate,
         int[] perm,
-        List<Vector3> finalDirectionsEmptyOrbital)
+        List<Vector3> finalDirectionsEmptyOrbital,
+        ElectronOrbitalFunction bondBreakPinEmptyToStartTipLocal = null)
     {
         if (anim == null || atom == null || emptyOrbitals == null || emptyOrbitals.Count == 0) return;
         if (finalDirectionsEmptyOrbital == null || finalDirectionsEmptyOrbital.Count == 0) return;
@@ -1572,7 +1672,27 @@ public static class OrbitalRedistribution
 
         while (remainingEmpty.Count > 0 && remainingDirs.Count > 0)
         {
-            int dirIdx = SelectNextEmptyDirectionIndex(remainingDirs, occupiedNonEmpty, forcedOppositeOf);
+            int dirIdx;
+            if (bondBreakPinEmptyToStartTipLocal != null
+                && remainingEmpty.Count == 1
+                && remainingEmpty[0]?.Orbital != null
+                && ReferenceEquals(remainingEmpty[0].Orbital, bondBreakPinEmptyToStartTipLocal))
+            {
+                Vector3 curLocal = atom.transform.InverseTransformDirection(remainingEmpty[0].CurrentDirWorld).normalized;
+                dirIdx = 0;
+                float bestDot = float.NegativeInfinity;
+                for (int i = 0; i < remainingDirs.Count; i++)
+                {
+                    float d = Vector3.Dot(remainingDirs[i].normalized, curLocal);
+                    if (d > bestDot)
+                    {
+                        bestDot = d;
+                        dirIdx = i;
+                    }
+                }
+            }
+            else
+                dirIdx = SelectNextEmptyDirectionIndex(remainingDirs, occupiedNonEmpty, forcedOppositeOf);
             if (dirIdx < 0 || dirIdx >= remainingDirs.Count) break;
             Vector3 targetDir = remainingDirs[dirIdx].normalized;
 
