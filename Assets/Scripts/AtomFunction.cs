@@ -24,6 +24,15 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     [SerializeField] ElectronOrbitalFunction orbitalPrefab;
     readonly List<ElectronOrbitalFunction> bondedOrbitals = new List<ElectronOrbitalFunction>();
     readonly List<CovalentBond> covalentBonds = new List<CovalentBond>();
+    /// <summary>
+    /// π p axes in world space keyed by bond partner + line index (<see cref="PiPOrbitalPrebondLineIndex"/> = incipient π
+    /// prebond before the row exists; 1+ matches <see cref="CovalentBond.GetBondIndex"/> π rows). Multiple π partners/lines
+    /// can coexist; remove one slot with <see cref="RemovePiPOrbitalDirectionsForPartnerLine"/>.
+    /// </summary>
+    readonly List<PiPOrbitalDirectionSlot> piPOrbitalDirectionSlots = new List<PiPOrbitalDirectionSlot>(4);
+
+    /// <summary>Line index stored for an incipient π OP prebond (no <see cref="CovalentBond"/> row yet).</summary>
+    public const int PiPOrbitalPrebondLineIndex = 0;
     /// <summary>Reused list for σ pre-bond unified shell (bonded + bond GO orbitals + explicit op). Not a persistent cache of atom state.</summary>
     readonly List<ElectronOrbitalFunction> scratchSigmaPrebondRigidShell = new List<ElectronOrbitalFunction>();
 
@@ -74,6 +83,129 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     public int BondedOrbitalCount => bondedOrbitals.Count;
     /// <summary>Same membership as the internal bonded-orbital list; use from other types (e.g. <see cref="SigmaBondFormation"/>) instead of touching private fields.</summary>
     public IReadOnlyList<ElectronOrbitalFunction> BondedOrbitals => bondedOrbitals;
+
+    public readonly struct PiPOrbitalDirectionSlot
+    {
+        public readonly AtomFunction Partner;
+        public readonly int LineIndex;
+        public readonly Vector3 PlusZWorld;
+        public readonly Vector3 MinusZWorld;
+
+        public PiPOrbitalDirectionSlot(AtomFunction partner, int lineIndex, Vector3 plusZWorld, Vector3 minusZWorld)
+        {
+            Partner = partner;
+            LineIndex = lineIndex;
+            PlusZWorld = plusZWorld;
+            MinusZWorld = minusZWorld;
+        }
+    }
+
+    public IReadOnlyList<PiPOrbitalDirectionSlot> PiPOrbitalDirectionSlots => piPOrbitalDirectionSlots;
+
+    /// <summary>True when this atom has at least one stored π p slot (prebond or break-hint row).</summary>
+    public bool HasPiPrebondPOrbitalDirectionsWorld =>
+        piPOrbitalDirectionSlots != null && piPOrbitalDirectionSlots.Count > 0;
+
+    public void RemovePiPOrbitalDirectionsForPartnerLine(AtomFunction partner, int lineIndex)
+    {
+        if (partner == null || piPOrbitalDirectionSlots == null || piPOrbitalDirectionSlots.Count == 0)
+            return;
+        int pid = partner.GetInstanceID();
+        for (int i = piPOrbitalDirectionSlots.Count - 1; i >= 0; i--)
+        {
+            var s = piPOrbitalDirectionSlots[i];
+            if (s.Partner == null || s.Partner.GetInstanceID() != pid)
+                continue;
+            if (s.LineIndex != lineIndex)
+                continue;
+            piPOrbitalDirectionSlots.RemoveAt(i);
+        }
+    }
+
+    /// <summary>Replaces any existing slot for this partner and line, then appends normalized ±z (world).</summary>
+    public void UpsertPiPOrbitalDirectionsForPartnerLine(
+        AtomFunction partner,
+        int lineIndex,
+        Vector3 plusZWorld,
+        Vector3 minusZWorld)
+    {
+        if (partner == null || plusZWorld.sqrMagnitude < 1e-18f)
+            return;
+        RemovePiPOrbitalDirectionsForPartnerLine(partner, lineIndex);
+        Vector3 p = plusZWorld.normalized;
+        Vector3 m = minusZWorld.sqrMagnitude > 1e-18f ? minusZWorld.normalized : -p;
+        if (Vector3.Dot(p, m) > 0.999f)
+            m = -p;
+        piPOrbitalDirectionSlots.Add(new PiPOrbitalDirectionSlot(partner, lineIndex, p, m));
+    }
+
+    /// <summary>Removes every π p slot on this atom (use sparingly; prefer <see cref="RemovePiPOrbitalDirectionsForPartnerLine"/>).</summary>
+    public void ClearAllPiPOrbitalDirectionsWorld() => piPOrbitalDirectionSlots.Clear();
+
+    /// <summary>π prebond helper: upserts <see cref="PiPOrbitalPrebondLineIndex"/> toward <paramref name="partner"/>.</summary>
+    public void SetPiPrebondPOrbitalDirectionsWorld(AtomFunction partner, Vector3 plusZWorld, Vector3 minusZWorld) =>
+        UpsertPiPOrbitalDirectionsForPartnerLine(partner, PiPOrbitalPrebondLineIndex, plusZWorld, minusZWorld);
+
+    public bool TryGetPiPrebondPOrbitalPlusZWorld(AtomFunction partner, out Vector3 plusZWorld)
+    {
+        plusZWorld = default;
+        if (partner == null || piPOrbitalDirectionSlots == null)
+            return false;
+        int pid = partner.GetInstanceID();
+        for (int i = 0; i < piPOrbitalDirectionSlots.Count; i++)
+        {
+            var s = piPOrbitalDirectionSlots[i];
+            if (s.Partner != null && s.Partner.GetInstanceID() == pid && s.LineIndex == PiPOrbitalPrebondLineIndex)
+            {
+                plusZWorld = s.PlusZWorld;
+                return plusZWorld.sqrMagnitude > 1e-18f;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Reads stored π p +z for a committed bond row (not prebond line 0) toward <paramref name="partner"/>.</summary>
+    public bool TryGetPiPOrbitalPlusZWorldForPartnerLine(AtomFunction partner, int lineIndex, out Vector3 plusZWorld)
+    {
+        plusZWorld = default;
+        if (partner == null || piPOrbitalDirectionSlots == null || lineIndex <= 0)
+            return false;
+        int pid = partner.GetInstanceID();
+        for (int i = 0; i < piPOrbitalDirectionSlots.Count; i++)
+        {
+            var s = piPOrbitalDirectionSlots[i];
+            if (s.Partner == null || s.Partner.GetInstanceID() != pid || s.LineIndex != lineIndex)
+                continue;
+            plusZWorld = s.PlusZWorld;
+            return plusZWorld.sqrMagnitude > 1e-18f;
+        }
+        return false;
+    }
+
+    /// <summary>Most recently added committed π row (+z) toward <paramref name="partner"/> (line &gt; 0).</summary>
+    public bool TryGetLatestPiPOrbitalPlusZWorldTowardPartner(
+        AtomFunction partner,
+        out Vector3 plusZWorld,
+        out int lineIndex)
+    {
+        plusZWorld = default;
+        lineIndex = 0;
+        if (partner == null || piPOrbitalDirectionSlots == null)
+            return false;
+        int pid = partner.GetInstanceID();
+        for (int i = piPOrbitalDirectionSlots.Count - 1; i >= 0; i--)
+        {
+            var s = piPOrbitalDirectionSlots[i];
+            if (s.Partner == null || s.Partner.GetInstanceID() != pid || s.LineIndex <= 0)
+                continue;
+            if (s.PlusZWorld.sqrMagnitude < 1e-18f)
+                continue;
+            plusZWorld = s.PlusZWorld.normalized;
+            lineIndex = s.LineIndex;
+            return true;
+        }
+        return false;
+    }
     public int NonBondEmptyOrbitalCount => bondedOrbitals.Count(o => o != null && o.Bond == null && o.ElectronCount == 0);
     public int AtomicNumber { get => atomicNumber; set => atomicNumber = Mathf.Clamp(value, 1, 118); }
     public int Charge { get => charge; set { charge = value; RefreshChargeLabel(); } }

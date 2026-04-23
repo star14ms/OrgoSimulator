@@ -1298,9 +1298,13 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     bool FormCovalentBondPiStart(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital)
     {
         var runner = SigmaBondFormation.EnsureRunnerInScene();
-        if (runner != null && runner.TryBeginOrbitalDragPiFormation(sourceAtom, targetAtom, this, targetOrbital, this))
-            return true;
-        targetAtom.StartCoroutine(FormCovalentBondPiCoroutine(sourceAtom, targetAtom, targetOrbital));
+        if (runner != null)
+        {
+            runner.EnsureEditModeManagerReference();
+            if (runner.TryBeginOrbitalDragPiFormation(sourceAtom, targetAtom, this, targetOrbital, this))
+                return true;
+        }
+                targetAtom.StartCoroutine(FormCovalentBondPiCoroutine(sourceAtom, targetAtom, targetOrbital));
         return true;
     }
 
@@ -1311,6 +1315,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         foreach (var a in targetAtom.GetConnectedMolecule()) atomsToBlock.Add(a);
         foreach (var a in atomsToBlock) a.SetInteractionBlocked(true);
 
+        AtomFunction guide = null;
+        AtomFunction nonGuide = null;
         try
         {
         int ecnPiEvent = AtomFunction.AllocateMoleculeEcnEventId();
@@ -1325,6 +1331,33 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         transform.localRotation = originalLocalRotation;
         transform.localScale = originalLocalScale;
 
+        var molForBondLineUpdates = new HashSet<AtomFunction>();
+        foreach (var a in sourceAtom.GetConnectedMolecule()) if (a != null) molForBondLineUpdates.Add(a);
+        foreach (var a in targetAtom.GetConnectedMolecule()) if (a != null) molForBondLineUpdates.Add(a);
+        var molForBondLineList = new List<AtomFunction>(molForBondLineUpdates.Count);
+        foreach (var a in molForBondLineUpdates)
+            if (a != null)
+                molForBondLineList.Add(a);
+
+        OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
+        ElectronRedistributionGuide.ResolveGuideAtomForPair(sourceAtom, targetAtom, this, out guide, out nonGuide);
+        bool guideRedistributedInPhase1 = false;
+        if (guide != null && nonGuide != null && !ReferenceEquals(guide, nonGuide))
+        {
+            var guideOpPhase1 = guide == sourceAtom ? this : targetOrbital;
+            var nonGuideOpPhase1 = nonGuide == sourceAtom ? this : targetOrbital;
+            guideRedistributedInPhase1 = SigmaBondFormation.RunOrbitalDragPiPhase1RedistributionSynchronously(
+                guide,
+                nonGuide,
+                guideOpPhase1,
+                nonGuideOpPhase1,
+                sourceAtom,
+                targetAtom,
+                this,
+                targetOrbital,
+                molForBondLineList);
+        }
+        
         AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
             sourceAtom, targetAtom, "beforePiBond", ecnPiEvent, null, "pi");
         sourceAtom.UnbondOrbital(this);
@@ -1337,10 +1370,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         targetAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
-
-        var molForBondLineUpdates = new HashSet<AtomFunction>();
-        foreach (var a in sourceAtom.GetConnectedMolecule()) if (a != null) molForBondLineUpdates.Add(a);
-        foreach (var a in targetAtom.GetConnectedMolecule()) if (a != null) molForBondLineUpdates.Add(a);
 
         yield return AnimateBondFormationOperationOrbitalsTowardBondCylinder(
             sourceAtom, targetAtom, this, targetOrbital, bond, -1f, molForBondLineUpdates);
@@ -1360,9 +1389,45 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (bond != null)
             AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
                 sourceAtom, targetAtom, "afterPiBond", ecnPiEvent, bond, "pi");
+
+        float phase3Sec = SigmaBondFormation.ResolvePiPhase3GuideSeconds(this, targetOrbital, this);
+        if (bond != null
+            && guide != null
+            && nonGuide != null
+            && !ReferenceEquals(guide, nonGuide)
+            && guide.AtomicNumber > 1
+            && phase3Sec > 1e-5f
+            && !guideRedistributedInPhase1)
+        {
+            var guideOpPhase1 = guide == sourceAtom ? this : targetOrbital;
+            var phase3GuideOp = bond.Orbital != null ? bond.Orbital : guideOpPhase1;
+            var phase3GuideRedistribution = OrbitalRedistribution.BuildOrbitalRedistribution(
+                guide,
+                nonGuide,
+                atomOrbitalOp: phase3GuideOp,
+                isBondingEvent: true);
+            if (phase3GuideRedistribution != null)
+            {
+                float t3 = 0f;
+                while (t3 < phase3Sec)
+                {
+                    t3 += Time.deltaTime;
+                    float s3 = Mathf.Clamp01(t3 / phase3Sec);
+                    float smooth3 = s3 * s3 * (3f - 2f * s3);
+                    phase3GuideRedistribution.Apply(smooth3);
+                    AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(guide.GetConnectedMolecule());
+                    yield return null;
+                }
+                phase3GuideRedistribution.Apply(1f);
+                AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(guide.GetConnectedMolecule());
+            }
+        }
         }
         finally
         {
+            OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
+            guide?.RemovePiPOrbitalDirectionsForPartnerLine(nonGuide, AtomFunction.PiPOrbitalPrebondLineIndex);
+            nonGuide?.RemovePiPOrbitalDirectionsForPartnerLine(guide, AtomFunction.PiPOrbitalPrebondLineIndex);
             foreach (var a in atomsToBlock) a.SetInteractionBlocked(false);
             UnityEngine.Object.FindFirstObjectByType<EditModeManager>()?.RefreshSelectedMoleculeAfterBondChange();
         }
@@ -1425,66 +1490,36 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         Vector3 targetTargetPos = bondTargetPos;
         if (piPreBondSecondLineOnSigma
             && bond.IsSigmaBondLine()
-            && bond.TryGetPerspectivePiLobeEndpointsForLine(lineIndex, bondCount, out var piLobes))
+            && sourceAtom != null
+            && targetAtom != null)
         {
-            sourceTargetPos = sourceAtom == bond.AtomA ? piLobes.positiveA : piLobes.positiveB;
-            targetTargetPos = targetAtom == bond.AtomA ? piLobes.positiveA : piLobes.positiveB;
-            // #region agent log
-            ProjectAgentDebugLog.AppendDebugModeNdjson(
-                "debug-446955.log",
-                "446955",
-                "H17",
-                "ElectronOrbitalFunction.cs:TryPrepareBondFormationCylinderStep",
-                "pi_phase1_target_mode_probe",
-                "{"
-                + "\"bondId\":" + bond.GetInstanceID().ToString()
-                + ",\"mode\":\"per_atom_plus_z\""
-                + ",\"sourceToBondCenter\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(sourceTargetPos, bondTargetPos))
-                + ",\"targetToBondCenter\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(targetTargetPos, bondTargetPos))
-                + ",\"sourceToPlusA\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(sourceTargetPos, piLobes.positiveA))
-                + ",\"sourceToPlusB\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(sourceTargetPos, piLobes.positiveB))
-                + ",\"targetToPlusA\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(targetTargetPos, piLobes.positiveA))
-                + ",\"targetToPlusB\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(targetTargetPos, piLobes.positiveB))
-                + "}",
-                "hypothesis-run");
-            // #endregion
+            Vector3 sharedPlusZ = Vector3.zero;
+            bool haveSharedPlusZ =
+                sourceAtom.TryGetPiPrebondPOrbitalPlusZWorld(targetAtom, out sharedPlusZ)
+                || targetAtom.TryGetPiPrebondPOrbitalPlusZWorld(sourceAtom, out sharedPlusZ);
+            if (haveSharedPlusZ && sharedPlusZ.sqrMagnitude > 1e-16f)
+            {
+                Vector3 axis = targetAtom.transform.position - sourceAtom.transform.position;
+                if (axis.sqrMagnitude > 1e-10f)
+                {
+                    axis.Normalize();
+                    Vector3 pNormal = Vector3.ProjectOnPlane(sharedPlusZ.normalized, axis);
+                    if (pNormal.sqrMagnitude > 1e-10f)
+                    {
+                        pNormal.Normalize();
+                        float lineOffset = (lineIndex % 2 == 1 ? -1f : 1f) * ((lineIndex + 1) / 2) * 0.2f;
+                        if (lineOffset < 0f)
+                            pNormal = -pNormal;
+                        float lobeOffset = Mathf.Max(0.05f, 0.6f * 0.5f * (sourceAtom.BondRadius + targetAtom.BondRadius));
+                        Vector3 plus = pNormal * lobeOffset;
+                        sourceTargetPos = sourceAtom.transform.position + plus;
+                        targetTargetPos = targetAtom.transform.position + plus;
+                        bondTargetPos = 0.5f * (sourceTargetPos + targetTargetPos);
+                    }
+                }
+            }
         }
-        else if (piPreBondSecondLineOnSigma && bond.IsSigmaBondLine())
-        {
-            // #region agent log
-            ProjectAgentDebugLog.AppendDebugModeNdjson(
-                "debug-446955.log",
-                "446955",
-                "H17",
-                "ElectronOrbitalFunction.cs:TryPrepareBondFormationCylinderStep",
-                "pi_phase1_target_mode_probe",
-                "{"
-                + "\"bondId\":" + bond.GetInstanceID().ToString()
-                + ",\"mode\":\"bond_center_fallback\""
-                + ",\"sourceToBondCenter\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(sourceTargetPos, bondTargetPos))
-                + ",\"targetToBondCenter\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Distance(targetTargetPos, bondTargetPos))
-                + "}",
-                "hypothesis-run");
-            // #endregion
-        }
-        // #region agent log
-        ProjectAgentDebugLog.AppendDebugModeNdjson(
-            "debug-446955.log",
-            "446955",
-            "H4",
-            "ElectronOrbitalFunction.cs:TryPrepareBondFormationCylinderStep",
-            "pi_cylinder_target_pose_probe",
-            "{"
-            + "\"bondId\":" + bond.GetInstanceID().ToString()
-            + ",\"lineIndex\":" + lineIndex.ToString()
-            + ",\"bondCount\":" + bondCount.ToString()
-            + ",\"piPreBondSecondLineOnSigma\":" + (piPreBondSecondLineOnSigma ? "1" : "0")
-            + ",\"targetPosX\":" + ProjectAgentDebugLog.JsonFloatInvariant(bondTargetPos.x)
-            + ",\"targetPosY\":" + ProjectAgentDebugLog.JsonFloatInvariant(bondTargetPos.y)
-            + ",\"targetPosZ\":" + ProjectAgentDebugLog.JsonFloatInvariant(bondTargetPos.z)
-            + "}",
-            "pre-fix");
-        // #endregion
+
         (float sourceDiff, float targetDiff) = ComputePiBondAngleDiffs(sourceAtom, targetAtom, bondTargetPos, bondTargetRot, bond);
 
         bool flipTarget = Mathf.Abs(sourceDiff) < Mathf.Abs(targetDiff);

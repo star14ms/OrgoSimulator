@@ -1,3 +1,6 @@
+When empty orbital redistribute, it should exclude the direction on the piPOrbitalDirectionSlots (both +z and -z)
+When redistributing pi prebond, both atom should select the same direction (either both +z or both -z), which is selected by higher sum of dot product value (Dot(orbital in op of first atom, +z vs -z) + Dot(orbital in op of second atom, +z vs -z)
+
 When bond breaking failed by dragging to atom which is less electronnegative, charge label highlight is not shown, if label is disabled. So make it visible while highlighting. Also highlight the charge label of opposite atom more electronegative with green color.
 
 Consider speical cases for electron redisribution: Cyclic molecules, when bonding formed, if you detect it's cyclic, you should rearrange the atoms except the two atoms in op, to form regular polygons, in that case the rest orbital groups of atoms not involed in cycle should under electron redisribution with special rule, heading opposite direction from center of the ring.

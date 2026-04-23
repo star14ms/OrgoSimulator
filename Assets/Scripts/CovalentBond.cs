@@ -1,7 +1,6 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Text;
 using UnityEngine;
@@ -20,39 +19,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     // Compatibility debug gates still referenced from AtomFunction.
     public static bool DebugLogBreakBondSigmaRelaxWhy = false;
     public static bool DebugLogBreakBondMotionSources = false;
-
-    static string Qf(Quaternion q)
-    {
-        return q.x.ToString("F4", CultureInfo.InvariantCulture) + ","
-            + q.y.ToString("F4", CultureInfo.InvariantCulture) + ","
-            + q.z.ToString("F4", CultureInfo.InvariantCulture) + ","
-            + q.w.ToString("F4", CultureInfo.InvariantCulture);
-    }
-
-    // Historical diagnostic hook (H129). Kept as no-op to preserve call-sites.
-    static void AppendH129FlipDecisionNdjson(
-        string source,
-        int bondId,
-        bool preFlipState,
-        float dotTip0VsWant,
-        float dotActualVsWant,
-        float angTip0VsWantDeg,
-        float angActualVsWantDeg,
-        string decision,
-        bool postFlipState,
-        Quaternion deltaQ)
-    {
-        _ = source;
-        _ = bondId;
-        _ = preFlipState;
-        _ = dotTip0VsWant;
-        _ = dotActualVsWant;
-        _ = angTip0VsWantDeg;
-        _ = angActualVsWantDeg;
-        _ = decision;
-        _ = postFlipState;
-        _ = deltaQ;
-    }
 
     [SerializeField] AtomFunction atomA;
     [SerializeField] AtomFunction atomB;
@@ -109,8 +75,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     static Material bondCylinderMaterial;
     static Material piBondCylinderMaterial;
     static Mesh piLobeSphereMesh;
-    static int debugPiLobeLogBudget = 24;
-    static int debugPiAppearanceLogBudget = 16;
 
     /// <summary>
     /// World direction for perspective π lobes (⟂ internuclear, before <see cref="GetLineOffset"/> sign);
@@ -147,19 +111,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     {
         orbitalRedistributionWorldDelta = delta;
         orbitalRotationFlipped = flipped;
-        // #region agent log
-        AppendH129FlipDecisionNdjson(
-            "RestorePiStep2RedistributionForBake",
-            GetInstanceID(),
-            flipped,
-            -2f,
-            -2f,
-            -1f,
-            -1f,
-            "restore_pi_step2",
-            orbitalRotationFlipped,
-            delta);
-        // #endregion
     }
 
     /// <summary>Returns how many bond electrons count toward the given atom for charge calculation. Uses electronegativity; when equal EN and odd count, orbital contributor gets the extra electron.</summary>
@@ -404,8 +355,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         float phase1TemplateAxisDot = -2f;
         bool usedNeighborPlane = false;
         float neighborPlaneAxisDot = -2f;
-        bool usedOrbitalAxisFallback = false;
-        Vector3 orbitalAxisFallback = Vector3.zero;
         bool usedSecondPiOrthogonal = false;
 
         // Triple (second π): both π axes lie in the plane ⟂ internuclear (σ); second row's +Z is ⟂ first π's +Z there.
@@ -480,12 +429,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             {
                 Vector3 opAxis = OrbitalAngleUtility.GetOrbitalDirectionWorld(Orbital.transform);
                 Vector3 projected = Vector3.ProjectOnPlane(opAxis, axisN);
-                if (projected.sqrMagnitude > 1e-10f)
-                {
-                    orbitalAxisFallback = projected.normalized;
-                    pNormal = orbitalAxisFallback;
-                    usedOrbitalAxisFallback = true;
-                }
             }
         }
         Vector3 pNormalBeforeLineOffsetSign = pNormal;
@@ -504,53 +447,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         endpoints.negativeCenter = 0.5f * (endpoints.negativeA + endpoints.negativeB);
         endpoints.lineRotation = BondFrameRotation(axis, true);
         endpoints.lineDistance = dist;
-        bool hasPlaneA = TryComputeLocalPlaneNormalFromUniqueNeighbors(atomA, atomB, out var planeA);
-        bool hasPlaneB = TryComputeLocalPlaneNormalFromUniqueNeighbors(atomB, atomA, out var planeB);
-        bool phase1TplBondMatch = OrbitalRedistribution.TryGetPiPhase1PrecursorTrigonalPlaneNormalWorldForBondPair(
-            atomA, atomB, out var phase1TplN);
-        if (debugPiLobeLogBudget > 0)
-        {
-            debugPiLobeLogBudget--;
-            // #region agent log
-            ProjectAgentDebugLog.AppendDebugModeNdjson(
-                "debug-446955.log",
-                "446955",
-                "H2",
-                "CovalentBond.cs:TryGetPerspectivePiLobeEndpointsForLine",
-                "pi_lobe_endpoint_orientation_probe",
-                "{"
-                + "\"bondId\":" + GetInstanceID().ToString()
-                + ",\"lineIndex\":" + lineIndex.ToString()
-                + ",\"bondCount\":" + bondCount.ToString()
-                + ",\"dotPNormalVsAxis\":" + ProjectAgentDebugLog.JsonFloatInvariant(Vector3.Dot(pNormal, axisN))
-                + ",\"usedBondPiAxisCache\":" + (usedBondPiAxisCache ? "1" : "0")
-                + ",\"hasCachedPiAxis\":" + (cachedPerspectivePiAxisWorld.HasValue ? "1" : "0")
-                + ",\"phase1TplBondMatch\":" + (phase1TplBondMatch ? "1" : "0")
-                + ",\"usedPhase1TemplatePlane\":" + (usedPhase1TemplatePlane ? "1" : "0")
-                + ",\"phase1TemplateAxisDot\":" + ProjectAgentDebugLog.JsonFloatInvariant(phase1TemplateAxisDot)
-                + ",\"usedNeighborPlane\":" + (usedNeighborPlane ? "1" : "0")
-                + ",\"neighborPlaneAxisDot\":" + ProjectAgentDebugLog.JsonFloatInvariant(neighborPlaneAxisDot)
-                + ",\"usedOrbitalAxisFallback\":" + (usedOrbitalAxisFallback ? "1" : "0")
-                + ",\"dotFallbackVsPNormal\":" + ProjectAgentDebugLog.JsonFloatInvariant(
-                    orbitalAxisFallback.sqrMagnitude > 1e-12f ? Mathf.Abs(Vector3.Dot(orbitalAxisFallback, pNormal)) : -1f)
-                + ",\"hasPlaneA\":" + (hasPlaneA ? "1" : "0")
-                + ",\"hasPlaneB\":" + (hasPlaneB ? "1" : "0")
-                + ",\"absDotPNormalVsPlaneA\":" + ProjectAgentDebugLog.JsonFloatInvariant(
-                    usedBondPiAxisCache && cachedPerspectivePiAxisWorld.HasValue
-                        ? Mathf.Abs(Vector3.Dot(pNormal, cachedPerspectivePiAxisWorld.Value))
-                        : usedPhase1TemplatePlane && phase1TplBondMatch ? Mathf.Abs(Vector3.Dot(pNormal, phase1TplN))
-                        : hasPlaneA ? Mathf.Abs(Vector3.Dot(pNormal, planeA)) : -1f)
-                + ",\"absDotPNormalVsPlaneB\":" + ProjectAgentDebugLog.JsonFloatInvariant(
-                    usedBondPiAxisCache && cachedPerspectivePiAxisWorld.HasValue
-                        ? Mathf.Abs(Vector3.Dot(pNormal, cachedPerspectivePiAxisWorld.Value))
-                        : usedPhase1TemplatePlane && phase1TplBondMatch ? Mathf.Abs(Vector3.Dot(pNormal, phase1TplN))
-                        : hasPlaneB ? Mathf.Abs(Vector3.Dot(pNormal, planeB)) : -1f)
-                + ",\"lobeOffset\":" + ProjectAgentDebugLog.JsonFloatInvariant(lobeOffset)
-                + ",\"distance\":" + ProjectAgentDebugLog.JsonFloatInvariant(dist)
-                + "}",
-                "post-fix");
-            // #endregion
-        }
         return true;
     }
 
@@ -677,19 +573,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             // #endregion
             orbitalRedistributionWorldDelta = Quaternion.identity;
             SyncSigmaOrbitalWorldPoseFromRedistribution(forceApplyPoseDuringBondToLineAnim: true);
-            // #region agent log
-            AppendH129FlipDecisionNdjson(
-                "ApplySigmaOrbitalTipFromRedistribution",
-                GetInstanceID(),
-                orbitalRotationFlipped,
-                dot,
-                dotActualVsWantProbe,
-                angTip0VsWantDegProbe,
-                angActualVsWantDegProbe,
-                "dot_gt_pos_threshold_identity_delta",
-                orbitalRotationFlipped,
-                orbitalRedistributionWorldDelta);
-            // #endregion
             return;
         }
 
@@ -706,19 +589,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 {
                     orbitalRedistributionWorldDelta = orbital.transform.rotation * Quaternion.Inverse(baseR);
                     SyncSigmaOrbitalWorldPoseFromRedistribution(forceApplyPoseDuringBondToLineAnim: true);
-                    // #region agent log
-                    AppendH129FlipDecisionNdjson(
-                        "ApplySigmaOrbitalTipFromRedistribution",
-                        GetInstanceID(),
-                        orbitalRotationFlipped,
-                        dot,
-                        dotActualVsWantProbe,
-                        angTip0VsWantDegProbe,
-                        angActualVsWantDegProbe,
-                        "dot_lt_neg_threshold_preserve_actual_tip",
-                        orbitalRotationFlipped,
-                        orbitalRedistributionWorldDelta);
-                    // #endregion
                     if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
                         && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
                     {
@@ -732,19 +602,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             // even when the lobe is already correct up to the cylinder convention / gauge freedom).
             orbitalRotationFlipped = !orbitalRotationFlipped;
             orbitalRedistributionWorldDelta = Quaternion.identity;
-            // #region agent log
-            AppendH129FlipDecisionNdjson(
-                "ApplySigmaOrbitalTipFromRedistribution",
-                GetInstanceID(),
-                !orbitalRotationFlipped,
-                dot,
-                dotActualVsWantProbe,
-                angTip0VsWantDegProbe,
-                angActualVsWantDegProbe,
-                "dot_lt_neg_threshold_toggle_flip",
-                orbitalRotationFlipped,
-                orbitalRedistributionWorldDelta);
-            // #endregion
             SyncSigmaOrbitalWorldPoseFromRedistribution(forceApplyPoseDuringBondToLineAnim: true);
             // #region agent log
             if (ElectronRedistributionOrchestrator.DebugLog8de5d1NonBondRedistDirections)
@@ -770,19 +627,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         Quaternion deltaQ = Quaternion.FromToRotation(tip0, want);
         orbitalRedistributionWorldDelta = deltaQ;
-        // #region agent log
-        AppendH129FlipDecisionNdjson(
-            "ApplySigmaOrbitalTipFromRedistribution",
-            GetInstanceID(),
-            orbitalRotationFlipped,
-            dot,
-            dotActualVsWantProbe,
-            angTip0VsWantDegProbe,
-            angActualVsWantDegProbe,
-            "from_to_rotation_delta",
-            orbitalRotationFlipped,
-            deltaQ);
-        // #endregion
         if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
             && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
         {
@@ -996,6 +840,18 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomA.RegisterBond(this);
         atomB.RegisterBond(this);
         TryInheritCachedPerspectivePiAxisFromPartnerBond();
+        int idxInit = GetBondIndex();
+        if (idxInit > 0
+            && atomA != null
+            && atomB != null
+            && atomA.TryGetPiPrebondPOrbitalPlusZWorld(atomB, out var prebondPlusZ)
+            && prebondPlusZ.sqrMagnitude > 1e-18f)
+        {
+            Vector3 pz = prebondPlusZ.normalized;
+            Vector3 mz = -pz;
+            atomA.UpsertPiPOrbitalDirectionsForPartnerLine(atomB, idxInit, pz, mz);
+            atomB.UpsertPiPOrbitalDirectionsForPartnerLine(atomA, idxInit, pz, mz);
+        }
 
         orbital.SetBond(this);
         orbital.SetBondedAtom(null);
@@ -1268,31 +1124,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             float lineLengthForScale = lineLength;
             float halfHeight = 0.5f * lineLengthForScale * lineScaleMult;
             lineVisual.transform.localScale = new Vector3(radiusScale, Mathf.Max(0.001f, halfHeight), radiusScale);
-            if (usePerspectivePiLobes && debugPiAppearanceLogBudget > 0)
-            {
-                debugPiAppearanceLogBudget--;
-                float lobeDiameterProbe = lobeDiameter;
-                float desiredLegacyOrbitalDiameter = 0.6f;
-                float centerToCenterDistance = lineDistance;
-                float surfaceToSurfaceIfSameDiameter = Mathf.Max(0f, centerToCenterDistance - lobeDiameterProbe);
-                // #region agent log
-                ProjectAgentDebugLog.AppendDebugModeNdjson(
-                    "debug-446955.log",
-                    "446955",
-                    "H6",
-                    "CovalentBond.cs:LateUpdate",
-                    "pi_appearance_size_length_probe",
-                    "{"
-                    + "\"bondId\":" + GetInstanceID().ToString()
-                    + ",\"radiusScale\":" + ProjectAgentDebugLog.JsonFloatInvariant(radiusScale)
-                    + ",\"lobeDiameter\":" + ProjectAgentDebugLog.JsonFloatInvariant(lobeDiameterProbe)
-                    + ",\"legacyOrbitalDiameter\":" + ProjectAgentDebugLog.JsonFloatInvariant(desiredLegacyOrbitalDiameter)
-                    + ",\"lineDistance\":" + ProjectAgentDebugLog.JsonFloatInvariant(centerToCenterDistance)
-                    + ",\"surfaceGapEstimate\":" + ProjectAgentDebugLog.JsonFloatInvariant(surfaceToSurfaceIfSameDiameter)
-                    + "}",
-                    "post-fix");
-                // #endregion
-            }
             if (piCylinderSecondaryVisual != null && piCylinderRendererSecondary != null)
             {
                 piCylinderSecondaryVisual.transform.position = usePerspectivePiLobes ? piLobes.negativeCenter : lineVisual.transform.position;
@@ -1307,26 +1138,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 && piLobePositiveBVisual != null
                 && piLobeNegativeAVisual != null
                 && piLobeNegativeBVisual != null;
-            if (usePerspectivePiLobes && debugPiLobeLogBudget > 0)
-            {
-                debugPiLobeLogBudget--;
-                // #region agent log
-                ProjectAgentDebugLog.AppendDebugModeNdjson(
-                    "debug-446955.log",
-                    "446955",
-                    "H4",
-                    "CovalentBond.cs:LateUpdate",
-                    "pi_cylinder_scale_probe",
-                    "{"
-                    + "\"bondId\":" + GetInstanceID().ToString()
-                    + ",\"lineLength\":" + ProjectAgentDebugLog.JsonFloatInvariant(lineLength)
-                    + ",\"lineScaleY\":" + ProjectAgentDebugLog.JsonFloatInvariant(lineVisual.transform.localScale.y)
-                    + ",\"radiusScale\":" + ProjectAgentDebugLog.JsonFloatInvariant(radiusScale)
-                    + ",\"lineDistance\":" + ProjectAgentDebugLog.JsonFloatInvariant(lineDistance)
-                    + "}",
-                    "pre-fix");
-                // #endregion
-            }
             if (showPiLobes)
             {
                 Vector3 lobeScale = new Vector3(lobeDiameter, lobeDiameter, lobeDiameter);
@@ -1590,33 +1401,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         // Bond-line pose for orbitals (must capture before UnregisterBond — GetOrbitalTargetWorldState uses bond topology).
         var (bondOrbitalWorldPos, bondOrbitalWorldRot) = GetOrbitalTargetWorldState();
-        // #region agent log
-        {
-            int biCap = GetBondIndex();
-            int bcCap = atomA != null && atomB != null ? atomA.GetBondsTo(atomB) : 0;
-            Vector3 nucW = returnOrbitalTo != null ? returnOrbitalTo.transform.position : Vector3.zero;
-            float distNucToCap = returnOrbitalTo != null
-                ? Vector3.Distance(nucW, bondOrbitalWorldPos)
-                : -1f;
-            float distNucToOrbPre = returnOrbitalTo != null && orbital != null
-                ? Vector3.Distance(nucW, orbital.transform.position)
-                : -1f;
-            ProjectAgentDebugLog.AppendDebugModeNdjson(
-                "debug-446955.log",
-                "446955",
-                "H1",
-                "CovalentBond.cs:BreakBond",
-                "pi_break_capture_vs_nucleus",
-                "{"
-                + "\"bondId\":" + GetInstanceID().ToString()
-                + ",\"bondIndex\":" + biCap.ToString()
-                + ",\"bondCount\":" + bcCap.ToString()
-                + ",\"bondsBetweenBeforeBreak\":" + bondsBetweenPairBeforeBreak.ToString()
-                + ",\"distNucToCapturedBondTarget\":" + ProjectAgentDebugLog.JsonFloatInvariant(distNucToCap)
-                + ",\"distNucToOrbitalWorldPreBreak\":" + ProjectAgentDebugLog.JsonFloatInvariant(distNucToOrbPre)
-                + "}",
-                "pre-fix");
-        }
         AtomPoseDirectionDebugLog.LogBondBreakCaptureTargetState(
             "pre_unregister_capture_target_state",
             GetInstanceID(),
@@ -1627,7 +1411,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             bondOrbitalWorldRot,
             orbitalRotationFlipped,
             GetOrbitalRedistributionWorldDeltaForDiagnostics());
-        // #endregion
         AtomPoseDirectionDebugLog.LogBondBreakOrbitalPose(
             "capture",
             "H-break-capture",
@@ -1640,6 +1423,44 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             bondOrbitalWorldRot,
             userDragBondCylinderBreak,
             instantRedistributionForDestroyPartner);
+
+        // π break: remove the broken row axis; any remaining π slots become the single source for redistribution alignment.
+        if (breakBondRowIndex > 0 && atomA != null && atomB != null)
+        {
+            int bid = atomB.GetInstanceID();
+            var aSlots = atomA.PiPOrbitalDirectionSlots;
+            int effectiveRemovedRow = breakBondRowIndex;
+            bool hasRequestedRow = false;
+            int highestCommittedRow = 0;
+            for (int i = 0; i < aSlots.Count; i++)
+            {
+                var s = aSlots[i];
+                if (s.Partner == null || s.Partner.GetInstanceID() != bid)
+                    continue;
+                if (s.LineIndex == breakBondRowIndex)
+                    hasRequestedRow = true;
+                if (s.LineIndex > highestCommittedRow)
+                    highestCommittedRow = s.LineIndex;
+            }
+            // If bond row index and stored slot row diverge, remove the highest committed row as the broken π slot.
+            if (!hasRequestedRow && highestCommittedRow > 0)
+                effectiveRemovedRow = highestCommittedRow;
+            atomA.RemovePiPOrbitalDirectionsForPartnerLine(atomB, effectiveRemovedRow);
+            atomB.RemovePiPOrbitalDirectionsForPartnerLine(atomA, effectiveRemovedRow);
+        }
+
+        // Clear cached perspective π axis for this pair so re-formation does not reuse stale pre-break orientation.
+        cachedPerspectivePiAxisWorld = null;
+        if (atomA != null && atomB != null)
+        {
+            foreach (var cb in atomA.CovalentBonds)
+            {
+                if (cb == null) continue;
+                var other = cb.AtomA == atomA ? cb.AtomB : cb.AtomA;
+                if (other != atomB) continue;
+                cb.cachedPerspectivePiAxisWorld = null;
+            }
+        }
 
         atomA?.UnregisterBond(this);
         atomB?.UnregisterBond(this);
@@ -1665,26 +1486,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         var slotA = returnOrbitalTo.GetSlotForNewOrbital(dirToOther, orbital);
         orbital.transform.SetParent(returnOrbitalTo.transform);
         orbital.transform.localScale = Vector3.one * 0.6f;
-        // #region agent log
-        {
-            Vector3 slotWorld = returnOrbitalTo.transform.TransformPoint(slotA.position);
-            float distNucToSlot = Vector3.Distance(returnOrbitalTo.transform.position, slotWorld);
-            float distNucToCap = Vector3.Distance(returnOrbitalTo.transform.position, bondOrbitalWorldPos);
-            float deltaSlotVsCap = Vector3.Distance(slotWorld, bondOrbitalWorldPos);
-            ProjectAgentDebugLog.AppendDebugModeNdjson(
-                "debug-446955.log",
-                "446955",
-                "H2",
-                "CovalentBond.cs:BreakBond",
-                "pi_break_slotA_vs_captured_world",
-                "{"
-                + "\"bondId\":" + GetInstanceID().ToString()
-                + ",\"distNucToSlotWorld\":" + ProjectAgentDebugLog.JsonFloatInvariant(distNucToSlot)
-                + ",\"distNucToCaptureWorld\":" + ProjectAgentDebugLog.JsonFloatInvariant(distNucToCap)
-                + ",\"distSlotWorldToCaptureWorld\":" + ProjectAgentDebugLog.JsonFloatInvariant(deltaSlotVsCap)
-                + "}",
-                "pre-fix");
-        }
         ElectronOrbitalFunction newOrbital;
         var dirToReturn = (returnOrbitalTo.transform.position - otherAtom.transform.position).normalized;
         if (dirToReturn.sqrMagnitude < 0.01f) dirToReturn = Vector3.left;
@@ -1719,7 +1520,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             otherAtom.BondOrbital(newOrbital);
         }
 
-        // #region agent log
         AtomPoseDirectionDebugLog.LogBondBreakOtherSideSlotPick(
             "post_slot_pick_pre_world_apply",
             GetInstanceID(),
@@ -1738,7 +1538,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             bondOrbitalWorldRot,
             slotB.rotation,
             orbitalRotationFlipped);
-        // #endregion
 
         if (fadeOrbForBreak != null && fadeOrbForBreak != orbital)
             Destroy(fadeOrbForBreak.gameObject);
@@ -1763,27 +1562,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbital.transform.SetPositionAndRotation(bondOrbitalWorldPos, bondOrbitalWorldRot);
             newOrbital.transform.SetPositionAndRotation(bondOrbitalWorldPos, bondOrbitalWorldRot);
         }
-        // #region agent log
-        if (breakBondRowIndex > 0 && returnOrbitalTo != null && orbital != null)
-        {
-            float dOrbPost = Vector3.Distance(returnOrbitalTo.transform.position, orbital.transform.position);
-            float dNewPost = otherAtom != null && newOrbital != null
-                ? Vector3.Distance(otherAtom.transform.position, newOrbital.transform.position)
-                : -1f;
-            ProjectAgentDebugLog.AppendDebugModeNdjson(
-                "debug-446955.log",
-                "446955",
-                "H-verify",
-                "CovalentBond.cs:BreakBond",
-                "pi_break_post_slot_local_apply",
-                "{"
-                + "\"breakBondRowIndex\":" + breakBondRowIndex.ToString()
-                + ",\"distNucToOrbitalCenter\":" + ProjectAgentDebugLog.JsonFloatInvariant(dOrbPost)
-                + ",\"distNucToNewOrbitalCenter\":" + ProjectAgentDebugLog.JsonFloatInvariant(dNewPost)
-                + "}",
-                "post-fix");
-        }
-        // #endregion
         AtomPoseDirectionDebugLog.LogBondBreakOrbitalPose(
             "after_world_apply",
             "H-break-apply",
@@ -1796,7 +1574,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             bondOrbitalWorldRot,
             userDragBondCylinderBreak,
             instantRedistributionForDestroyPartner);
-        // #region agent log
         AtomPoseDirectionDebugLog.LogBondBreakOtherSideOverwriteVsChosenSlot(
             "after_world_apply",
             GetInstanceID(),
@@ -1804,7 +1581,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             returnOrbitalTo,
             newOrbital,
             slotB.rotation);
-        // #endregion
 
         atomA?.RefreshCharge();
         atomB?.RefreshCharge();
@@ -1899,6 +1675,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             OrbitalRedistribution.RedistributionAnimation animA = null;
             OrbitalRedistribution.RedistributionAnimation animB = null;
             bool applySecondaryFragmentRedistribution = false;
+            int? piPOrbitalSlotLineToRemoveAfterRedistribution = null;
             AtomFunction cyclicSigmaBreakRecipient = null;
             AtomFunction cyclicSigmaBreakPartner = null;
             ElectronOrbitalFunction cyclicSigmaBreakAntiRecipient = null;
@@ -1944,7 +1721,14 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     : returnOrbitalTo;
                 AtomFunction partner = heavy == atomA ? atomB : atomA;
                 var antiHeavy = heavy == atomA ? antiGuideA : antiGuideB;
-                animA = OrbitalRedistribution.BuildOrbitalRedistribution(heavy, partner, null, antiHeavy, isBondingEvent: false);
+
+                animA = OrbitalRedistribution.BuildOrbitalRedistribution(
+                    heavy,
+                    partner,
+                    null,
+                    antiHeavy,
+                    isBondingEvent: false,
+                    cyclicContext: null);
                 applySecondaryFragmentRedistribution = false;
             }
 
@@ -1964,7 +1748,12 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             }
 
             atomA.StartCoroutine(CoLerpBondBreakRedistributionFromAnimations(
-                animA, animB, applySecondaryFragmentRedistribution, FinishBreakBondTail, cyclicChainAtomAnim));
+                animA,
+                animB,
+                applySecondaryFragmentRedistribution,
+                FinishBreakBondTail,
+                cyclicChainAtomAnim,
+                piPOrbitalSlotLineToRemoveAfterRedistribution));
             return;
         }
 
@@ -2078,7 +1867,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         global::OrbitalRedistribution.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
         yield return StartCoroutine(CoLerpBondBreakRedistributionFromAnimations(
-            animPrimary, animSecondary, applySecondary, onComplete, chainAnim));
+            animPrimary, animSecondary, applySecondary, onComplete, chainAnim, piSlotLineToRemoveAfterRedistribution: null));
     }
 
     /// <summary>
@@ -2089,7 +1878,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         global::OrbitalRedistribution.RedistributionAnimation animSecondary,
         bool applySecondary,
         Action onComplete,
-        global::OrbitalRedistribution.CyclicSigmaChainAtomAnimation cyclicChainAtomAnim = null)
+        global::OrbitalRedistribution.CyclicSigmaChainAtomAnimation cyclicChainAtomAnim = null,
+        int? piSlotLineToRemoveAfterRedistribution = null)
     {
         if (atomA == null || atomB == null)
         {
@@ -2125,6 +1915,13 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         atomA.RefreshCharge();
         atomB.RefreshCharge();
         AtomFunction.SetupGlobalIgnoreCollisions();
+
+        if (piSlotLineToRemoveAfterRedistribution.HasValue)
+        {
+            int li = piSlotLineToRemoveAfterRedistribution.Value;
+            atomA.RemovePiPOrbitalDirectionsForPartnerLine(atomB, li);
+            atomB.RemovePiPOrbitalDirectionsForPartnerLine(atomA, li);
+        }
 
         onComplete?.Invoke();
     }

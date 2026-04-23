@@ -9,8 +9,8 @@ public static class OrbitalRedistribution
 {
     /// <summary>
     /// π drag phase 1: world-space normal of the <b>non-guide</b> atom’s aligned trigonal VSEPR template plane from the
-    /// same <see cref="BuildOrbitalRedistribution"/> call that builds the phase-1 animation (see
-    /// <c>formingPiPrecursorAlignTrigonalPartnerPlane</c>). Cleared by <see cref="ClearPiPhase1PrecursorTrigonalTemplatePlane"/>.
+    /// same <see cref="BuildOrbitalRedistribution"/> call that builds the phase-1 animation when that atom has
+    /// <see cref="TryGetPOrbitalAxisWorldForTrigonalAlign"/>. Cleared by <see cref="ClearPiPhase1PrecursorTrigonalTemplatePlane"/>.
     /// </summary>
     public static Vector3? PiPhase1PrecursorTrigonalPlaneNormalWorld { get; private set; }
 
@@ -43,14 +43,13 @@ public static class OrbitalRedistribution
     static void TryRecordPiPhase1PrecursorTrigonalTemplatePlane(
         AtomFunction nonGuideAtom,
         AtomFunction guideAtom,
-        List<Vector3> alignedTemplateLocal,
-        bool formingPiPrecursorAlignTrigonalPartnerPlane)
+        List<Vector3> alignedTemplateLocal)
     {
-        if (!formingPiPrecursorAlignTrigonalPartnerPlane
-            || nonGuideAtom == null
+        if (nonGuideAtom == null
             || guideAtom == null
             || alignedTemplateLocal == null
-            || alignedTemplateLocal.Count < 3)
+            || alignedTemplateLocal.Count < 3
+            || !TryGetPOrbitalAxisWorldForTrigonalAlign(nonGuideAtom, guideAtom, out _))
             return;
 
         Vector3 nLocal = Vector3.Cross(alignedTemplateLocal[0], alignedTemplateLocal[1]);
@@ -857,6 +856,114 @@ public static class OrbitalRedistribution
         return true;
     }
 
+    /// <summary>
+    /// Returns whether the currently selected guide group (same selector as redistribution) lies on the OP path.
+    /// Used by π phase-1 to decide whether guide-atom redistribution should run now or fall back to legacy phase-3.
+    /// </summary>
+    public static bool IsCurrentGuideGroupOnOperationPath(
+        AtomFunction atom,
+        AtomFunction guideAtom,
+        ElectronOrbitalFunction atomOrbitalOp,
+        ElectronOrbitalFunction guideOrbitalPredetermined = null,
+        bool isBondingEvent = true)
+    {
+        if (atom == null || atomOrbitalOp == null)
+            return false;
+
+        var bondingGroups = new List<GroupEntry>();
+        foreach (var cb in atom.CovalentBonds)
+        {
+            if (cb == null) continue;
+            var orb = cb.Orbital;
+            if (orb == null || !cb.IsSigmaBondLine()) continue;
+            Vector3 dir = orb.transform.position - atom.transform.position;
+            float radius = dir.magnitude;
+            bondingGroups.Add(new GroupEntry
+            {
+                Kind = "bond",
+                Bond = cb,
+                Orbital = orb,
+                MassWeight = ComputeBondGroupMassWeight(atom, cb),
+                CurrentDirWorld = dir.sqrMagnitude > 1e-12f ? dir.normalized : Vector3.right,
+                Radius = radius > 1e-5f ? radius : atom.BondRadius
+            });
+        }
+
+        var nonbondingOccupied = new List<GroupEntry>();
+        var emptyOrbitals = new List<GroupEntry>();
+        foreach (var orb in atom.BondedOrbitals)
+        {
+            if (orb == null)
+                continue;
+
+            bool inSigmaBondGroup = false;
+            for (int bi = 0; bi < bondingGroups.Count; bi++)
+            {
+                if (bondingGroups[bi] != null && ReferenceEquals(bondingGroups[bi].Orbital, orb))
+                {
+                    inSigmaBondGroup = true;
+                    break;
+                }
+            }
+            if (inSigmaBondGroup)
+                continue;
+
+            bool incipientTrackedSigmaOp = isBondingEvent
+                && ReferenceEquals(orb, atomOrbitalOp)
+                && orb.ElectronCount == 0;
+            if (orb.Bond != null && !incipientTrackedSigmaOp)
+                continue;
+            if (orb.transform.parent != atom.transform
+                && !(isBondingEvent && ReferenceEquals(orb, atomOrbitalOp)))
+                continue;
+
+            var row = new GroupEntry
+            {
+                Kind = "nonbond",
+                Orbital = orb,
+                MassWeight = Mathf.Max(1e-3f, ElectronRedistributionGuide.GetStandardAtomicWeight(atom.AtomicNumber)),
+                CurrentDirWorld = (orb.transform.position - atom.transform.position).normalized,
+                Radius = (orb.transform.position - atom.transform.position).magnitude
+            };
+            if (orb.ElectronCount > 0) nonbondingOccupied.Add(row);
+            else emptyOrbitals.Add(row);
+        }
+
+        ApplyEventSpecificGroupAdjustments(
+            atom,
+            guideAtom,
+            atomOrbitalOp,
+            nonbondingOccupied,
+            emptyOrbitals,
+            isBondingEvent);
+
+        GroupEntry guideGroup = GetGuideGroup(
+            guideOrbitalPredetermined,
+            bondingGroups,
+            nonbondingOccupied,
+            emptyOrbitals,
+            atomOrbitalOp);
+        bool isOpPath = IsOperationPathGroup(atom, guideGroup, atomOrbitalOp);
+        if (!isOpPath
+            && isBondingEvent
+            && atom != null
+            && guideAtom != null
+            && atom.GetBondsTo(guideAtom) > 0
+            && atomOrbitalOp != null
+            && atomOrbitalOp.Bond == null
+            && guideGroup != null
+            && guideGroup.Bond != null)
+        {
+            AtomFunction groupOther = guideGroup.Bond.AtomA == atom ? guideGroup.Bond.AtomB : guideGroup.Bond.AtomA;
+            if (groupOther == guideAtom)
+            {
+                // π prebond: OP is an unbonded lobe, but the selected σ-to-guide group is the operation path domain.
+                isOpPath = true;
+            }
+        }
+                return isOpPath;
+    }
+
     sealed class GroupEntry
     {
         public string Kind;
@@ -930,6 +1037,9 @@ public static class OrbitalRedistribution
             if (child == null) return;
             childAnimations.Add(child);
         }
+
+        public int AssignmentCount => assignments != null ? assignments.Count : 0;
+        public int ChildAnimationCount => childAnimations != null ? childAnimations.Count : 0;
 
         public void Apply(float smoothS)
         {
@@ -1017,9 +1127,93 @@ public static class OrbitalRedistribution
     }
 
     /// <summary>
+    /// π phase-1 trigonal + forced template: VSEPR perm can assign OP to template index 2 while index 1 is the shorter in-plane
+    /// rotation from the current lobe. Swap perpendicular template slots 1↔2 and remap perm indices so OP targets the closer ±p slot.
+    /// </summary>
+    static bool TryRemapPiPrecursorTrigonalTemplateAndPermForOpCloserPerpendicularSlot(
+        AtomFunction atom,
+        ElectronOrbitalFunction atomOrbitalOp,
+        List<GroupEntry> groupsForMatching,
+        List<Vector3> alignedTemplate,
+        int[] bestPerm,
+        Dictionary<int, int> cyclicAssignmentFix)
+    {
+        if (atom == null || atomOrbitalOp == null || groupsForMatching == null || alignedTemplate == null || bestPerm == null)
+            return false;
+        if (alignedTemplate.Count != 3)
+            return false;
+
+        int opGroupIdx = -1;
+        for (int i = 0; i < groupsForMatching.Count && i < bestPerm.Length; i++)
+        {
+            GroupEntry g = groupsForMatching[i];
+            if (g != null && ReferenceEquals(g.Orbital, atomOrbitalOp))
+            {
+                opGroupIdx = i;
+                break;
+            }
+        }
+        if (opGroupIdx < 0)
+            return false;
+
+        int ti = bestPerm[opGroupIdx];
+        if (ti != 1 && ti != 2)
+            return false;
+
+        Vector3 sigmaLocal = alignedTemplate[0];
+        if (sigmaLocal.sqrMagnitude < 1e-14f)
+            return false;
+        sigmaLocal.Normalize();
+        Vector3 t1 = alignedTemplate[1].normalized;
+        Vector3 t2 = alignedTemplate[2].normalized;
+
+        Vector3 curW = groupsForMatching[opGroupIdx].CurrentDirWorld;
+        if (curW.sqrMagnitude < 1e-18f)
+            curW = OrbitalAngleUtility.GetOrbitalDirectionWorld(atomOrbitalOp.transform);
+        curW.Normalize();
+
+        Vector3 curL = atom.transform.InverseTransformDirection(curW);
+        Vector3 opInPlane = Vector3.ProjectOnPlane(curL, sigmaLocal);
+        if (opInPlane.sqrMagnitude < 1e-14f)
+            return false;
+        opInPlane.Normalize();
+
+        float dot1 = Vector3.Dot(opInPlane, t1);
+        float dot2 = Vector3.Dot(opInPlane, t2);
+        int closerSlot = dot1 >= dot2 ? 1 : 2;
+        if (ti == closerSlot)
+            return false;
+
+        (alignedTemplate[1], alignedTemplate[2]) = (alignedTemplate[2], alignedTemplate[1]);
+        for (int j = 0; j < bestPerm.Length; j++)
+        {
+            if (bestPerm[j] == 1)
+                bestPerm[j] = 2;
+            else if (bestPerm[j] == 2)
+                bestPerm[j] = 1;
+        }
+        if (cyclicAssignmentFix != null && cyclicAssignmentFix.Count > 0)
+        {
+            var keys = new List<int>(cyclicAssignmentFix.Keys);
+            for (int ki = 0; ki < keys.Count; ki++)
+            {
+                int k = keys[ki];
+                if (!cyclicAssignmentFix.TryGetValue(k, out int v))
+                    continue;
+                if (v == 1)
+                    cyclicAssignmentFix[k] = 2;
+                else if (v == 2)
+                    cyclicAssignmentFix[k] = 1;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
     /// Build redistribution plan inputs for non-guide phase 1. Empty op orbital (0e) is counted as occupied nonbonding for VSEPR group count.
-    /// When <paramref name="formingPiPrecursorAlignTrigonalPartnerPlane"/> is true (π drag phase 1 only), coplanar trigonal alignment
-    /// uses the guide’s σ-plane even though the π <see cref="CovalentBond"/> line is not registered yet.
+    /// When <see cref="TryGetPOrbitalAxisWorldForTrigonalAlign"/> finds a p axis on <paramref name="atom"/> (stored
+    /// <see cref="AtomFunction.PiPOrbitalDirectionSlots"/> and/or existing π rows), coplanar trigonal alignment twists the template
+    /// ⟂ that axis; otherwise the guide’s σ-plane is used when a π edge already exists.
     /// </summary>
     public static RedistributionAnimation BuildOrbitalRedistribution(
         AtomFunction atom,
@@ -1031,8 +1225,7 @@ public static class OrbitalRedistribution
         System.Func<float, Vector3> atomMoveAnimation = null,
         HashSet<AtomFunction> visitedAtoms = null,
         bool isBondingEvent = true,
-        CyclicRedistributionContext cyclicContext = null,
-        bool formingPiPrecursorAlignTrigonalPartnerPlane = false)
+        CyclicRedistributionContext cyclicContext = null)
     {
         if (atom == null) return new RedistributionAnimation(null);
         _ = atomMoveAnimation;
@@ -1180,21 +1373,6 @@ public static class OrbitalRedistribution
                 ? chainBreakContributorDirectionsLocal
                 : BuildFinalDirectionsTemplate(nVseprGroup);
 
-        if (TryHandleBreakingReleasedEmptySpecialCase(
-            atom,
-            atomOrbitalOp,
-            isBondingEvent,
-            bondingGroups,
-            groupsForMatching,
-            nVseprGroup,
-            guideOrbitalPredetermined,
-            atomMoveAnimation,
-            visitedAtoms,
-            out var breakingSpecialAnimation))
-        {
-            return breakingSpecialAnimation;
-        }
-
         bool usedProvidedGuideDirection = finalDirectionForGuideOrbital.sqrMagnitude > 1e-12f;
         Vector3 guideDirLocal = usedProvidedGuideDirection
             ? finalDirectionForGuideOrbital.normalized
@@ -1220,14 +1398,12 @@ public static class OrbitalRedistribution
                 out snapTipPlaneTplCandidate);
         }
 
-        bool usedSnapTipPlaneTrigonalTemplateApplied = false;
         List<Vector3> alignedTemplate;
         if (usePrecookedDirectionTemplate)
             alignedTemplate = new List<Vector3>(finalDirectionsTemplate);
         else if (snapBuildOk && snapTipPlaneTplCandidate != null && snapTipPlaneTplCandidate.Count == 3)
         {
             alignedTemplate = snapTipPlaneTplCandidate;
-            usedSnapTipPlaneTrigonalTemplateApplied = true;
         }
         else
             alignedTemplate = AlignFinalDirectionsTemplateToGuide(
@@ -1236,13 +1412,11 @@ public static class OrbitalRedistribution
                 atom,
                 guideAtom,
                 nVseprGroup,
-                staggerRefInPlaneNonGuideLocalFromChainTargets: null,
-                formingPiPrecursorAlignTrigonalPartnerPlane: formingPiPrecursorAlignTrigonalPartnerPlane);
+                staggerRefInPlaneNonGuideLocalFromChainTargets: null);
         TryRecordPiPhase1PrecursorTrigonalTemplatePlane(
             atom,
             guideAtom,
-            alignedTemplate,
-            formingPiPrecursorAlignTrigonalPartnerPlane);
+            alignedTemplate);
         GroupEntry guideGroupForMatching = usePrecookedDirectionTemplate ? null : guideGroup;
 
         int[] bestPerm = FindBestCombinationVSEPRGroupToFinalDirection(
@@ -1254,36 +1428,7 @@ public static class OrbitalRedistribution
             disableLegacyGuidePreassign: usePrecookedDirectionTemplate);
         TryCaptureDebugTemplate(atom, alignedTemplate, groupsForMatching, bestPerm);
         var finalDirectionsEmptyOrbital = BuildFinalDirectionsEmptyOrbitalTemplate(alignedTemplate);
-        Debug.Log("[σ-p1-redist] buildPlan atom=" + atom.GetInstanceID() + " Z=" + atom.AtomicNumber
-            + " bondGroups=" + bondingGroups.Count + " nonbondOcc=" + nonbondingOccupied.Count + " emptyOrbs=" + emptyOrbitals.Count
-            + " nVsepr=" + nVseprGroup + " cyclicTpl=" + (hasCyclicTemplate ? "1" : "0") + " chainTpl=" + (hasChainBreakContributorTemplate ? "1" : "0")
-            + " usedProvidedGuideDir=" + (finalDirectionForGuideOrbital.sqrMagnitude > 1e-12f ? "1" : "0")
-            + " snapTipPlaneTpl=" + (usedSnapTipPlaneTrigonalTemplateApplied ? "1" : "0")
-            + " emptyTplDirs=" + (finalDirectionsEmptyOrbital != null ? finalDirectionsEmptyOrbital.Count.ToString() : "0")
-            + " permLen=" + (bestPerm != null ? bestPerm.Length.ToString() : "0"));
-        // #region agent log
-        ProjectAgentDebugLog.AppendDebugModeNdjson(
-            "debug-115e1e.log",
-            "115e1e",
-            "H_build",
-            "OrbitalRedistribution.BuildOrbitalRedistribution",
-            "buildPlan",
-            "{"
-            + "\"atomId\":" + atom.GetInstanceID().ToString()
-            + ",\"atomicNumber\":" + atom.AtomicNumber.ToString()
-            + ",\"bondGroups\":" + bondingGroups.Count.ToString()
-            + ",\"nonbondOcc\":" + nonbondingOccupied.Count.ToString()
-            + ",\"emptyOrbs\":" + emptyOrbitals.Count.ToString()
-            + ",\"nVsepr\":" + nVseprGroup.ToString()
-            + ",\"cyclicTpl\":" + (hasCyclicTemplate ? "1" : "0")
-            + ",\"chainTpl\":" + (hasChainBreakContributorTemplate ? "1" : "0")
-            + ",\"usedProvidedGuideDir\":" + (finalDirectionForGuideOrbital.sqrMagnitude > 1e-12f ? "1" : "0")
-            + ",\"snapTipPlaneTpl\":" + (usedSnapTipPlaneTrigonalTemplateApplied ? "1" : "0")
-            + ",\"emptyTplDirs\":" + (finalDirectionsEmptyOrbital != null ? finalDirectionsEmptyOrbital.Count.ToString() : "0")
-            + ",\"permLen\":" + (bestPerm != null ? bestPerm.Length.ToString() : "0")
-            + "}",
-            "post-fix");
-        // #endregion
+
         var animation = BuildRedistributionAnimation(
             groupsForMatching,
             emptyOrbitals,
@@ -1502,23 +1647,12 @@ public static class OrbitalRedistribution
                     }
                     startNbrDir = (adjacentAtom.transform.position - atom.transform.position).normalized;
                     bool isOpPath = IsOperationPathGroup(atom, g, atomOrbitalOp);
-                    if (!isOpPath)
+                    bool suppressNonOpChildRecursionForUnbondedOp =
+                        isBondingEvent
+                        && atomOrbitalOp != null
+                        && atomOrbitalOp.Bond == null;
+                    if (!isOpPath && !suppressNonOpChildRecursionForUnbondedOp)
                     {
-                        Debug.Log("[σ-p1-redist] childRedistRecursive nonOpPath parentAtom=" + atom.GetInstanceID() + " adjacent=" + adjacentAtom.GetInstanceID() + " templateIdx=" + ti);
-                        // #region agent log
-                        ProjectAgentDebugLog.AppendDebugModeNdjson(
-                            "debug-115e1e.log",
-                            "115e1e",
-                            "H_childRec",
-                            "OrbitalRedistribution.BuildRedistributionAnimation",
-                            "childRedistRecursive_nonOpPath",
-                            "{"
-                            + "\"parentAtomId\":" + atom.GetInstanceID().ToString()
-                            + ",\"adjacentId\":" + adjacentAtom.GetInstanceID().ToString()
-                            + ",\"templateIdx\":" + ti.ToString()
-                            + "}",
-                            "pre-fix");
-                        // #endregion
                         Vector3 childGuideDirWorld = atom.transform.TransformDirection((-alignedTemplate[ti]).normalized);
                         Vector3 childGuideDirLocal = adjacentAtom.transform.InverseTransformDirection(childGuideDirWorld).normalized;
                         var childAnim = BuildOrbitalRedistribution(
@@ -1544,25 +1678,6 @@ public static class OrbitalRedistribution
                 {
                     Vector3 tgtW = atom.transform.TransformDirection(alignedTemplate[ti].normalized);
                     float bindCorridorDeg = Vector3.Angle(tgtW, startNbrDir);
-                    if (bindCorridorDeg < 32f)
-                    {
-                        Debug.Log("[σ-p1-redist] bondTargetNearInternuc atom=" + atom.GetInstanceID() + " bond=" + (g.Bond != null ? g.Bond.GetInstanceID().ToString() : "0") + " angleDeg=" + bindCorridorDeg.ToString("F1") + " ti=" + ti);
-                        // #region agent log
-                        ProjectAgentDebugLog.AppendDebugModeNdjson(
-                            "debug-115e1e.log",
-                            "115e1e",
-                            "H_nearInternuc",
-                            "OrbitalRedistribution.BuildRedistributionAnimation",
-                            "bondTargetNearInternuc",
-                            "{"
-                            + "\"atomId\":" + atom.GetInstanceID().ToString()
-                            + ",\"bondId\":" + (g.Bond != null ? g.Bond.GetInstanceID().ToString() : "0")
-                            + ",\"angleDeg\":" + ProjectAgentDebugLog.JsonFloatInvariant(bindCorridorDeg)
-                            + ",\"templateIdx\":" + ti.ToString()
-                            + "}",
-                            "pre-fix");
-                        // #endregion
-                    }
                     anim.AddOrbitalTarget(
                         g.Orbital,
                         g.CurrentDirWorld,
@@ -1650,20 +1765,6 @@ public static class OrbitalRedistribution
         if (remainingDirs.Count == 0 && finalDirectionsEmptyOrbital != null && finalDirectionsEmptyOrbital.Count > 0)
         {
             Debug.Log("[σ-p1-empty] allEmptyDirsFilteredOverlapOccupied atom=" + atom.GetInstanceID() + " occupiedSlots=" + occupiedNonEmpty.Count + " candDirs=" + finalDirectionsEmptyOrbital.Count);
-            // #region agent log
-            ProjectAgentDebugLog.AppendDebugModeNdjson(
-                "debug-115e1e.log",
-                "115e1e",
-                "H_emptyFilter",
-                "OrbitalRedistribution.AppendEmptyOrbitalAssignments",
-                "allEmptyDirsFilteredOverlapOccupied",
-                "{"
-                + "\"atomId\":" + atom.GetInstanceID().ToString()
-                + ",\"occupiedSlots\":" + occupiedNonEmpty.Count.ToString()
-                + ",\"candDirs\":" + finalDirectionsEmptyOrbital.Count.ToString()
-                + "}",
-                "pre-fix");
-            // #endregion
         }
         if (remainingDirs.Count == 0) return;
 
@@ -1678,7 +1779,12 @@ public static class OrbitalRedistribution
                 && remainingEmpty[0]?.Orbital != null
                 && ReferenceEquals(remainingEmpty[0].Orbital, bondBreakPinEmptyToStartTipLocal))
             {
-                Vector3 curLocal = atom.transform.InverseTransformDirection(remainingEmpty[0].CurrentDirWorld).normalized;
+                Vector3 curWorld = OrbitalAngleUtility.GetOrbitalDirectionWorld(remainingEmpty[0].Orbital.transform);
+                if (curWorld.sqrMagnitude < 1e-12f)
+                    curWorld = remainingEmpty[0].CurrentDirWorld.sqrMagnitude > 1e-18f
+                        ? remainingEmpty[0].CurrentDirWorld.normalized
+                        : Vector3.right;
+                Vector3 curLocal = atom.transform.InverseTransformDirection(curWorld).normalized;
                 dirIdx = 0;
                 float bestDot = float.NegativeInfinity;
                 for (int i = 0; i < remainingDirs.Count; i++)
@@ -2595,7 +2701,9 @@ public static class OrbitalRedistribution
             break;
         }
         if (opEmptyIdx < 0)
-            return;
+        {
+                        return;
+        }
 
         bool addOpEmptyAsOccupiedForBonding = isBondingEvent && !isPiBondFormationEvent;
 
@@ -2619,7 +2727,7 @@ public static class OrbitalRedistribution
                 ? "empty-op-preserved-pi-bonding"
                 : "empty-op-released-breaking";
         }
-    }
+            }
 
     static float ComputeBondGroupMassWeight(AtomFunction center, CovalentBond bond)
     {
@@ -2648,9 +2756,9 @@ public static class OrbitalRedistribution
 
     /// <summary>
     /// σ bond lines + occupied nonbonding domains (same basis as <see cref="BuildOrbitalRedistribution"/> group lists,
-    /// without event-specific empty-op reclassification). Used for tetrahedral–tetrahedral stagger checks.
+    /// without event-specific empty-op reclassification). Used for tetrahedral–tetrahedral stagger checks and π-break trigonal gating.
     /// </summary>
-    static int CountVseprGroupsForAtom(AtomFunction a)
+    internal static int CountVseprGroupsForAtom(AtomFunction a)
     {
         if (a == null) return 0;
         int bonds = 0;
@@ -2758,6 +2866,103 @@ public static class OrbitalRedistribution
         return false;
     }
 
+    const float POrbitalAxisParallelDot = 0.92f;
+
+    static void AddDistinctUnitPOrbitalAxis(List<Vector3> bucket, Vector3 unitOrAny)
+    {
+        if (bucket == null || unitOrAny.sqrMagnitude < 1e-18f)
+            return;
+        Vector3 u = unitOrAny.normalized;
+        for (int i = 0; i < bucket.Count; i++)
+        {
+            if (Mathf.Abs(Vector3.Dot(bucket[i], u)) > POrbitalAxisParallelDot)
+                return;
+        }
+        bucket.Add(u);
+    }
+
+    static void CollectDistinctPOrbitalAxesFromAtomStored(AtomFunction atom, List<Vector3> bucket)
+    {
+        if (atom == null || bucket == null)
+            return;
+        IReadOnlyList<AtomFunction.PiPOrbitalDirectionSlot> ro = atom.PiPOrbitalDirectionSlots;
+        if (ro == null)
+            return;
+        for (int i = 0; i < ro.Count; i++)
+            AddDistinctUnitPOrbitalAxis(bucket, ro[i].PlusZWorld);
+    }
+
+    static void CollectDistinctPOrbitalAxesFromExistingPiBonds(AtomFunction atom, List<Vector3> bucket)
+    {
+        if (atom == null || bucket == null)
+            return;
+        foreach (var cb in atom.CovalentBonds)
+        {
+            if (cb == null || cb.IsSigmaBondLine())
+                continue;
+            AtomFunction other = atom.GetPartnerAtomOnBond(cb);
+            if (other == null)
+                continue;
+            int bondCount = atom.GetBondsTo(other);
+            int lineIndex = cb.GetBondIndex();
+            if (lineIndex <= 0)
+                continue;
+            if (!cb.TryGetPerspectivePiLobeEndpointsForLine(lineIndex, bondCount, out var le))
+                continue;
+            Vector3 posA = cb.AtomA != null ? cb.AtomA.transform.position : Vector3.zero;
+            Vector3 posB = cb.AtomB != null ? cb.AtomB.transform.position : Vector3.zero;
+            float da = (le.positiveA - posA).sqrMagnitude;
+            float db = (le.positiveA - posB).sqrMagnitude;
+            Vector3 plusDir = da <= db ? le.positiveA - posA : le.positiveA - posB;
+            if (plusDir.sqrMagnitude < 1e-14f)
+                continue;
+            AddDistinctUnitPOrbitalAxis(bucket, plusDir);
+        }
+    }
+
+    /// <summary>
+    /// World p axis used to orient a trigonal template plane (plane ⟂ axis): stored <see cref="AtomFunction.PiPOrbitalDirectionSlots"/>
+    /// plus directions from existing π <see cref="CovalentBond"/> rows on <paramref name="pivotAtom"/> (e.g. remaining π after a π break).
+    /// When several non-parallel axes exist, picks the one least aligned with the pivot→guide internuclear direction.
+    /// </summary>
+    static bool TryGetPOrbitalAxisWorldForTrigonalAlign(
+        AtomFunction pivotAtom,
+        AtomFunction guideAtom,
+        out Vector3 axisWorld)
+    {
+        axisWorld = default;
+        if (pivotAtom == null)
+            return false;
+
+        var bucket = new List<Vector3>(8);
+        CollectDistinctPOrbitalAxesFromAtomStored(pivotAtom, bucket);
+        CollectDistinctPOrbitalAxesFromExistingPiBonds(pivotAtom, bucket);
+        if (bucket.Count == 0)
+            return false;
+
+        Vector3 sigmaW = guideAtom != null
+            ? (guideAtom.transform.position - pivotAtom.transform.position)
+            : Vector3.forward;
+        if (sigmaW.sqrMagnitude < 1e-16f)
+            sigmaW = Vector3.forward;
+        sigmaW.Normalize();
+
+        int bestIdx = 0;
+        float bestAbsDot = float.MaxValue;
+        for (int i = 0; i < bucket.Count; i++)
+        {
+            float ad = Mathf.Abs(Vector3.Dot(bucket[i], sigmaW));
+            if (ad < bestAbsDot - 1e-6f)
+            {
+                bestAbsDot = ad;
+                bestIdx = i;
+            }
+        }
+
+        axisWorld = bucket[bestIdx];
+        return axisWorld.sqrMagnitude > 1e-18f;
+    }
+
     /// <summary>
     /// Maps canonical template vertex 0 onto <paramref name="guideDirLocal"/>, then when both centers are tetrahedral,
     /// rotates around that axis so the template is staggered (60°) relative to the guide substituent clock.
@@ -2770,8 +2975,7 @@ public static class OrbitalRedistribution
         AtomFunction nonGuideAtom,
         AtomFunction guideAtom,
         int nVseprGroup,
-        Vector3? staggerRefInPlaneNonGuideLocalFromChainTargets = null,
-        bool formingPiPrecursorAlignTrigonalPartnerPlane = false)
+        Vector3? staggerRefInPlaneNonGuideLocalFromChainTargets = null)
     {
         var aligned = new List<Vector3>();
         if (finalDirectionsTemplate == null || finalDirectionsTemplate.Count == 0)
@@ -2813,37 +3017,85 @@ public static class OrbitalRedistribution
         }
         else
         {
-            // Trigonal π partner (e.g. acyl C): use guide’s σ-plane as twist reference when a π edge exists, or during
-            // π formation phase 1 before CovalentBond adds the π line (<see cref="formingPiPrecursorAlignTrigonalPartnerPlane"/>).
-            bool piWithTrigonalGuide = guideAtom != null
-                && CountVseprGroupsForAtom(guideAtom) == 3
-                && finalDirectionsTemplate.Count >= 2
-                && nVseprGroup >= 3
-                && (HasPiBondBetweenAtoms(nonGuideAtom, guideAtom) || formingPiPrecursorAlignTrigonalPartnerPlane);
-
-            Vector3? refTrig = staggerRefInPlaneNonGuideLocalFromChainTargets;
-            if (!refTrig.HasValue
-                && piWithTrigonalGuide
-                && TryGetPiPartnerTrigonalPlaneRefInNonGuideLocal(nonGuideAtom, guideAtom, axisLocal, out Vector3 trigonalRefFromPartnerPlane))
-                refTrig = trigonalRefFromPartnerPlane;
-            if (!refTrig.HasValue
-                && piWithTrigonalGuide
-                && TryGetGuideTetrahedralStaggerReferenceInNonGuideLocal(
-                    nonGuideAtom, guideAtom, axisLocal, out Vector3 trigonalRefLegacy))
-                refTrig = trigonalRefLegacy;
-
-            if (refTrig.HasValue && piWithTrigonalGuide)
+            bool appliedStoredPRefTrigonalTwist = false;
+            Vector3 pAxisWorld = default;
+            bool tryGetAxis = nVseprGroup == 3
+                && finalDirectionsTemplate.Count >= 3
+                && TryGetPOrbitalAxisWorldForTrigonalAlign(nonGuideAtom, guideAtom, out pAxisWorld);
+            if (tryGetAxis)
             {
-                Vector3 trigonalRefInPlaneLocal = refTrig.Value;
-                Vector3 v1 = (qAlign * finalDirectionsTemplate[1]).normalized;
-                Vector3 aLocal = Vector3.ProjectOnPlane(v1, axisLocal);
-                if (aLocal.sqrMagnitude > 1e-10f && trigonalRefInPlaneLocal.sqrMagnitude > 1e-10f)
+                Vector3 refLocal = nonGuideAtom.transform.InverseTransformDirection(pAxisWorld).normalized;
+           
+                if (refLocal.sqrMagnitude > 1e-12f)
                 {
-                    aLocal.Normalize();
-                    trigonalRefInPlaneLocal.Normalize();
-                    float eclipseToRefDeg = Vector3.SignedAngle(aLocal, trigonalRefInPlaneLocal, axisLocal);
-                    Quaternion qTwist = Quaternion.AngleAxis(eclipseToRefDeg, axisLocal);
-                    qTotal = qTwist * qAlign;
+                    Vector3 u0 = (qAlign * finalDirectionsTemplate[0]).normalized;
+                    Vector3 u1 = (qAlign * finalDirectionsTemplate[1]).normalized;
+                    Vector3 u2 = (qAlign * finalDirectionsTemplate[2]).normalized;
+                    Vector3 nCur = Vector3.Cross(u1 - u0, u2 - u0);
+                    if (nCur.sqrMagnitude < 1e-14f)
+                        nCur = Vector3.Cross(u0, u1);
+                    if (nCur.sqrMagnitude > 1e-14f)
+                    {
+                        nCur.Normalize();
+                        nCur -= axisLocal * Vector3.Dot(nCur, axisLocal);
+                        if (nCur.sqrMagnitude > 1e-14f)
+                        {
+                            nCur.Normalize();
+                            Vector3 refInPlane = Vector3.ProjectOnPlane(refLocal, axisLocal);
+                            if (refInPlane.sqrMagnitude > 1e-12f)
+                            {
+                                refInPlane.Normalize();
+                                if (Vector3.Dot(nCur, refInPlane) < 0f)
+                                    refInPlane = -refInPlane;
+                                float psiDeg = Vector3.SignedAngle(nCur, refInPlane, axisLocal);
+                                qTotal = Quaternion.AngleAxis(psiDeg, axisLocal) * qAlign;
+                                appliedStoredPRefTrigonalTwist = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!appliedStoredPRefTrigonalTwist)
+            {
+                // Trigonal π partner (e.g. acyl C): use guide’s σ-plane when a π edge already exists (otherwise p axes from
+                // <see cref="AtomFunction.PiPOrbitalDirectionSlots"/> / existing π rows drive the twist above).
+                bool hasRealPiWithGuide = guideAtom != null && HasPiBondBetweenAtoms(nonGuideAtom, guideAtom);
+                bool guideIsTrigonalByCount = guideAtom != null && CountVseprGroupsForAtom(guideAtom) == 3;
+                bool piWithTrigonalGuide = guideAtom != null
+                    && finalDirectionsTemplate.Count >= 2
+                    && nVseprGroup >= 3
+                    && hasRealPiWithGuide
+                    && guideIsTrigonalByCount;
+
+                Vector3? refTrig = staggerRefInPlaneNonGuideLocalFromChainTargets;
+                if (!refTrig.HasValue
+                    && piWithTrigonalGuide
+                    && TryGetPiPartnerTrigonalPlaneRefInNonGuideLocal(nonGuideAtom, guideAtom, axisLocal, out Vector3 trigonalRefFromPartnerPlane))
+                {
+                    refTrig = trigonalRefFromPartnerPlane;
+                }
+                if (!refTrig.HasValue
+                    && piWithTrigonalGuide
+                    && TryGetGuideTetrahedralStaggerReferenceInNonGuideLocal(
+                        nonGuideAtom, guideAtom, axisLocal, out Vector3 trigonalRefLegacy))
+                {
+                    refTrig = trigonalRefLegacy;
+                }
+
+                if (refTrig.HasValue && piWithTrigonalGuide)
+                {
+                    Vector3 trigonalRefInPlaneLocal = refTrig.Value;
+                    Vector3 v1 = (qAlign * finalDirectionsTemplate[1]).normalized;
+                    Vector3 aLocal = Vector3.ProjectOnPlane(v1, axisLocal);
+                    if (aLocal.sqrMagnitude > 1e-10f && trigonalRefInPlaneLocal.sqrMagnitude > 1e-10f)
+                    {
+                        aLocal.Normalize();
+                        trigonalRefInPlaneLocal.Normalize();
+                        float eclipseToRefDeg = Vector3.SignedAngle(aLocal, trigonalRefInPlaneLocal, axisLocal);
+                        Quaternion qTwist = Quaternion.AngleAxis(eclipseToRefDeg, axisLocal);
+                        qTotal = qTwist * qAlign;
+                    }
                 }
             }
         }
@@ -2944,17 +3196,13 @@ public static class OrbitalRedistribution
         }
         else if (entries.Count == 1)
         {
-            // Acyl C with only one heavy σ besides =O (e.g. Cα before –OH): plane = span(bond into π partner, that σ).
             nPlane = Vector3.Cross(towardNonGuideWorld, entries[0].dw);
             haveNPlane = nPlane.sqrMagnitude > 1e-14f;
         }
         else
         {
-            // e.g. nonGuide=C, guide=O: carbonyl O has no second heavy σ — use the acyl C’s σ legs other than O.
             Vector3 towardGuideFromNon = (guideAtom.transform.position - nonGuideAtom.transform.position).normalized;
-            if (towardGuideFromNon.sqrMagnitude < 1e-14f)
-                haveNPlane = false;
-            else
+            if (towardGuideFromNon.sqrMagnitude >= 1e-14f)
             {
                 var legs = new List<(Vector3 dw, int id)>(3);
                 foreach (var cb in nonGuideAtom.CovalentBonds)
