@@ -110,8 +110,10 @@ public static class ElectronRedistributionGuide
         int bondsBetweenPair = atomA.GetBondsTo(atomB);
         float massA;
         float massB;
-        if (sameMolecule && bondsBetweenPair > 0)
+        bool substituentAcrossSigmaEdge = sameMolecule && bondsBetweenPair > 0;
+        if (substituentAcrossSigmaEdge)
         {
+            // massA = Σ(weights on atomB's side of cut atomA–atomB); massB = Σ(A's side). Heavier substituent's incident atom is guide.
             massA = SumSubstituentMassThroughSigmaEdge(atomA, atomB);
             massB = SumSubstituentMassThroughSigmaEdge(atomB, atomA);
         }
@@ -128,15 +130,33 @@ public static class ElectronRedistributionGuide
             : null;
         if (massA > massB + 1e-4f)
         {
-            guideAtom = atomA;
-            nonGuideAtom = atomB;
-            resolveBranch = "massA_heavier";
+            if (substituentAcrossSigmaEdge)
+            {
+                guideAtom = atomB;
+                nonGuideAtom = atomA;
+                resolveBranch = "substituent_from_atomB_heavier";
+            }
+            else
+            {
+                guideAtom = atomA;
+                nonGuideAtom = atomB;
+                resolveBranch = "whole_molecule_atomA_heavier";
+            }
         }
         else if (massB > massA + 1e-4f)
         {
-            guideAtom = atomB;
-            nonGuideAtom = atomA;
-            resolveBranch = "massB_heavier";
+            if (substituentAcrossSigmaEdge)
+            {
+                guideAtom = atomA;
+                nonGuideAtom = atomB;
+                resolveBranch = "substituent_from_atomA_heavier";
+            }
+            else
+            {
+                guideAtom = atomB;
+                nonGuideAtom = atomA;
+                resolveBranch = "whole_molecule_atomB_heavier";
+            }
         }
         else
         {
@@ -176,7 +196,11 @@ public static class ElectronRedistributionGuide
             draggedParentAtom);
     }
 
-    /// <summary>Sum of atomic masses in the substituent beyond the σ edge (center, neighbor) — same as fragment used in σ-relax.</summary>
+    /// <summary>
+    /// Sum of atomic masses in the component containing <paramref name="sigmaNeighbor"/> when the σ edge
+    /// <c>(<paramref name="center"/>, <paramref name="sigmaNeighbor"/>)</c> is removed (same as σ-relax fragment).
+    /// Does not include <paramref name="center"/>.
+    /// </summary>
     public static float SumSubstituentMassThroughSigmaEdge(AtomFunction center, AtomFunction sigmaNeighbor)
     {
         if (center == null || sigmaNeighbor == null) return 0f;

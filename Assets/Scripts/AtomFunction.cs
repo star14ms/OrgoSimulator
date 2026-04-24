@@ -129,7 +129,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         Vector3 plusZWorld,
         Vector3 minusZWorld)
     {
-        if (partner == null || plusZWorld.sqrMagnitude < 1e-18f)
+        if (partner == null || plusZWorld.sqrMagnitude < 1e-30f || float.IsNaN(plusZWorld.sqrMagnitude))
             return;
         RemovePiPOrbitalDirectionsForPartnerLine(partner, lineIndex);
         Vector3 p = plusZWorld.normalized;

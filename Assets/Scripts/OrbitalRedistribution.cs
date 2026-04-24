@@ -857,20 +857,108 @@ public static class OrbitalRedistribution
     }
 
     /// <summary>
-    /// Returns whether the currently selected guide group (same selector as redistribution) lies on the OP path.
-    /// Used by π phase-1 to decide whether guide-atom redistribution should run now or fall back to legacy phase-3.
+    /// Same guide-group selection as π phase-1 <see cref="BuildOrbitalRedistribution"/> on <paramref name="guideAtom"/>
+    /// with <paramref name="guideOp"/> as OP and <paramref name="partnerAtom"/> as the bond partner (for π-specific group adjustments).
     /// </summary>
-    public static bool IsCurrentGuideGroupOnOperationPath(
-        AtomFunction atom,
+    public static bool TryGetGuideGroupOrbitalForPiPrebondReference(
         AtomFunction guideAtom,
-        ElectronOrbitalFunction atomOrbitalOp,
-        ElectronOrbitalFunction guideOrbitalPredetermined = null,
-        bool isBondingEvent = true)
+        AtomFunction partnerAtom,
+        ElectronOrbitalFunction guideOp,
+        out ElectronOrbitalFunction guideGroupOrbital)
     {
-        if (atom == null || atomOrbitalOp == null)
+        guideGroupOrbital = null;
+        if (guideAtom == null || guideOp == null)
             return false;
 
         var bondingGroups = new List<GroupEntry>();
+        foreach (var cb in guideAtom.CovalentBonds)
+        {
+            if (cb == null) continue;
+            var orb = cb.Orbital;
+            if (orb == null || !cb.IsSigmaBondLine()) continue;
+            Vector3 dir = orb.transform.position - guideAtom.transform.position;
+            float radius = dir.magnitude;
+            bondingGroups.Add(new GroupEntry
+            {
+                Kind = "bond",
+                Bond = cb,
+                Orbital = orb,
+                MassWeight = ComputeBondGroupMassWeight(guideAtom, cb),
+                CurrentDirWorld = dir.sqrMagnitude > 1e-12f ? dir.normalized : Vector3.right,
+                Radius = radius > 1e-5f ? radius : guideAtom.BondRadius
+            });
+        }
+
+        var nonbondingOccupied = new List<GroupEntry>();
+        var emptyOrbitals = new List<GroupEntry>();
+        foreach (var orb in guideAtom.BondedOrbitals)
+        {
+            if (orb == null)
+                continue;
+            bool inSigmaBondGroup = false;
+            for (int bi = 0; bi < bondingGroups.Count; bi++)
+            {
+                if (bondingGroups[bi] != null && ReferenceEquals(bondingGroups[bi].Orbital, orb))
+                {
+                    inSigmaBondGroup = true;
+                    break;
+                }
+            }
+            if (inSigmaBondGroup)
+                continue;
+
+            bool incipientTrackedSigmaOp = ReferenceEquals(orb, guideOp) && orb.ElectronCount == 0;
+            if (orb.Bond != null && !incipientTrackedSigmaOp)
+                continue;
+            if (orb.transform.parent != guideAtom.transform
+                && !ReferenceEquals(orb, guideOp))
+                continue;
+            var row = new GroupEntry
+            {
+                Kind = "nonbond",
+                Orbital = orb,
+                MassWeight = Mathf.Max(1e-3f, ElectronRedistributionGuide.GetStandardAtomicWeight(guideAtom.AtomicNumber)),
+                CurrentDirWorld = (orb.transform.position - guideAtom.transform.position).normalized,
+                Radius = (orb.transform.position - guideAtom.transform.position).magnitude
+            };
+            if (orb.ElectronCount > 0) nonbondingOccupied.Add(row);
+            else emptyOrbitals.Add(row);
+        }
+
+        ApplyEventSpecificGroupAdjustments(
+            guideAtom,
+            partnerAtom,
+            guideOp,
+            nonbondingOccupied,
+            emptyOrbitals,
+            isBondingEvent: true);
+        GroupEntry guideGroup = GetGuideGroup(
+            guideOrbitalPredetermined: null,
+            bondingGroups,
+            nonbondingOccupied,
+            emptyOrbitals,
+            atomOrbitalOp: guideOp);
+        if (guideGroup == null || guideGroup.Orbital == null)
+            return false;
+        guideGroupOrbital = guideGroup.Orbital;
+        return true;
+    }
+
+    static void CollectVseprGroupListsForGuidePathCheck(
+        AtomFunction atom,
+        AtomFunction guideAtom,
+        ElectronOrbitalFunction atomOrbitalOp,
+        bool isBondingEvent,
+        List<GroupEntry> bondingGroups,
+        List<GroupEntry> nonbondingOccupied,
+        List<GroupEntry> emptyOrbitals)
+    {
+        bondingGroups.Clear();
+        nonbondingOccupied.Clear();
+        emptyOrbitals.Clear();
+        if (atom == null)
+            return;
+
         foreach (var cb in atom.CovalentBonds)
         {
             if (cb == null) continue;
@@ -889,8 +977,6 @@ public static class OrbitalRedistribution
             });
         }
 
-        var nonbondingOccupied = new List<GroupEntry>();
-        var emptyOrbitals = new List<GroupEntry>();
         foreach (var orb in atom.BondedOrbitals)
         {
             if (orb == null)
@@ -936,6 +1022,74 @@ public static class OrbitalRedistribution
             nonbondingOccupied,
             emptyOrbitals,
             isBondingEvent);
+    }
+
+    /// <summary>
+    /// π phase-1 guide-pivot redistribution runs only when each atom’s redistribution guide group is the same mutual
+    /// σ bond line between the pair; otherwise the guide relaxes in phase 3 (<see cref="SigmaBondFormation"/>).
+    /// </summary>
+    public static bool BothPiPairGuideGroupsAreMutualInterAtomSigma(
+        AtomFunction guide,
+        AtomFunction nonGuide,
+        ElectronOrbitalFunction guideOp,
+        ElectronOrbitalFunction nonGuideOp,
+        bool isBondingEvent = true)
+    {
+        if (guide == null || nonGuide == null || guideOp == null || nonGuideOp == null)
+            return false;
+
+        CovalentBond mutualSigma = null;
+        foreach (var cb in guide.CovalentBonds)
+        {
+            if (cb == null || !cb.IsSigmaBondLine()) continue;
+            var other = cb.AtomA == guide ? cb.AtomB : cb.AtomA;
+            if (other == nonGuide)
+            {
+                mutualSigma = cb;
+                break;
+            }
+        }
+
+        if (mutualSigma == null)
+            return false;
+
+        var bondingG = new List<GroupEntry>();
+        var nonbondG = new List<GroupEntry>();
+        var emptyG = new List<GroupEntry>();
+        CollectVseprGroupListsForGuidePathCheck(guide, nonGuide, guideOp, isBondingEvent, bondingG, nonbondG, emptyG);
+        GroupEntry guideGroupOnGuide = GetGuideGroup(null, bondingG, nonbondG, emptyG, guideOp);
+        if (guideGroupOnGuide == null || guideGroupOnGuide.Bond != mutualSigma)
+            return false;
+
+        var bondingNg = new List<GroupEntry>();
+        var nonbondNg = new List<GroupEntry>();
+        var emptyNg = new List<GroupEntry>();
+        CollectVseprGroupListsForGuidePathCheck(nonGuide, guide, nonGuideOp, isBondingEvent, bondingNg, nonbondNg, emptyNg);
+        GroupEntry guideGroupOnNonGuide = GetGuideGroup(null, bondingNg, nonbondNg, emptyNg, nonGuideOp);
+        if (guideGroupOnNonGuide == null || guideGroupOnNonGuide.Bond != mutualSigma)
+            return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Returns whether the currently selected guide group (same selector as redistribution) lies on the OP path.
+    /// π phase-1 uses <see cref="BothPiPairGuideGroupsAreMutualInterAtomSigma"/> instead for the guide-pivot lane.
+    /// </summary>
+    public static bool IsCurrentGuideGroupOnOperationPath(
+        AtomFunction atom,
+        AtomFunction guideAtom,
+        ElectronOrbitalFunction atomOrbitalOp,
+        ElectronOrbitalFunction guideOrbitalPredetermined = null,
+        bool isBondingEvent = true)
+    {
+        if (atom == null || atomOrbitalOp == null)
+            return false;
+
+        var bondingGroups = new List<GroupEntry>();
+        var nonbondingOccupied = new List<GroupEntry>();
+        var emptyOrbitals = new List<GroupEntry>();
+        CollectVseprGroupListsForGuidePathCheck(atom, guideAtom, atomOrbitalOp, isBondingEvent, bondingGroups, nonbondingOccupied, emptyOrbitals);
 
         GroupEntry guideGroup = GetGuideGroup(
             guideOrbitalPredetermined,
@@ -961,7 +1115,7 @@ public static class OrbitalRedistribution
                 isOpPath = true;
             }
         }
-                return isOpPath;
+        return isOpPath;
     }
 
     sealed class GroupEntry
@@ -1406,6 +1560,7 @@ public static class OrbitalRedistribution
             alignedTemplate = snapTipPlaneTplCandidate;
         }
         else
+        {
             alignedTemplate = AlignFinalDirectionsTemplateToGuide(
                 finalDirectionsTemplate,
                 guideDirLocal,
@@ -1413,6 +1568,7 @@ public static class OrbitalRedistribution
                 guideAtom,
                 nVseprGroup,
                 staggerRefInPlaneNonGuideLocalFromChainTargets: null);
+        }
         TryRecordPiPhase1PrecursorTrigonalTemplatePlane(
             atom,
             guideAtom,
@@ -1441,7 +1597,8 @@ public static class OrbitalRedistribution
             atomMoveAnimation,
             visitedAtoms,
             isBondingEvent,
-            cyclicContext);
+            cyclicContext,
+            guideGroup);
 
         return animation;
     }
@@ -1510,91 +1667,6 @@ public static class OrbitalRedistribution
         return cyclicContext;
     }
 
-    static bool TryHandleBreakingReleasedEmptySpecialCase(
-        AtomFunction atom,
-        ElectronOrbitalFunction atomOrbitalOp,
-        bool isBondingEvent,
-        List<GroupEntry> bondingGroups,
-        List<GroupEntry> groupsForMatching,
-        int nVseprGroup,
-        ElectronOrbitalFunction guideOrbitalPredetermined,
-        System.Func<float, Vector3> atomMoveAnimation,
-        HashSet<AtomFunction> visitedAtoms,
-        out RedistributionAnimation animation)
-    {
-        animation = null;
-        if (atom == null || isBondingEvent || atomOrbitalOp == null) return false;
-        if (bondingGroups != null && bondingGroups.Count > 0) return false;
-        if (groupsForMatching == null || groupsForMatching.Count == 0) return false;
-
-        int releasedIdx = -1;
-        for (int i = 0; i < groupsForMatching.Count; i++)
-        {
-            if (ReferenceEquals(groupsForMatching[i]?.Orbital, atomOrbitalOp))
-            {
-                releasedIdx = i;
-                break;
-            }
-        }
-        if (releasedIdx < 0) return false;
-
-        if (nVseprGroup == 1)
-        {
-            animation = new RedistributionAnimation(atom);
-            return true;
-        }
-
-        if (nVseprGroup == 2 || nVseprGroup == 3)
-        {
-            Vector3 releasedLocal = atom.transform.InverseTransformDirection(
-                groupsForMatching[releasedIdx].CurrentDirWorld).normalized;
-            if (releasedLocal.sqrMagnitude < 1e-12f) releasedLocal = Vector3.right;
-
-            var forcedTargets = new List<Vector3>(groupsForMatching.Count);
-            for (int i = 0; i < groupsForMatching.Count; i++) forcedTargets.Add(Vector3.zero);
-            forcedTargets[releasedIdx] = releasedLocal;
-
-            Vector3 basePerp = Vector3.Cross(
-                releasedLocal,
-                Mathf.Abs(Vector3.Dot(releasedLocal, Vector3.up)) < 0.95f ? Vector3.up : Vector3.right).normalized;
-            if (basePerp.sqrMagnitude < 1e-12f) basePerp = Vector3.up;
-
-            int placedOther = 0;
-            for (int i = 0; i < groupsForMatching.Count; i++)
-            {
-                if (i == releasedIdx) continue;
-                Vector3 curLocal = atom.transform.InverseTransformDirection(groupsForMatching[i].CurrentDirWorld).normalized;
-                Vector3 perp = Vector3.ProjectOnPlane(curLocal, releasedLocal).normalized;
-                if (perp.sqrMagnitude < 1e-12f)
-                    perp = placedOther == 0 ? basePerp : -basePerp;
-                if (nVseprGroup == 3 && placedOther == 1)
-                    perp = -forcedTargets[FirstOtherIndex(forcedTargets, releasedIdx)];
-                forcedTargets[i] = perp.normalized;
-                placedOther++;
-            }
-
-            int[] identityPerm = new int[groupsForMatching.Count];
-            for (int i = 0; i < identityPerm.Length; i++) identityPerm[i] = i;
-            animation = BuildRedistributionAnimation(
-                groupsForMatching,
-                emptyOrbitals: null,
-                forcedTargets,
-                finalDirectionsEmptyOrbital: null,
-                identityPerm,
-                atom,
-                atomOrbitalOp,
-                guideOrbitalPredetermined,
-                atomMoveAnimation,
-                visitedAtoms,
-                isBondingEvent,
-                cyclicContext: null);
-            return true;
-        }
-
-        // TODO: breaking special case for nVseprGroup == 4 and nVseprGroup == 5.
-        return false;
-    }
-
     static int FirstOtherIndex(List<Vector3> forcedTargets, int releasedIdx)
     {
         for (int i = 0; i < forcedTargets.Count; i++)
@@ -1617,7 +1689,8 @@ public static class OrbitalRedistribution
         System.Func<float, Vector3> atomMoveAnimation,
         HashSet<AtomFunction> visitedAtoms,
         bool isBondingEvent,
-        CyclicRedistributionContext cyclicContext)
+        CyclicRedistributionContext cyclicContext,
+        GroupEntry guideGroup = null)
     {
         _ = atomMoveAnimation;
         var anim = new RedistributionAnimation(atom);
@@ -1646,13 +1719,14 @@ public static class OrbitalRedistribution
                         fragStart.Add((fa, fa.transform.position));
                     }
                     startNbrDir = (adjacentAtom.transform.position - atom.transform.position).normalized;
-                    bool isOpPath = IsOperationPathGroup(atom, g, atomOrbitalOp);
-                    bool suppressNonOpChildRecursionForUnbondedOp =
-                        isBondingEvent
-                        && atomOrbitalOp != null
-                        && atomOrbitalOp.Bond == null;
-                    if (!isOpPath && !suppressNonOpChildRecursionForUnbondedOp)
+                    bool isGuideGroup = guideGroup != null && ReferenceEquals(g, guideGroup);
+                    AtomFunction atomHostingOp = atomOrbitalOp != null && atomOrbitalOp.transform.parent != null
+                        ? atomOrbitalOp.transform.parent.GetComponent<AtomFunction>()
+                        : null;
+                    if (!isGuideGroup
+                        || (cyclicContext != null && atomOrbitalOp != null && ReferenceEquals(atom, atomHostingOp)))
                     {
+                        Debug.Log("BuildRedistributionAnimation: adjacentAtom=" + adjacentAtom.name);
                         Vector3 childGuideDirWorld = atom.transform.TransformDirection((-alignedTemplate[ti]).normalized);
                         Vector3 childGuideDirLocal = adjacentAtom.transform.InverseTransformDirection(childGuideDirWorld).normalized;
                         var childAnim = BuildOrbitalRedistribution(
@@ -1667,7 +1741,6 @@ public static class OrbitalRedistribution
                             isBondingEvent: isBondingEvent,
                             cyclicContext: cyclicContext);
                         anim.AddChild(childAnim);
-                   
                     }
                 }
 
@@ -1747,6 +1820,24 @@ public static class OrbitalRedistribution
         }
 
         var remainingDirs = new List<Vector3>();
+        var excludedPiDirs = new List<Vector3>();
+        var piSlots = atom.PiPOrbitalDirectionSlots;
+        if (piSlots != null)
+        {
+            for (int i = 0; i < piSlots.Count; i++)
+            {
+                var s = piSlots[i];
+                if (s.PlusZWorld.sqrMagnitude > 1e-18f)
+                {
+                    Vector3 pLocal = atom.transform.InverseTransformDirection(s.PlusZWorld).normalized;
+                    if (pLocal.sqrMagnitude > 1e-12f)
+                    {
+                        excludedPiDirs.Add(pLocal);
+                        excludedPiDirs.Add(-pLocal);
+                    }
+                }
+            }
+        }
         for (int i = 0; i < finalDirectionsEmptyOrbital.Count; i++)
         {
             Vector3 d = finalDirectionsEmptyOrbital[i].normalized;
@@ -1759,12 +1850,20 @@ public static class OrbitalRedistribution
                     break;
                 }
             }
+            bool overlapsPiSlotDir = false;
             if (!overlapsOccupied)
+            {
+                for (int j = 0; j < excludedPiDirs.Count; j++)
+                {
+                    if (Vector3.Angle(d, excludedPiDirs[j]) < 8f)
+                    {
+                        overlapsPiSlotDir = true;
+                        break;
+                    }
+                }
+            }
+            if (!overlapsOccupied && !overlapsPiSlotDir)
                 remainingDirs.Add(d);
-        }
-        if (remainingDirs.Count == 0 && finalDirectionsEmptyOrbital != null && finalDirectionsEmptyOrbital.Count > 0)
-        {
-            Debug.Log("[σ-p1-empty] allEmptyDirsFilteredOverlapOccupied atom=" + atom.GetInstanceID() + " occupiedSlots=" + occupiedNonEmpty.Count + " candDirs=" + finalDirectionsEmptyOrbital.Count);
         }
         if (remainingDirs.Count == 0) return;
 
@@ -2589,18 +2688,26 @@ public static class OrbitalRedistribution
         List<GroupEntry> emptyOrbitals,
         ElectronOrbitalFunction atomOrbitalOp)
     {
-        if (atomOrbitalOp != null)
-        {
-            GroupEntry direct = TryFindGroupEntryWithOrbital(bondingGroups, atomOrbitalOp);
-            if (direct != null) return direct;
-            direct = TryFindGroupEntryWithOrbital(nonbondingOccupied, atomOrbitalOp);
-            if (direct != null) return direct;
-            direct = TryFindGroupEntryWithOrbital(emptyOrbitals, atomOrbitalOp);
-            if (direct != null) return direct;
-        }
-
         GroupEntry best = null;
         float bestMass = float.NegativeInfinity;
+        
+        float EffectiveMass(GroupEntry row)
+        {
+            if (row == null)
+                return float.NegativeInfinity;
+            if (row.Bond == null)
+                return row.MassWeight;
+            AtomFunction center = row.Orbital != null && row.Orbital.transform.parent != null
+                ? row.Orbital.transform.parent.GetComponent<AtomFunction>()
+                : null;
+            if (center == null)
+                return row.MassWeight;
+            AtomFunction other = row.Bond.AtomA == center ? row.Bond.AtomB : row.Bond.AtomA;
+            if (other == null)
+                return row.MassWeight;
+            float m = ElectronRedistributionGuide.SumSubstituentMassThroughSigmaEdge(center, other);
+            return Mathf.Max(1e-3f, m);
+        }
 
         void Visit(List<GroupEntry> rows)
         {
@@ -2608,11 +2715,12 @@ public static class OrbitalRedistribution
             {
                 GroupEntry row = rows[i];
                 if (row == null) continue;
+                float rowMass = EffectiveMass(row);
 
-                if (best == null || row.MassWeight > bestMass || (row.Orbital == atomOrbitalOp && row.MassWeight >= bestMass))
+                if (best == null || rowMass > bestMass || (row.Orbital == atomOrbitalOp && rowMass >= bestMass))
                 {
                     best = row;
-                    bestMass = row.MassWeight;
+                    bestMass = rowMass;
                 }
             }
         }
@@ -2621,52 +2729,7 @@ public static class OrbitalRedistribution
         Visit(nonbondingOccupied);
         Visit(emptyOrbitals);
 
-        bool IsSameBondAxisAsOp(GroupEntry row)
-        {
-            if (row == null || atomOrbitalOp == null) return false;
-            if (ReferenceEquals(row.Orbital, atomOrbitalOp)) return true;
-            if (row.Bond == null || atomOrbitalOp.Bond == null) return false;
-            AtomFunction rA = row.Bond.AtomA;
-            AtomFunction rB = row.Bond.AtomB;
-            AtomFunction oA = atomOrbitalOp.Bond.AtomA;
-            AtomFunction oB = atomOrbitalOp.Bond.AtomB;
-            return (rA == oA && rB == oB) || (rA == oB && rB == oA);
-        }
-
-        float opPathBestMass = float.NegativeInfinity;
-        GroupEntry opPathBest = null;
-        void VisitOpPath(List<GroupEntry> rows)
-        {
-            for (int i = 0; i < rows.Count; i++)
-            {
-                GroupEntry row = rows[i];
-                if (row == null || !IsSameBondAxisAsOp(row)) continue;
-                if (opPathBest == null || row.MassWeight > opPathBestMass)
-                {
-                    opPathBest = row;
-                    opPathBestMass = row.MassWeight;
-                }
-            }
-        }
-
-        VisitOpPath(bondingGroups);
-        VisitOpPath(nonbondingOccupied);
-        VisitOpPath(emptyOrbitals);
-        if (opPathBest != null)
-            return opPathBest;
         return best;
-    }
-
-    static GroupEntry TryFindGroupEntryWithOrbital(List<GroupEntry> rows, ElectronOrbitalFunction orb)
-    {
-        if (rows == null || orb == null) return null;
-        for (int i = 0; i < rows.Count; i++)
-        {
-            var row = rows[i];
-            if (row != null && ReferenceEquals(row.Orbital, orb))
-                return row;
-        }
-        return null;
     }
 
     static void ApplyEventSpecificGroupAdjustments(
@@ -2727,14 +2790,18 @@ public static class OrbitalRedistribution
                 ? "empty-op-preserved-pi-bonding"
                 : "empty-op-released-breaking";
         }
-            }
+    }
 
+    /// <summary>
+    /// VSEPR / guide-group scoring weight for a σ bond row: sum of standard atomic weights over the whole substituent
+    /// on the neighbor’s side of the σ edge <c>(<paramref name="center"/>, neighbor)</c> (same as
+    /// <see cref="ElectronRedistributionGuide.SumSubstituentMassThroughSigmaEdge"/> / σ-relax fragments). Excludes <paramref name="center"/>.
+    /// </summary>
     static float ComputeBondGroupMassWeight(AtomFunction center, CovalentBond bond)
     {
         if (center == null || bond == null) return 1f;
         var other = bond.AtomA == center ? bond.AtomB : bond.AtomA;
         if (other == null) return 1f;
-        // Same substituent fragment and standard atomic weights as <see cref="ElectronRedistributionGuide.SumSubstituentMassThroughSigmaEdge"/>.
         float m = ElectronRedistributionGuide.SumSubstituentMassThroughSigmaEdge(center, other);
         return Mathf.Max(1e-3f, m);
     }
@@ -2921,9 +2988,10 @@ public static class OrbitalRedistribution
     }
 
     /// <summary>
-    /// World p axis used to orient a trigonal template plane (plane ⟂ axis): stored <see cref="AtomFunction.PiPOrbitalDirectionSlots"/>
-    /// plus directions from existing π <see cref="CovalentBond"/> rows on <paramref name="pivotAtom"/> (e.g. remaining π after a π break).
-    /// When several non-parallel axes exist, picks the one least aligned with the pivot→guide internuclear direction.
+    /// World p axis used to orient a trigonal template plane (plane ⟂ axis): prefers the π prebond +z stored toward
+    /// <paramref name="guideAtom"/> (<see cref="AtomFunction.TryGetPiPrebondPOrbitalPlusZWorld"/>), else stored slots plus
+    /// existing π <see cref="CovalentBond"/> rows; when several non-parallel axes exist, picks the one least aligned with
+    /// the pivot→guide internuclear direction.
     /// </summary>
     static bool TryGetPOrbitalAxisWorldForTrigonalAlign(
         AtomFunction pivotAtom,
@@ -2933,6 +3001,14 @@ public static class OrbitalRedistribution
         axisWorld = default;
         if (pivotAtom == null)
             return false;
+
+        if (guideAtom != null
+            && pivotAtom.TryGetPiPrebondPOrbitalPlusZWorld(guideAtom, out Vector3 prebondPlusZ)
+            && prebondPlusZ.sqrMagnitude > 1e-18f)
+        {
+            axisWorld = prebondPlusZ.normalized;
+            return true;
+        }
 
         var bucket = new List<Vector3>(8);
         CollectDistinctPOrbitalAxesFromAtomStored(pivotAtom, bucket);

@@ -6,8 +6,9 @@ using UnityEngine;
 /// <summary>
 /// σ / π formation from <b>orbital drag</b> or the same pipeline <b>without animation</b> (<see cref="TryBeginOrbitalDragSigmaFormation"/> /
 /// <see cref="TryBeginOrbitalDragPiFormation"/> with <c>animate: false</c>): σ runs phase 1 pre-bond (non-guide fragment or cyclic targets),
-/// then bond formation (cylinder + orbital→line), then post-bond guide hybrid lerp. π uses the same three phases with
-/// <b>no</b> rigid fragment translation in phase 1 (σ already links the pair).
+/// then bond formation (cylinder + orbital→line), then post-bond guide hybrid lerp. π phase 1 (acyclic) redistributes the
+/// non-guide atom first, with an optional second track on the guide when mutual-σ guide groups match; phase 3 post-bond
+/// redistribution pivots on the guide when that second track did not run (same as <see cref="ElectronOrbitalFunction.FormCovalentBondPiCoroutine"/>).
 /// Independent of edit mode; add this component to the scene (e.g. next to <see cref="EditModeManager"/>).
 /// Timings are read from the gesture <see cref="ElectronOrbitalFunction"/> (the dragged lobe when available).
 /// </summary>
@@ -143,6 +144,14 @@ public class SigmaBondFormation : MonoBehaviour
         return null;
     }
 
+    static ElectronOrbitalFunction TryGetSigmaLineOrbitalBetween(AtomFunction a, AtomFunction b, ElectronOrbitalFunction fallback)
+    {
+        var cb = TryFindSigmaBondBetween(a, b);
+        if (cb != null && cb.Orbital != null)
+            return cb.Orbital;
+        return fallback;
+    }
+
     /// <summary>
     /// One parallel lane of phase 1: receives the same smoothstep <c>s</c> in <c>[0,1]</c> each frame as all other lanes.
     /// </summary>
@@ -155,6 +164,7 @@ public class SigmaBondFormation : MonoBehaviour
         public Action FinalizeAfterTimeline;
     }
 
+    /// <summary>True when the optional second π phase‑1 parallel track ran (mutual σ); phase 3 is skipped in that case.</summary>
     sealed class PiPhase1GuideRedistributionDecision
     {
         public bool GuideRedistributedInPhase1;
@@ -474,8 +484,9 @@ public class SigmaBondFormation : MonoBehaviour
     }
 
     /// <summary>
-    /// π phase 1: same redistribution as σ phase 1, but <see cref="OrbitalRedistribution.BuildOrbitalRedistribution"/> guide axis uses
-    /// pivot nucleus → σ bond partner (guide atom), i.e. the internuclear leg the OP π bond forms across, in <paramref name="nonGuideAtom"/> local.
+    /// π phase 1 primary track: acyclic π redistributes the <b>non-guide</b> atom first; cyclic π keeps the prior
+    /// <see cref="OrbitalRedistribution.CyclicRedistributionContext"/> on the <b>non-guide</b> pivot. Optional mutual-σ track
+    /// complements on the <b>guide</b> pivot when acyclic (<see cref="BuildPhase1OrbitalRedistributeForPiFormationGuideAtomPhase1"/>).
     /// </summary>
     static Phase1ParallelTrack BuildPhase1OrbitalRedistributeForPiFormationPhase1(
         AtomFunction guideAtom,
@@ -489,68 +500,54 @@ public class SigmaBondFormation : MonoBehaviour
     {
         piOpAnimForPostCylinder = null;
         OrbitalRedistribution.RedistributionAnimation piOpAnim = null;
-        if (sharedPiNormalPlusZWorld.HasValue
-            && nonGuideOp != null
-            && sharedPiNormalPlusZWorld.Value.sqrMagnitude > 1e-16f)
+        OrbitalRedistribution.RedistributionAnimation animation;
+        if (cyclicContext != null)
         {
-            TryBuildPiPrebondOpPhase1TrigonalInPlaneRedistributionAnimation(
-                nonGuideAtom,
-                nonGuideOp,
-                sharedPiNormalPlusZWorld.Value,
-                out piOpAnim);
-        }
-
-        var animation = OrbitalRedistribution.BuildOrbitalRedistribution(
-            nonGuideAtom,
-            guideAtom,
-            guideOp,
-            nonGuideOp,
-            guideOrbitalPredetermined: null,
-            finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
-            isBondingEvent: true,
-            cyclicContext: cyclicContext);
-        piOpAnimForPostCylinder = piOpAnim;
-        return new Phase1ParallelTrack
-        {
-            ApplySmoothStep = s =>
+            if (sharedPiNormalPlusZWorld.HasValue
+                && nonGuideOp != null
+                && sharedPiNormalPlusZWorld.Value.sqrMagnitude > 1e-16f)
             {
-                animation?.Apply(s);
-                piOpAnim?.Apply(s);
-            },
-            FinalizeAfterTimeline = () => { }
-        };
-    }
+                TryBuildPiPrebondOpPhase1TrigonalInPlaneRedistributionAnimation(
+                    nonGuideAtom,
+                    nonGuideOp,
+                    sharedPiNormalPlusZWorld.Value,
+                    out piOpAnim);
+            }
 
-    static Phase1ParallelTrack BuildPhase1OrbitalRedistributeForPiFormationGuideAtomPhase1(
-        AtomFunction guideAtom,
-        AtomFunction nonGuideAtom,
-        ElectronOrbitalFunction guideOp,
-        ElectronOrbitalFunction nonGuideOp,
-        out OrbitalRedistribution.RedistributionAnimation piOpAnimForPostCylinder,
-        Vector3? sharedPiNormalPlusZWorld = null)
-    {
-        piOpAnimForPostCylinder = null;
-        OrbitalRedistribution.RedistributionAnimation piOpAnim = null;
-        if (sharedPiNormalPlusZWorld.HasValue
-            && guideOp != null
-            && sharedPiNormalPlusZWorld.Value.sqrMagnitude > 1e-16f)
-        {
-            TryBuildPiPrebondOpPhase1TrigonalInPlaneRedistributionAnimation(
+            animation = OrbitalRedistribution.BuildOrbitalRedistribution(
+                nonGuideAtom,
                 guideAtom,
                 guideOp,
-                sharedPiNormalPlusZWorld.Value,
-                out piOpAnim);
+                nonGuideOp,
+                guideOrbitalPredetermined: null,
+                finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
+                isBondingEvent: true,
+                cyclicContext: cyclicContext);
+        }
+        else
+        {
+            if (sharedPiNormalPlusZWorld.HasValue
+                && nonGuideOp != null
+                && sharedPiNormalPlusZWorld.Value.sqrMagnitude > 1e-16f)
+            {
+                TryBuildPiPrebondOpPhase1TrigonalInPlaneRedistributionAnimation(
+                    nonGuideAtom,
+                    nonGuideOp,
+                    sharedPiNormalPlusZWorld.Value,
+                    out piOpAnim);
+            }
+
+            animation = OrbitalRedistribution.BuildOrbitalRedistribution(
+                nonGuideAtom,
+                guideAtom,
+                guideOp,
+                nonGuideOp,
+                guideOrbitalPredetermined: null,
+                finalDirectionForGuideOrbital: Vector3.zero,
+                isBondingEvent: true,
+                cyclicContext: null);
         }
 
-        var animation = OrbitalRedistribution.BuildOrbitalRedistribution(
-            guideAtom,
-            nonGuideAtom,
-            nonGuideOp,
-            guideOp,
-            guideOrbitalPredetermined: null,
-            finalDirectionForGuideOrbital: Vector3.zero,
-            isBondingEvent: true,
-            cyclicContext: null);
         piOpAnimForPostCylinder = piOpAnim;
         return new Phase1ParallelTrack
         {
@@ -564,8 +561,86 @@ public class SigmaBondFormation : MonoBehaviour
     }
 
     /// <summary>
-    /// π prebond phase-1: shared world +z direction of the forming p orbital (trigonal plane ⟂ this).
-    /// Uses the most recently stored π row toward the same partner when present; otherwise computes from current OP geometry.
+    /// π phase 1 optional second track when <see cref="OrbitalRedistribution.BothPiPairGuideGroupsAreMutualInterAtomSigma"/>:
+    /// complements the primary track on the <b>guide</b> pivot (primary is always non-guide for π phase 1).
+    /// </summary>
+    static Phase1ParallelTrack BuildPhase1OrbitalRedistributeForPiFormationGuideAtomPhase1(
+        AtomFunction guideAtom,
+        AtomFunction nonGuideAtom,
+        ElectronOrbitalFunction guideOp,
+        ElectronOrbitalFunction nonGuideOp,
+        OrbitalRedistribution.CyclicRedistributionContext piPhase1CyclicContext,
+        Vector3 finalDirectionForGuideOrbital,
+        out OrbitalRedistribution.RedistributionAnimation piOpAnimForPostCylinder,
+        Vector3? sharedPiNormalPlusZWorld = null)
+    {
+        piOpAnimForPostCylinder = null;
+        OrbitalRedistribution.RedistributionAnimation piOpAnim = null;
+        OrbitalRedistribution.RedistributionAnimation animation;
+        if (piPhase1CyclicContext != null)
+        {
+            if (sharedPiNormalPlusZWorld.HasValue
+                && guideOp != null
+                && sharedPiNormalPlusZWorld.Value.sqrMagnitude > 1e-16f)
+            {
+                TryBuildPiPrebondOpPhase1TrigonalInPlaneRedistributionAnimation(
+                    guideAtom,
+                    guideOp,
+                    sharedPiNormalPlusZWorld.Value,
+                    out piOpAnim);
+            }
+
+            animation = OrbitalRedistribution.BuildOrbitalRedistribution(
+                guideAtom,
+                nonGuideAtom,
+                nonGuideOp,
+                guideOp,
+                guideOrbitalPredetermined: null,
+                finalDirectionForGuideOrbital: Vector3.zero,
+                isBondingEvent: true,
+                cyclicContext: null);
+        }
+        else
+        {
+            if (sharedPiNormalPlusZWorld.HasValue
+                && guideOp != null
+                && sharedPiNormalPlusZWorld.Value.sqrMagnitude > 1e-16f)
+            {
+                TryBuildPiPrebondOpPhase1TrigonalInPlaneRedistributionAnimation(
+                    guideAtom,
+                    guideOp,
+                    sharedPiNormalPlusZWorld.Value,
+                    out piOpAnim);
+            }
+
+            animation = OrbitalRedistribution.BuildOrbitalRedistribution(
+                guideAtom,
+                nonGuideAtom,
+                nonGuideOp,
+                guideOp,
+                guideOrbitalPredetermined: null,
+                finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
+                isBondingEvent: true,
+                cyclicContext: null);
+        }
+
+        piOpAnimForPostCylinder = piOpAnim;
+        return new Phase1ParallelTrack
+        {
+            ApplySmoothStep = s =>
+            {
+                animation?.Apply(s);
+                piOpAnim?.Apply(s);
+            },
+            FinalizeAfterTimeline = () => { }
+        };
+    }
+
+    /// <summary>
+    /// π prebond phase-1: shared world +z direction of the forming p orbital (trigonal plane ⟂ this), written to
+    /// both atoms’ <see cref="AtomFunction.PiPOrbitalDirectionSlots"/> via <see cref="AtomFunction.SetPiPrebondPOrbitalDirectionsWorld"/>.
+    /// Uses a committed π row when present; else <c>Cross(σ, g)</c> from the guide’s guide-group, then the <b>non-guide</b>’s
+    /// guide-group when the guide’s <c>g ∥ σ</c>; then OP in-plane rays; then any axis ⟂ σ so a slot is almost always defined.
     /// </summary>
     static bool TryComputeSharedPiPrebondPOrbitalPlusZWorld(
         AtomFunction guideAtom,
@@ -583,6 +658,11 @@ public class SigmaBondFormation : MonoBehaviour
             return false;
 
         Vector3 piNormal = Vector3.zero;
+        bool resolvedPiGuideGroup = OrbitalRedistribution.TryGetGuideGroupOrbitalForPiPrebondReference(
+            guideAtom,
+            nonGuideAtom,
+            guideOp,
+            out ElectronOrbitalFunction piGuideGroupOrbital);
         if (nonGuideAtom.TryGetLatestPiPOrbitalPlusZWorldTowardPartner(guideAtom, out var prevPlusZ, out _)
             || guideAtom.TryGetLatestPiPOrbitalPlusZWorldTowardPartner(nonGuideAtom, out prevPlusZ, out _))
         {
@@ -591,46 +671,148 @@ public class SigmaBondFormation : MonoBehaviour
             {
                 p1InPlane.Normalize();
                 piNormal = Vector3.Cross(sigmaAxisWorld, p1InPlane);
-                if (piNormal.sqrMagnitude > 1e-10f)
-                {
+                if (piNormal.sqrMagnitude > 1e-20f)
                     piNormal.Normalize();
-                    if (nonGuideOp != null)
-                    {
-                        Vector3 opDir = Vector3.ProjectOnPlane(
-                            nonGuideOp.transform.position - nonGuideAtom.transform.position,
-                            sigmaAxisWorld);
-                        if (opDir.sqrMagnitude > 1e-10f && Vector3.Dot(opDir.normalized, piNormal) < 0f)
-                            piNormal = -piNormal;
-                    }
-                    sharedPiNormalPlusZWorld = piNormal;
-                    return true;
-                }
             }
         }
         if (piNormal.sqrMagnitude < 1e-16f)
         {
             Vector3 uInPlanePerpSigma = Vector3.zero;
-            if (nonGuideOp != null)
-                uInPlanePerpSigma = Vector3.ProjectOnPlane(nonGuideOp.transform.position - nonGuideAtom.transform.position, sigmaAxisWorld).normalized;
-            if (uInPlanePerpSigma.sqrMagnitude < 1e-12f && guideOp != null)
-                uInPlanePerpSigma = Vector3.ProjectOnPlane(guideOp.transform.position - guideAtom.transform.position, sigmaAxisWorld).normalized;
-            if (uInPlanePerpSigma.sqrMagnitude < 1e-12f)
-                uInPlanePerpSigma = Vector3.ProjectOnPlane(nonGuideAtom.transform.up, sigmaAxisWorld).normalized;
-            if (uInPlanePerpSigma.sqrMagnitude < 1e-12f)
-                uInPlanePerpSigma = Vector3.ProjectOnPlane(nonGuideAtom.transform.right, sigmaAxisWorld).normalized;
-            if (uInPlanePerpSigma.sqrMagnitude < 1e-12f)
-                return false;
+            bool anchoredGuideGroupCross = false;
 
-            piNormal = Vector3.Cross(sigmaAxisWorld, uInPlanePerpSigma);
-            if (piNormal.sqrMagnitude < 1e-16f)
-                piNormal = Vector3.Cross(sigmaAxisWorld, Vector3.up);
-            if (piNormal.sqrMagnitude < 1e-16f)
-                piNormal = Vector3.Cross(sigmaAxisWorld, Vector3.right);
-            if (piNormal.sqrMagnitude < 1e-16f)
-                return false;
-            piNormal.Normalize();
+            // First π: +z is ⊥ σ and ⊥ guide-group lobe direction g: piNormal = normalize(Cross(σ, g)).
+            // When g ∥ σ, Cross is degenerate — fall back to OP in-plane rays, then axis helpers.
+            if (resolvedPiGuideGroup && piGuideGroupOrbital != null)
+            {
+                Vector3 gdir = OrbitalAngleUtility.GetOrbitalDirectionWorld(piGuideGroupOrbital.transform);
+                if (gdir.sqrMagnitude < 1e-16f)
+                    gdir = piGuideGroupOrbital.transform.position - guideAtom.transform.position;
+                if (gdir.sqrMagnitude > 1e-16f)
+                {
+                    gdir.Normalize();
+                    Vector3 crossSg = Vector3.Cross(sigmaAxisWorld, gdir);
+                    const float crossEpsSq = 1e-22f;
+                    if (crossSg.sqrMagnitude > crossEpsSq)
+                    {
+                        piNormal = crossSg.normalized;
+                        anchoredGuideGroupCross = true;
+                    }
+                }
+            }
+
+            // When the guide-side group is ∥ σ, the non-guide’s guide group (e.g. C–O) may still give a usable Cross(σ, g).
+            if (!anchoredGuideGroupCross
+                && OrbitalRedistribution.TryGetGuideGroupOrbitalForPiPrebondReference(
+                    nonGuideAtom, guideAtom, nonGuideOp, out ElectronOrbitalFunction ngRefOrb)
+                && ngRefOrb != null)
+            {
+                Vector3 gdirN = OrbitalAngleUtility.GetOrbitalDirectionWorld(ngRefOrb.transform);
+                if (gdirN.sqrMagnitude < 1e-16f)
+                    gdirN = ngRefOrb.transform.position - nonGuideAtom.transform.position;
+                if (gdirN.sqrMagnitude > 1e-16f)
+                {
+                    gdirN.Normalize();
+                    Vector3 crossNg = Vector3.Cross(sigmaAxisWorld, gdirN);
+                    const float crossEpsSqNg = 1e-22f;
+                    if (crossNg.sqrMagnitude > crossEpsSqNg)
+                    {
+                        piNormal = crossNg.normalized;
+                        anchoredGuideGroupCross = true; // skip OP projection: any VSEPR-group cross succeeded
+                    }
+                }
+            }
+
+            if (!anchoredGuideGroupCross)
+            {
+                if (nonGuideOp != null)
+                {
+                    uInPlanePerpSigma = Vector3.ProjectOnPlane(nonGuideOp.transform.position - nonGuideAtom.transform.position, sigmaAxisWorld).normalized;
+                }
+                if (uInPlanePerpSigma.sqrMagnitude < 1e-12f && guideOp != null)
+                {
+                    uInPlanePerpSigma = Vector3.ProjectOnPlane(guideOp.transform.position - guideAtom.transform.position, sigmaAxisWorld).normalized;
+                }
+                if (uInPlanePerpSigma.sqrMagnitude < 1e-12f)
+                {
+                    Vector3 arb = Mathf.Abs(sigmaAxisWorld.y) < 0.92f ? Vector3.up : Vector3.right;
+                    uInPlanePerpSigma = Vector3.ProjectOnPlane(arb, sigmaAxisWorld);
+                    if (uInPlanePerpSigma.sqrMagnitude < 1e-12f)
+                        uInPlanePerpSigma = Vector3.ProjectOnPlane(Vector3.forward, sigmaAxisWorld);
+                    if (uInPlanePerpSigma.sqrMagnitude < 1e-12f)
+                        return false;
+                    uInPlanePerpSigma.Normalize();
+                }
+
+                piNormal = Vector3.Cross(sigmaAxisWorld, uInPlanePerpSigma);
+                if (piNormal.sqrMagnitude < 1e-16f)
+                    piNormal = Vector3.Cross(sigmaAxisWorld, Vector3.up);
+                if (piNormal.sqrMagnitude < 1e-16f)
+                    piNormal = Vector3.Cross(sigmaAxisWorld, Vector3.right);
+                if (piNormal.sqrMagnitude < 1e-16f)
+                    return false;
+                piNormal.Normalize();
+            }
         }
 
+        // If π normal is still (near-)zero or never normalized, σ × arbitrary ensures Upsert receives |+z|² ≫ 1e-18.
+        if (piNormal.sqrMagnitude < 1e-12f)
+        {
+            Vector3 arb = Mathf.Abs(sigmaAxisWorld.y) < 0.92f ? Vector3.up : Vector3.right;
+            Vector3 uPerp = Vector3.ProjectOnPlane(arb, sigmaAxisWorld);
+            if (uPerp.sqrMagnitude < 1e-12f)
+                uPerp = Vector3.ProjectOnPlane(Vector3.forward, sigmaAxisWorld);
+            if (uPerp.sqrMagnitude < 1e-12f)
+            {
+                sharedPiNormalPlusZWorld = Vector3.zero;
+                return false;
+            }
+            uPerp.Normalize();
+            piNormal = Vector3.Cross(sigmaAxisWorld, uPerp);
+            if (piNormal.sqrMagnitude < 1e-16f)
+            {
+                sharedPiNormalPlusZWorld = Vector3.zero;
+                return false;
+            }
+        }
+        if (piNormal.sqrMagnitude > 1e-20f)
+            piNormal = piNormal.normalized;
+        else
+        {
+            sharedPiNormalPlusZWorld = Vector3.zero;
+            return false;
+        }
+
+        Vector3 ResolveOpDirWorld(ElectronOrbitalFunction op, AtomFunction owner)
+        {
+            if (op == null || owner == null)
+                return Vector3.zero;
+            Vector3 d = OrbitalAngleUtility.GetOrbitalDirectionWorld(op.transform);
+            if (d.sqrMagnitude < 1e-16f)
+                d = op.transform.position - owner.transform.position;
+            if (d.sqrMagnitude < 1e-16f)
+                return Vector3.zero;
+            return d.normalized;
+        }
+
+        // Pick one shared sign (+z or -z) for both atoms by maximizing the summed OP alignment:
+        // Dot(op1,+z)+Dot(op2,+z) vs Dot(op1,-z)+Dot(op2,-z).
+        Vector3 guideOpDir = ResolveOpDirWorld(guideOp, guideAtom);
+        Vector3 nonGuideOpDir = ResolveOpDirWorld(nonGuideOp, nonGuideAtom);
+        float scorePlus = 0f;
+        float dotGuidePlus = 0f;
+        float dotNonGuidePlus = 0f;
+        if (guideOpDir.sqrMagnitude > 1e-16f)
+        {
+            dotGuidePlus = Vector3.Dot(guideOpDir, piNormal);
+            scorePlus += dotGuidePlus;
+        }
+        if (nonGuideOpDir.sqrMagnitude > 1e-16f)
+        {
+            dotNonGuidePlus = Vector3.Dot(nonGuideOpDir, piNormal);
+            scorePlus += dotNonGuidePlus;
+        }
+        if (scorePlus < 0f)
+            piNormal = -piNormal;
         sharedPiNormalPlusZWorld = piNormal;
         return true;
     }
@@ -651,7 +833,6 @@ public class SigmaBondFormation : MonoBehaviour
             return false;
 
         Vector3 plusW = sharedPiNormalPlusZWorld.normalized;
-        Vector3 minusW = -plusW;
 
         Vector3 curWorld = OrbitalAngleUtility.GetOrbitalDirectionWorld(op.transform);
         if (curWorld.sqrMagnitude < 1e-18f)
@@ -661,7 +842,7 @@ public class SigmaBondFormation : MonoBehaviour
         }
         curWorld.Normalize();
 
-        Vector3 targetWorld = Vector3.Dot(curWorld, plusW) >= Vector3.Dot(curWorld, minusW) ? plusW : minusW;
+        Vector3 targetWorld = plusW;
         Vector3 targetLocal = atom.transform.InverseTransformDirection(targetWorld).normalized;
         if (targetLocal.sqrMagnitude < 1e-18f)
             return false;
@@ -1622,11 +1803,11 @@ public class SigmaBondFormation : MonoBehaviour
             ClearPiPhase1RedistributeTemplatePreviewVisuals();
         }
 
-        bool runGuideInPhase1 = OrbitalRedistribution.IsCurrentGuideGroupOnOperationPath(
+        bool runGuideInPhase1 = OrbitalRedistribution.BothPiPairGuideGroupsAreMutualInterAtomSigma(
             guide,
             nonGuide,
             guideOp,
-            guideOrbitalPredetermined: null,
+            nonGuideOp,
             isBondingEvent: true);
         if (guideDecision != null)
             guideDecision.GuideRedistributedInPhase1 = runGuideInPhase1;
@@ -1666,6 +1847,8 @@ public class SigmaBondFormation : MonoBehaviour
                 nonGuide,
                 guideOp,
                 nonGuideOp,
+                piPhase1CyclicContext,
+                piGuideDirLocal,
                 out piOpGuidePostCylinder,
                 hasSharedPiPPlusZ ? sharedPiNormalPlusZWorld : (Vector3?)null);
             if (piPhase1GuideTrack != null)
@@ -1759,11 +1942,11 @@ public class SigmaBondFormation : MonoBehaviour
         
         ClearPiPhase1RedistributeTemplatePreviewVisuals();
 
-        bool runGuideInPhase1 = OrbitalRedistribution.IsCurrentGuideGroupOnOperationPath(
+        bool runGuideInPhase1 = OrbitalRedistribution.BothPiPairGuideGroupsAreMutualInterAtomSigma(
             guide,
             nonGuide,
             guideOp,
-            guideOrbitalPredetermined: null,
+            nonGuideOp,
             isBondingEvent: true);
 
         Vector3 sharedPiNormalPlusZWorld = Vector3.zero;
@@ -1801,6 +1984,8 @@ public class SigmaBondFormation : MonoBehaviour
                 nonGuide,
                 guideOp,
                 nonGuideOp,
+                piPhase1CyclicContext,
+                piGuideDirLocal,
                 out piOpGuidePostCylinder,
                 hasSharedPiPPlusZ ? sharedPiNormalPlusZWorld : (Vector3?)null);
             if (piPhase1GuideTrack != null)
@@ -2518,7 +2703,6 @@ public class SigmaBondFormation : MonoBehaviour
 
             var guideOrb = redistributionGuideTieBreakDraggedOrbital != null ? redistributionGuideTieBreakDraggedOrbital : sourceOrbital;
             ElectronRedistributionGuide.ResolveGuideAtomForPair(sourceAtom, targetAtom, guideOrb, out var guide, out var nonGuide);
-
             if (guide == null || nonGuide == null || ReferenceEquals(guide, nonGuide))
             {
                 yield return StartCoroutine(CoOrbitalDragPiFormationLegacyFallback(
@@ -2660,7 +2844,6 @@ public class SigmaBondFormation : MonoBehaviour
             EnsureEditModeManagerReference();
             var guideOrb = redistributionGuideTieBreakDraggedOrbital != null ? redistributionGuideTieBreakDraggedOrbital : sourceOrbital;
             ElectronRedistributionGuide.ResolveGuideAtomForPair(sourceAtom, targetAtom, guideOrb, out var guide, out var nonGuide);
-
             if (guide == null || nonGuide == null || ReferenceEquals(guide, nonGuide))
             {
                 RunOrbitalDragPiFormationLegacyFallbackImmediate(sourceAtom, targetAtom, sourceOrbital, targetOrbital);

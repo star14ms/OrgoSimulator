@@ -1304,7 +1304,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             if (runner.TryBeginOrbitalDragPiFormation(sourceAtom, targetAtom, this, targetOrbital, this))
                 return true;
         }
-                targetAtom.StartCoroutine(FormCovalentBondPiCoroutine(sourceAtom, targetAtom, targetOrbital));
+        targetAtom.StartCoroutine(FormCovalentBondPiCoroutine(sourceAtom, targetAtom, targetOrbital));
         return true;
     }
 
