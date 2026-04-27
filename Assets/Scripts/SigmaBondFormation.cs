@@ -1720,11 +1720,6 @@ public class SigmaBondFormation : MonoBehaviour
         bool animate = true)
     {
         EnsureEditModeManagerReference();
-                if (editModeManager == null)
-        {
-            Debug.LogWarning("[pi-drag] SigmaBondFormation: no EditModeManager reference; cannot run π formation pipeline.");
-                        return false;
-        }
         if (!animate)
         {
             bool imm = RunOrbitalDragPiFormationThreePhaseImmediate(
@@ -1733,7 +1728,7 @@ public class SigmaBondFormation : MonoBehaviour
                 sourceOrbital,
                 targetOrbital,
                 redistributionGuideTieBreakDraggedOrbital);
-                        return imm;
+                return imm;
         }
         StartCoroutine(CoOrbitalDragPiFormationThreePhase(
             sourceAtom,
@@ -1742,7 +1737,7 @@ public class SigmaBondFormation : MonoBehaviour
             targetOrbital,
             redistributionGuideTieBreakDraggedOrbital,
             animate: true));
-                return true;
+        return true;
     }
 
     /// <summary>π phase 1: orbital redistribution + cylinder lerp toward π line pose on existing σ (parallel timeline).</summary>
@@ -1896,14 +1891,14 @@ public class SigmaBondFormation : MonoBehaviour
         SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, true);
         try
         {
-                        yield return StartCoroutine(
-                CoExecutePhase1ParallelAnimations(tracks, molForBondLines, Mathf.Max(0f, phase1Sec)));
-                    }
+            yield return StartCoroutine(
+            CoExecutePhase1ParallelAnimations(tracks, molForBondLines, Mathf.Max(0f, phase1Sec)));
+        }
         finally
         {
             SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(nonGuide, false);
         }
-                    }
+    }
 
     /// <summary>π phase-1 redistribution (non-guide + optional guide when OP-path); also shared by legacy π gesture coroutine when the three-phase runner cannot start.</summary>
     public static bool RunOrbitalDragPiPhase1RedistributionSynchronously(
@@ -2545,125 +2540,6 @@ public class SigmaBondFormation : MonoBehaviour
         };
     }
 
-    /// <summary>
-    /// Instant σ/π-style guide resolution failed: run legacy π creation + animation (no phase 1 / 3 timeline).
-    /// </summary>
-    IEnumerator CoOrbitalDragPiFormationLegacyFallback(
-        AtomFunction sourceAtom,
-        AtomFunction targetAtom,
-        ElectronOrbitalFunction sourceOrbital,
-        ElectronOrbitalFunction targetOrbital,
-        bool animate)
-    {
-        if (sourceAtom == null || targetAtom == null || sourceOrbital == null || targetOrbital == null)
-            yield break;
-        OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
-        sourceAtom.RemovePiPOrbitalDirectionsForPartnerLine(targetAtom, AtomFunction.PiPOrbitalPrebondLineIndex);
-        targetAtom.RemovePiPOrbitalDirectionsForPartnerLine(sourceAtom, AtomFunction.PiPOrbitalPrebondLineIndex);
-
-        int mergedElectrons = sourceOrbital.ElectronCount + targetOrbital.ElectronCount;
-        int ecnPiEvent = AtomFunction.AllocateMoleculeEcnEventId();
-        AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
-            sourceAtom, targetAtom, "beforePiBond", ecnPiEvent, null, "pi");
-
-        sourceAtom.UnbondOrbital(sourceOrbital);
-        targetAtom.UnbondOrbital(targetOrbital);
-
-        var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, targetAtom, animateOrbitalToBond: animate);
-        if (bond == null)
-            yield break;
-        bond.SkipNonGuideExecuteSigmaFormation12HybridPass = true;
-
-        sourceOrbital.transform.SetParent(null, worldPositionStays: true);
-        bond.SetOrbitalBeingFaded(sourceOrbital);
-        sourceAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
-        targetAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
-        sourceAtom.RefreshCharge();
-        targetAtom.RefreshCharge();
-
-        var mol = new HashSet<AtomFunction>();
-        foreach (var a in sourceAtom.GetConnectedMolecule()) if (a != null) mol.Add(a);
-        foreach (var a in targetAtom.GetConnectedMolecule()) if (a != null) mol.Add(a);
-
-        float cylDur = animate ? -1f : 0f;
-        float lineDur = animate ? sourceOrbital.BondFormationOrbitalToLineDurationResolved : 0f;
-        yield return StartCoroutine(sourceOrbital.AnimateBondFormationOperationOrbitalsTowardBondCylinder(
-            sourceAtom, targetAtom, sourceOrbital, targetOrbital, bond, cylDur, mol));
-
-        if (bond != null)
-        {
-            bond.animatingOrbitalToBondPosition = false;
-            yield return bond.AnimateOrbitalToLine(lineDur, sourceOrbital, mol);
-            targetOrbital.ElectronCount = mergedElectrons;
-        }
-        else
-        {
-            Destroy(sourceOrbital.gameObject);
-        }
-
-        sourceAtom.RefreshCharge();
-        targetAtom.RefreshCharge();
-        if (bond != null)
-            AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
-                sourceAtom, targetAtom, "afterPiBond", ecnPiEvent, bond, "pi");
-    }
-
-    void RunOrbitalDragPiFormationLegacyFallbackImmediate(
-        AtomFunction sourceAtom,
-        AtomFunction targetAtom,
-        ElectronOrbitalFunction sourceOrbital,
-        ElectronOrbitalFunction targetOrbital)
-    {
-        if (sourceAtom == null || targetAtom == null || sourceOrbital == null || targetOrbital == null)
-            return;
-        OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
-        sourceAtom.RemovePiPOrbitalDirectionsForPartnerLine(targetAtom, AtomFunction.PiPOrbitalPrebondLineIndex);
-        targetAtom.RemovePiPOrbitalDirectionsForPartnerLine(sourceAtom, AtomFunction.PiPOrbitalPrebondLineIndex);
-
-        int mergedElectrons = sourceOrbital.ElectronCount + targetOrbital.ElectronCount;
-        int ecnPiEvent = AtomFunction.AllocateMoleculeEcnEventId();
-        AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
-            sourceAtom, targetAtom, "beforePiBond", ecnPiEvent, null, "pi");
-
-        sourceAtom.UnbondOrbital(sourceOrbital);
-        targetAtom.UnbondOrbital(targetOrbital);
-
-        var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, targetAtom, animateOrbitalToBond: false);
-        if (bond == null)
-            return;
-        bond.SkipNonGuideExecuteSigmaFormation12HybridPass = true;
-
-        sourceOrbital.transform.SetParent(null, worldPositionStays: true);
-        bond.SetOrbitalBeingFaded(sourceOrbital);
-        sourceAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
-        targetAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
-        sourceAtom.RefreshCharge();
-        targetAtom.RefreshCharge();
-
-        var mol = new HashSet<AtomFunction>();
-        foreach (var a in sourceAtom.GetConnectedMolecule()) if (a != null) mol.Add(a);
-        foreach (var a in targetAtom.GetConnectedMolecule()) if (a != null) mol.Add(a);
-
-        DrainCoroutineToCompletion(sourceOrbital.AnimateBondFormationOperationOrbitalsTowardBondCylinder(
-            sourceAtom, targetAtom, sourceOrbital, targetOrbital, bond, 0f, mol));
-        if (bond != null)
-        {
-            bond.animatingOrbitalToBondPosition = false;
-            DrainCoroutineToCompletion(bond.AnimateOrbitalToLine(0f, sourceOrbital, mol));
-            targetOrbital.ElectronCount = mergedElectrons;
-        }
-        else
-        {
-            Destroy(sourceOrbital.gameObject);
-        }
-
-        sourceAtom.RefreshCharge();
-        targetAtom.RefreshCharge();
-        if (bond != null)
-            AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
-                sourceAtom, targetAtom, "afterPiBond", ecnPiEvent, bond, "pi");
-    }
-
     IEnumerator CoOrbitalDragPiFormationThreePhase(
         AtomFunction sourceAtom,
         AtomFunction targetAtom,
@@ -2703,12 +2579,6 @@ public class SigmaBondFormation : MonoBehaviour
 
             var guideOrb = redistributionGuideTieBreakDraggedOrbital != null ? redistributionGuideTieBreakDraggedOrbital : sourceOrbital;
             ElectronRedistributionGuide.ResolveGuideAtomForPair(sourceAtom, targetAtom, guideOrb, out var guide, out var nonGuide);
-            if (guide == null || nonGuide == null || ReferenceEquals(guide, nonGuide))
-            {
-                yield return StartCoroutine(CoOrbitalDragPiFormationLegacyFallback(
-                    sourceAtom, targetAtom, sourceOrbital, targetOrbital, animate));
-                yield break;
-            }
 
             ElectronOrbitalFunction guideOpPhase1 = guide == sourceAtom ? sourceOrbital : targetOrbital;
             ElectronOrbitalFunction nonGuideOpPhase1 = nonGuide == sourceAtom ? sourceOrbital : targetOrbital;
@@ -2730,8 +2600,6 @@ public class SigmaBondFormation : MonoBehaviour
             
             int mergedElectrons = sourceOrbital.ElectronCount + targetOrbital.ElectronCount;
             int ecnPiEvent = AtomFunction.AllocateMoleculeEcnEventId();
-            AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
-                sourceAtom, targetAtom, "beforePiBond", ecnPiEvent, null, "pi");
 
             sourceAtom.UnbondOrbital(sourceOrbital);
             targetAtom.UnbondOrbital(targetOrbital);
@@ -2768,9 +2636,6 @@ public class SigmaBondFormation : MonoBehaviour
 
             sourceAtom.RefreshCharge();
             targetAtom.RefreshCharge();
-            if (bond != null)
-                AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
-                    sourceAtom, targetAtom, "afterPiBond", ecnPiEvent, bond, "pi");
 
             if (guide.AtomicNumber > 1
                 && phase3Sec > 1e-5f
@@ -2844,11 +2709,6 @@ public class SigmaBondFormation : MonoBehaviour
             EnsureEditModeManagerReference();
             var guideOrb = redistributionGuideTieBreakDraggedOrbital != null ? redistributionGuideTieBreakDraggedOrbital : sourceOrbital;
             ElectronRedistributionGuide.ResolveGuideAtomForPair(sourceAtom, targetAtom, guideOrb, out var guide, out var nonGuide);
-            if (guide == null || nonGuide == null || ReferenceEquals(guide, nonGuide))
-            {
-                RunOrbitalDragPiFormationLegacyFallbackImmediate(sourceAtom, targetAtom, sourceOrbital, targetOrbital);
-                return true;
-            }
 
             ElectronOrbitalFunction guideOpPhase1 = guide == sourceAtom ? sourceOrbital : targetOrbital;
             ElectronOrbitalFunction nonGuideOpPhase1 = nonGuide == sourceAtom ? sourceOrbital : targetOrbital;
@@ -2866,8 +2726,6 @@ public class SigmaBondFormation : MonoBehaviour
 
             int mergedElectrons = sourceOrbital.ElectronCount + targetOrbital.ElectronCount;
             int ecnPiEvent = AtomFunction.AllocateMoleculeEcnEventId();
-            AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
-                sourceAtom, targetAtom, "beforePiBond", ecnPiEvent, null, "pi");
 
             sourceAtom.UnbondOrbital(sourceOrbital);
             targetAtom.UnbondOrbital(targetOrbital);
@@ -2899,9 +2757,6 @@ public class SigmaBondFormation : MonoBehaviour
 
             sourceAtom.RefreshCharge();
             targetAtom.RefreshCharge();
-            if (bond != null)
-                AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
-                    sourceAtom, targetAtom, "afterPiBond", ecnPiEvent, bond, "pi");
 
             if (guide.AtomicNumber > 1
                 && phase3Sec > 1e-5f
@@ -2938,6 +2793,4 @@ public class SigmaBondFormation : MonoBehaviour
             editModeManager?.RefreshSelectedMoleculeAfterBondChange();
         }
     }
-
-
 }

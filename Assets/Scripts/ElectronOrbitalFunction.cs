@@ -1358,8 +1358,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 molForBondLineList);
         }
         
-        AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
-            sourceAtom, targetAtom, "beforePiBond", ecnPiEvent, null, "pi");
         sourceAtom.UnbondOrbital(this);
         targetAtom.UnbondOrbital(targetOrbital);
 
@@ -1386,9 +1384,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         }
         sourceAtom.RefreshCharge();
         targetAtom.RefreshCharge();
-        if (bond != null)
-            AtomFunction.LogMoleculeElectronConfigurationFromAtomUnion(
-                sourceAtom, targetAtom, "afterPiBond", ecnPiEvent, bond, "pi");
 
         float phase3Sec = SigmaBondFormation.ResolvePiPhase3GuideSeconds(this, targetOrbital, this);
         if (bond != null

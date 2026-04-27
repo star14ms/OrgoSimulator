@@ -41,28 +41,7 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
     static int _molEcnEventSeq;
 
-    /// <summary>Pair before/after <see cref="LogMoleculeElectronConfigurationFromAtomUnion"/> snapshots in ingest logs via data.bondEventId.</summary>
     public static int AllocateMoleculeEcnEventId() => ++_molEcnEventSeq;
-
-    /// <summary>
-    /// Legacy molecule electron configuration hook retained for compatibility with existing callers.
-    /// Diagnostic logging was removed; this is intentionally a no-op.
-    /// </summary>
-    public static void LogMoleculeElectronConfigurationFromAtomUnion(
-        AtomFunction atomA,
-        AtomFunction atomB,
-        string phase,
-        int bondEventId,
-        CovalentBond opBond,
-        string bondKind)
-    {
-        _ = atomA;
-        _ = atomB;
-        _ = phase;
-        _ = bondEventId;
-        _ = opBond;
-        _ = bondKind;
-    }
 
     bool isBeingHeld;
     /// <summary>True while σ/π formation coroutine has called <see cref="SetInteractionBlocked"/> with blocked=true.</summary>
@@ -1764,16 +1743,11 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 if (b?.AtomA == null || b?.AtomB == null) continue;
                 var v = b.AtomA == u ? b.AtomB : b.AtomA;
                 if (v == null) continue;
-                if (IsPivotSigmaEdge(u, v, sigmaNeighbor)) continue;
+                if (u == sigmaNeighbor && v == this) continue;
                 if (visited.Add(v)) q.Enqueue(v);
             }
         }
         return result;
-    }
-
-    bool IsPivotSigmaEdge(AtomFunction u, AtomFunction v, AtomFunction neighborFromPivot)
-    {
-        return (u == this && v == neighborFromPivot) || (u == neighborFromPivot && v == this);
     }
 
     /// <summary>
@@ -2171,8 +2145,6 @@ public class AtomFunction : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
         return true;
     }
-
-
 
     /// <summary>
     /// Inventory for unified carbon σ-cleavage layout: one shared σ orbital per σ bond line <b>incident on this nucleus</b> (counts as one domain from this center’s perspective) + every non-bond lobe parented on this nucleus.

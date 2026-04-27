@@ -248,7 +248,6 @@ public static class ElectronRedistributionOrchestrator
         AtomFunction guide,
         CovalentBond bond)
     {
-        RedistributionTetraCompareDebugLog.LogSigma12HybridPass(nonGuide, guide, bond);
         void RefreshIfHeavy(AtomFunction center, AtomFunction partner)
         {
             if (center == null || partner == null)

@@ -1698,8 +1698,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                         atomOrbitalOp: cyclicSigmaBreakAntiRecipient,
                         guideOrbitalPredetermined: null,
                         finalDirectionForGuideOrbital: default,
-                        atomMoveAnimation: null,
-                        visitedAtoms: null,
                         isBondingEvent: false,
                         cyclicContext: cyclicSigmaBreakRedistContext);
                     animB = null;

@@ -114,86 +114,39 @@ public static class ElectronRedistributionGuide
         if (substituentAcrossSigmaEdge)
         {
             // massA = Σ(weights on atomB's side of cut atomA–atomB); massB = Σ(A's side). Heavier substituent's incident atom is guide.
-            massA = SumSubstituentMassThroughSigmaEdge(atomA, atomB);
-            massB = SumSubstituentMassThroughSigmaEdge(atomB, atomA);
+            massA = SumSubstituentMassThroughSigmaEdge(atomB, atomA);
+            massB = SumSubstituentMassThroughSigmaEdge(atomA, atomB);
         }
         else
         {
             massA = SumAtomicMassInConnectedMolecule(atomA);
             massB = SumAtomicMassInConnectedMolecule(atomB);
         }
-        string resolveBranch;
         AtomFunction draggedParentAtom = draggedOrbital != null
             ? (draggedOrbital.transform.parent != null
                 ? draggedOrbital.transform.parent.GetComponent<AtomFunction>()
                 : null)
             : null;
-        if (massA > massB + 1e-4f)
+        if (massA > massB)
         {
-            if (substituentAcrossSigmaEdge)
-            {
-                guideAtom = atomB;
-                nonGuideAtom = atomA;
-                resolveBranch = "substituent_from_atomB_heavier";
-            }
-            else
-            {
-                guideAtom = atomA;
-                nonGuideAtom = atomB;
-                resolveBranch = "whole_molecule_atomA_heavier";
-            }
+            guideAtom = atomA;
+            nonGuideAtom = atomB;
         }
-        else if (massB > massA + 1e-4f)
+        else if (massB > massA)
         {
-            if (substituentAcrossSigmaEdge)
-            {
-                guideAtom = atomA;
-                nonGuideAtom = atomB;
-                resolveBranch = "substituent_from_atomA_heavier";
-            }
-            else
-            {
-                guideAtom = atomB;
-                nonGuideAtom = atomA;
-                resolveBranch = "whole_molecule_atomB_heavier";
-            }
+            guideAtom = atomB;
+            nonGuideAtom = atomA;
         }
-        else
+        else if (draggedParentAtom == atomA)
         {
-            if (draggedParentAtom == atomA)
-            {
-                nonGuideAtom = atomA;
-                guideAtom = atomB;
-                resolveBranch = "tie_draggedParentIsAtomA";
-            }
-            else if (draggedParentAtom == atomB)
-            {
-                nonGuideAtom = atomB;
-                guideAtom = atomA;
-                resolveBranch = "tie_draggedParentIsAtomB";
-            }
-            else
-            {
-                int idA = atomA.GetInstanceID();
-                int idB = atomB.GetInstanceID();
-                guideAtom = idA <= idB ? atomA : atomB;
-                nonGuideAtom = idA <= idB ? atomB : atomA;
-                resolveBranch = draggedParentAtom == null
-                    ? "tie_noDraggedParent_instanceId"
-                    : "tie_draggedParentMismatch_instanceId";
-            }
+            nonGuideAtom = atomA;
+            guideAtom = atomB;
         }
-
-        RedistributionTetraCompareDebugLog.LogGuideResolve(
-            atomA,
-            atomB,
-            draggedOrbital,
-            guideAtom,
-            nonGuideAtom,
-            massA,
-            massB,
-            resolveBranch,
-            draggedParentAtom);
+        else if (draggedParentAtom == atomB)
+        {
+            nonGuideAtom = atomB;
+            guideAtom = atomA;
+        }
     }
 
     /// <summary>

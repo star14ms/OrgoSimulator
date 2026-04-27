@@ -148,8 +148,6 @@ public static class OrbitalRedistribution
                 atomOrbitalOp: antiRecipient,
                 guideOrbitalPredetermined: null,
                 finalDirectionForGuideOrbital: default,
-                atomMoveAnimation: null,
-                visitedAtoms: null,
                 isBondingEvent: false,
                 cyclicContext: cyclicBreakRedist);
         }
@@ -794,8 +792,6 @@ public static class OrbitalRedistribution
             atomOrbitalOp: null,
             guideOrbitalPredetermined: null,
             finalDirectionForGuideOrbital: Vector3.zero,
-            atomMoveAnimation: null,
-            visitedAtoms: null,
             isBondingEvent: isBondingEvent,
             cyclicContext: null);
     }
@@ -1376,17 +1372,10 @@ public static class OrbitalRedistribution
         ElectronOrbitalFunction atomOrbitalOp = null,
         ElectronOrbitalFunction guideOrbitalPredetermined = null,
         Vector3 finalDirectionForGuideOrbital = default,
-        System.Func<float, Vector3> atomMoveAnimation = null,
-        HashSet<AtomFunction> visitedAtoms = null,
         bool isBondingEvent = true,
         CyclicRedistributionContext cyclicContext = null)
     {
         if (atom == null) return new RedistributionAnimation(null);
-        _ = atomMoveAnimation;
-        if (visitedAtoms == null)
-            visitedAtoms = new HashSet<AtomFunction>();
-        if (!visitedAtoms.Add(atom))
-            return new RedistributionAnimation(atom);
 
         var bondingGroups = new List<GroupEntry>();
         foreach (var cb in atom.CovalentBonds)
@@ -1594,8 +1583,6 @@ public static class OrbitalRedistribution
             atom,
             atomOrbitalOp,
             guideOrbitalPredetermined,
-            atomMoveAnimation,
-            visitedAtoms,
             isBondingEvent,
             cyclicContext,
             guideGroup);
@@ -1686,13 +1673,10 @@ public static class OrbitalRedistribution
         AtomFunction atom,
         ElectronOrbitalFunction atomOrbitalOp,
         ElectronOrbitalFunction guideOrbitalPredetermined,
-        System.Func<float, Vector3> atomMoveAnimation,
-        HashSet<AtomFunction> visitedAtoms,
         bool isBondingEvent,
         CyclicRedistributionContext cyclicContext,
         GroupEntry guideGroup = null)
     {
-        _ = atomMoveAnimation;
         var anim = new RedistributionAnimation(atom);
         if (groups == null || alignedTemplate == null || perm == null) return anim;
         int n = Mathf.Min(groups.Count, perm.Length);
@@ -1736,8 +1720,6 @@ public static class OrbitalRedistribution
                             atomOrbitalOp: ResolveCyclicClosureSigmaOpForAtom(adjacentAtom, cyclicContext),
                             guideOrbitalPredetermined: g.Orbital,
                             finalDirectionForGuideOrbital: childGuideDirLocal,
-                            atomMoveAnimation: atomMoveAnimation,
-                            visitedAtoms: visitedAtoms,
                             isBondingEvent: isBondingEvent,
                             cyclicContext: cyclicContext);
                         anim.AddChild(childAnim);
