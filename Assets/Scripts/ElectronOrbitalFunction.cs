@@ -1298,134 +1298,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     bool FormCovalentBondPiStart(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital)
     {
         var runner = SigmaBondFormation.EnsureRunnerInScene();
-        if (runner != null)
-        {
-            runner.EnsureEditModeManagerReference();
-            if (runner.TryBeginOrbitalDragPiFormation(sourceAtom, targetAtom, this, targetOrbital, this))
-                return true;
-        }
-        targetAtom.StartCoroutine(FormCovalentBondPiCoroutine(sourceAtom, targetAtom, targetOrbital));
-        return true;
-    }
-
-    IEnumerator FormCovalentBondPiCoroutine(AtomFunction sourceAtom, AtomFunction targetAtom, ElectronOrbitalFunction targetOrbital)
-    {
-        var atomsToBlock = new HashSet<AtomFunction>();
-        foreach (var a in sourceAtom.GetConnectedMolecule()) atomsToBlock.Add(a);
-        foreach (var a in targetAtom.GetConnectedMolecule()) atomsToBlock.Add(a);
-        foreach (var a in atomsToBlock) a.SetInteractionBlocked(true);
-
-        AtomFunction guide = null;
-        AtomFunction nonGuide = null;
-        try
-        {
-        int ecnPiEvent = AtomFunction.AllocateMoleculeEcnEventId();
-        _ = sourceAtom.GetPiBondCount();
-        _ = targetAtom.GetPiBondCount();
-        _ = sourceAtom.GetDistinctSigmaNeighborCount();
-        _ = targetAtom.GetDistinctSigmaNeighborCount();
-        int mergedElectrons = electronCount + targetOrbital.ElectronCount;
-
-        // Snap source orbital to original position (like sigma bond) before animating to bond center
-        transform.localPosition = originalLocalPosition;
-        transform.localRotation = originalLocalRotation;
-        transform.localScale = originalLocalScale;
-
-        var molForBondLineUpdates = new HashSet<AtomFunction>();
-        foreach (var a in sourceAtom.GetConnectedMolecule()) if (a != null) molForBondLineUpdates.Add(a);
-        foreach (var a in targetAtom.GetConnectedMolecule()) if (a != null) molForBondLineUpdates.Add(a);
-        var molForBondLineList = new List<AtomFunction>(molForBondLineUpdates.Count);
-        foreach (var a in molForBondLineUpdates)
-            if (a != null)
-                molForBondLineList.Add(a);
-
-        OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
-        ElectronRedistributionGuide.ResolveGuideAtomForPair(sourceAtom, targetAtom, this, out guide, out nonGuide);
-        bool guideRedistributedInPhase1 = false;
-        if (guide != null && nonGuide != null && !ReferenceEquals(guide, nonGuide))
-        {
-            var guideOpPhase1 = guide == sourceAtom ? this : targetOrbital;
-            var nonGuideOpPhase1 = nonGuide == sourceAtom ? this : targetOrbital;
-            guideRedistributedInPhase1 = SigmaBondFormation.RunOrbitalDragPiPhase1RedistributionSynchronously(
-                guide,
-                nonGuide,
-                guideOpPhase1,
-                nonGuideOpPhase1,
-                sourceAtom,
-                targetAtom,
-                this,
-                targetOrbital,
-                molForBondLineList);
-        }
-        
-        sourceAtom.UnbondOrbital(this);
-        targetAtom.UnbondOrbital(targetOrbital);
-
-        var bond = CovalentBond.Create(sourceAtom, targetAtom, targetOrbital, targetAtom, animateOrbitalToBond: true);
-        transform.SetParent(null); // Detach source orbital but keep visible for post-Create formation animation (preserves world pos from snap)
-        bond.SetOrbitalBeingFaded(this); // Use merged count for charge during animation (source orbital is being faded)
-        sourceAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
-        targetAtom.TryTransferElectronFromLonePairToEmptyOrbitals();
-        sourceAtom.RefreshCharge();
-        targetAtom.RefreshCharge();
-
-        yield return AnimateBondFormationOperationOrbitalsTowardBondCylinder(
-            sourceAtom, targetAtom, this, targetOrbital, bond, -1f, molForBondLineUpdates);
-
-        if (bond != null)
-        {
-            bond.animatingOrbitalToBondPosition = false;
-            yield return bond.AnimateOrbitalToLine(BondFormationOrbitalToLineDurationResolved, this, molForBondLineUpdates);
-            targetOrbital.ElectronCount = mergedElectrons; // Show merged electrons only after orbital-to-line
-        }
-        else
-        {
-            Destroy(gameObject);
-        }
-        sourceAtom.RefreshCharge();
-        targetAtom.RefreshCharge();
-
-        float phase3Sec = SigmaBondFormation.ResolvePiPhase3GuideSeconds(this, targetOrbital, this);
-        if (bond != null
-            && guide != null
-            && nonGuide != null
-            && !ReferenceEquals(guide, nonGuide)
-            && guide.AtomicNumber > 1
-            && phase3Sec > 1e-5f
-            && !guideRedistributedInPhase1)
-        {
-            var guideOpPhase1 = guide == sourceAtom ? this : targetOrbital;
-            var phase3GuideOp = bond.Orbital != null ? bond.Orbital : guideOpPhase1;
-            var phase3GuideRedistribution = OrbitalRedistribution.BuildOrbitalRedistribution(
-                guide,
-                nonGuide,
-                atomOrbitalOp: phase3GuideOp,
-                isBondingEvent: true);
-            if (phase3GuideRedistribution != null)
-            {
-                float t3 = 0f;
-                while (t3 < phase3Sec)
-                {
-                    t3 += Time.deltaTime;
-                    float s3 = Mathf.Clamp01(t3 / phase3Sec);
-                    float smooth3 = s3 * s3 * (3f - 2f * s3);
-                    phase3GuideRedistribution.Apply(smooth3);
-                    AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(guide.GetConnectedMolecule());
-                    yield return null;
-                }
-                phase3GuideRedistribution.Apply(1f);
-                AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(guide.GetConnectedMolecule());
-            }
-        }
-        }
-        finally
-        {
-            OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
-            guide?.RemovePiPOrbitalDirectionsForPartnerLine(nonGuide, AtomFunction.PiPOrbitalPrebondLineIndex);
-            nonGuide?.RemovePiPOrbitalDirectionsForPartnerLine(guide, AtomFunction.PiPOrbitalPrebondLineIndex);
-            foreach (var a in atomsToBlock) a.SetInteractionBlocked(false);
-            UnityEngine.Object.FindFirstObjectByType<EditModeManager>()?.RefreshSelectedMoleculeAfterBondChange();
-        }
+        if (runner == null)
+            return false;
+        runner.EnsureEditModeManagerReference();
+        // Drag path stays asynchronous by callsite policy; runner enforces strict-fail when prerequisites are missing.
+        return runner.TryBeginOrbitalDragPiFormation(sourceAtom, targetAtom, this, targetOrbital, this, animate: true);
     }
 
     /// <summary>Prepared σ/π cylinder lerp: shared by timed coroutine and phase-1 parallel tracks.</summary>
@@ -1466,7 +1343,6 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
     {
         prepared = default;
         if (bond == null) return false;
-
         // π phase-1 on σ: line index is the row the new π will occupy (1 = first π, 2 = second π / triple), and
         // bondCount includes that new row so perspective endpoints and offsets match post–Create geometry.
         int bondsBetween = bond.AtomA != null && bond.AtomB != null ? bond.AtomA.GetBondsTo(bond.AtomB) : 0;
@@ -1483,6 +1359,42 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         Quaternion bondTargetRot = bt.Item2;
         Vector3 sourceTargetPos = bondTargetPos;
         Vector3 targetTargetPos = bondTargetPos;
+        Vector3 prebondCylinderNormalW = Vector3.zero;
+        bool hasPrebondCylinderNormalW = false;
+        // π row post–Create: same world +Z as phase-1 redistribution (TryGetPiPrebondPOrbitalPlusZWorld), no σ offset positions.
+        bool sharedPiRotOnly = false;
+        if (!piPreBondSecondLineOnSigma
+            && bond != null
+            && !bond.IsSigmaBondLine()
+            && bond.GetBondIndex() > 0
+            && sourceAtom != null
+            && targetAtom != null)
+        {
+            Vector3 sharedPlusZOnly = Vector3.zero;
+            bool haveSharedPlusZOnly =
+                sourceAtom.TryGetPiPrebondPOrbitalPlusZWorld(targetAtom, out sharedPlusZOnly)
+                || targetAtom.TryGetPiPrebondPOrbitalPlusZWorld(sourceAtom, out sharedPlusZOnly);
+            if (haveSharedPlusZOnly && sharedPlusZOnly.sqrMagnitude > 1e-16f)
+            {
+                Vector3 axisOnly = targetAtom.transform.position - sourceAtom.transform.position;
+                if (axisOnly.sqrMagnitude > 1e-10f)
+                {
+                    axisOnly.Normalize();
+                    Vector3 pNormalOnly = Vector3.ProjectOnPlane(sharedPlusZOnly.normalized, axisOnly);
+                    if (pNormalOnly.sqrMagnitude > 1e-10f)
+                    {
+                        pNormalOnly.Normalize();
+                        int liOnly = bond.GetBondIndex();
+                        float lineOffsetOnly = (liOnly % 2 == 1 ? -1f : 1f) * ((liOnly + 1) / 2) * 0.2f;
+                        if (lineOffsetOnly < 0f)
+                            pNormalOnly = -pNormalOnly;
+                        prebondCylinderNormalW = pNormalOnly;
+                        sharedPiRotOnly = true;
+                    }
+                }
+            }
+        }
+
         if (piPreBondSecondLineOnSigma
             && bond.IsSigmaBondLine()
             && sourceAtom != null
@@ -1505,6 +1417,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                         float lineOffset = (lineIndex % 2 == 1 ? -1f : 1f) * ((lineIndex + 1) / 2) * 0.2f;
                         if (lineOffset < 0f)
                             pNormal = -pNormal;
+                        prebondCylinderNormalW = pNormal;
+                        hasPrebondCylinderNormalW = true;
                         float lobeOffset = Mathf.Max(0.05f, 0.6f * 0.5f * (sourceAtom.BondRadius + targetAtom.BondRadius));
                         Vector3 plus = pNormal * lobeOffset;
                         sourceTargetPos = sourceAtom.transform.position + plus;
@@ -1515,7 +1429,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             }
         }
 
-        (float sourceDiff, float targetDiff) = ComputePiBondAngleDiffs(sourceAtom, targetAtom, bondTargetPos, bondTargetRot, bond);
+        bool useSharedPrebondPlusZRotation = hasPrebondCylinderNormalW || sharedPiRotOnly;
+        (float sourceDiff, float targetDiff) = useSharedPrebondPlusZRotation
+            ? (0f, 0f)
+            : ComputePiBondAngleDiffs(sourceAtom, targetAtom, bondTargetPos, bondTargetRot, bond);
 
         bool flipTarget = Mathf.Abs(sourceDiff) < Mathf.Abs(targetDiff);
         if (OrbitalAngleUtility.UseFull3DOrbitalGeometry)
@@ -1545,6 +1462,22 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         {
             sourceTargetRot = bondTargetRot * Quaternion.Euler(0f, 0f, 180f);
             targetTargetRot = bondTargetRot;
+        }
+
+        if (useSharedPrebondPlusZRotation && prebondCylinderNormalW.sqrMagnitude > 1e-10f)
+        {
+            if (sharedPiRotOnly && sourceOrbital != null && targetOrbital != null)
+            {
+                // π post–Create: keep phase-2 rotation targets equal to phase-1 final OP world rotations (same hybrid +X).
+                sourceTargetRot = sourceOrbital.transform.rotation;
+                targetTargetRot = targetOrbital.transform.rotation;
+            }
+            else
+            {
+                Quaternion axisRot = Quaternion.FromToRotation(Vector3.right, prebondCylinderNormalW.normalized);
+                sourceTargetRot = axisRot * Quaternion.Euler(0f, 0f, 180f);
+                targetTargetRot = axisRot;
+            }
         }
 
         prepared.SourceOrbStart = sourceOrbital != null
@@ -1736,6 +1669,18 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             sourceOrbital.transform.rotation = prepared.SourceTargetRot;
         }
         bond.SnapOrbitalToBondPosition();
+        if (bond.GetBondIndex() > 0 && sourceAtom != null && sourceOrbital != null)
+        {
+            AtomFunction partnerRestore = sourceAtom.GetPartnerAtomOnBond(bond);
+            if (partnerRestore != null
+                && (sourceAtom.TryGetPiPrebondPOrbitalPlusZWorld(partnerRestore, out _)
+                    || partnerRestore.TryGetPiPrebondPOrbitalPlusZWorld(sourceAtom, out _)))
+            {
+                sourceOrbital.transform.SetPositionAndRotation(prepared.SourceTargetPos, prepared.SourceTargetRot);
+                if (targetOrbital != null)
+                    targetOrbital.transform.SetPositionAndRotation(prepared.TargetTargetPos, prepared.TargetTargetRot);
+            }
+        }
     }
 
     /// <summary>Bond-formation animation only: lerp the two orbitals in this gesture toward the shared bond cylinder pose. Electron redistribution is a separate system — no hybrid refresh or σ/π redistribution hooks here.</summary>
@@ -1751,7 +1696,11 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
 
         if (!TryPrepareBondFormationCylinderStep(
                 sourceAtom, targetAtom, sourceOrbital, targetOrbital, bond, piPreBondSecondLineOnSigma: false, out var prepared))
+        {
+            if (bond.GetBondIndex() > 0)
+                bond.CancelPiBondLineVisualDefer();
             yield break;
+        }
 
         if (prepared.SkipCylinderLerp)
             dur = 0f;
@@ -1763,6 +1712,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 float u = Mathf.Clamp01(t / dur);
                 float s = u * u * (3f - 2f * u);
                 ApplyBondFormationCylinderPoseForSmoothStep(prepared, sourceOrbital, targetOrbital, s);
+                if (bond.GetBondIndex() > 0)
+                    bond.NotifyPiPhase2CylinderLerpProgress(s);
                 if (atomsForPerFrameBondLineUpdate != null && atomsForPerFrameBondLineUpdate.Count > 0)
                     AtomFunction.UpdateSigmaBondLineTransformsOnlyForAtoms(atomsForPerFrameBondLineUpdate);
                 yield return null;
@@ -1777,6 +1728,8 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             bond,
             BondFormationCylinderFinalizeMode.AttachAndSnapToBond,
             atomsForPerFrameBondLineUpdate);
+        if (bond.GetBondIndex() > 0)
+            bond.NotifyPiPhase2CylinderLerpProgress(1f);
 
         // π row: hide OP meshes only after cylinder step fully finishes. Always yield once before hide so we never
         // run Hide in the same MoveNext as Finalize (SkipCylinderLerp runs Finalize immediately — otherwise OP vanishes
@@ -1784,7 +1737,7 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         if (bond.GetBondIndex() > 0)
         {
             yield return null;
-            SigmaBondFormation.HidePiOperationOrbitalsAfterPhase2Cylinder(bond, sourceOrbital);
+            SigmaBondFormation.HidePiOperationOrbitalsAfterPhase2Cylinder(bond, sourceOrbital, targetOrbital);
         }
     }
 
@@ -1830,7 +1783,9 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
             }
             perpS.Normalize();
             perpT.Normalize();
-            return (Vector3.Angle(bondDirFlat, perpS), Vector3.Angle(bondDirFlat, perpT));
+            float sourceA = Vector3.Angle(bondDirFlat, perpS);
+            float targetA = Vector3.Angle(bondDirFlat, perpT);
+            return (sourceA, targetA);
         }
 
         toCenterFromSource.Normalize();

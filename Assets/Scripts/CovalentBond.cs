@@ -33,6 +33,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// <summary>π row (<see cref="GetBondIndex"/> &gt; 0): keep perspective π cylinders/lobes visible together with the bond orbital
     /// during post–Create cylinder lerp and until orbital-to-line starts, so OP lobes and π mesh do not blink out of sync.</summary>
     bool showPerspectivePiWithBondOrbitalOverlap;
+    /// <summary>π row + animated post–Create: hide π line/cylinder until phase-2 cylinder lerp advances past s≈0 so the bond mesh is not drawn at the final π offset while operation orbitals still sit at phase-1 poses.</summary>
+    bool deferPiBondLineVisualDuringPhase2Cylinder;
     /// <summary>π row: after phase-2 cylinder, hide the shared bond orbital mesh while keeping π cylinders on so OP source
     /// and bond lobe do not stack-blink before orbital-to-line.</summary>
     bool suppressSharedOrbitalVisualForPiHandoff;
@@ -166,6 +168,12 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         if (suppressSigmaPrebondBondFrameOrbitalPose) return;
         var (worldPos, worldRot) = GetOrbitalTargetWorldState();
         orbital.transform.position = worldPos;
+        // π row: never re-apply σ bond-frame orbital rotation here. Prebond +Z slots are cleared after phase 2
+        // (RemovePiPOrbitalDirectionsForPartnerLine); tying this guard to them made LateUpdate/Snap overwrite the
+        // formation heading and teleport π lobes the frame prebond data disappears.
+        bool piRowKeepFormationHeading = GetBondIndex() > 0;
+        if (piRowKeepFormationHeading)
+            return;
         Quaternion appliedRot = worldRot;
         if (preserveWorldRollFrom.HasValue)
         {
@@ -351,9 +359,9 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         Vector3 axisN = axis / dist;
         Vector3 pNormal = PerpendicularToBondDirection(axisN);
         bool usedBondPiAxisCache = false;
+        bool usedBondOrbitalAxis = false;
         bool usedPhase1TemplatePlane = false;
         float phase1TemplateAxisDot = -2f;
-        bool usedNeighborPlane = false;
         float neighborPlaneAxisDot = -2f;
         bool usedSecondPiOrthogonal = false;
 
@@ -389,7 +397,25 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
         if (!usedSecondPiOrthogonal)
         {
-            if (lineIndex < 2 && cachedPerspectivePiAxisWorld.HasValue)
+            // π row target direction should follow the bond orbital heading chosen by formation (guide OP / "green" reference).
+            // Use this first, then fall back to cached/template/neighbor heuristics only if unavailable.
+            if (lineIndex < 2 && Orbital != null)
+            {
+                Vector3 opAxis = OrbitalAngleUtility.GetOrbitalDirectionWorld(Orbital.transform);
+                Vector3 projectedOp = Vector3.ProjectOnPlane(opAxis, axisN);
+                if (projectedOp.sqrMagnitude <= 1e-10f)
+                {
+                    Vector3 cross = Vector3.Cross(axisN, opAxis);
+                    if (cross.sqrMagnitude > 1e-10f)
+                        projectedOp = cross;
+                }
+                if (projectedOp.sqrMagnitude > 1e-10f)
+                {
+                    pNormal = projectedOp.normalized;
+                    usedBondOrbitalAxis = true;
+                }
+            }
+            if (!usedBondOrbitalAxis && lineIndex < 2 && cachedPerspectivePiAxisWorld.HasValue)
             {
                 Vector3 projectedCache = Vector3.ProjectOnPlane(cachedPerspectivePiAxisWorld.Value, axisN);
                 if (projectedCache.sqrMagnitude > 1e-10f)
@@ -398,7 +424,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     usedBondPiAxisCache = true;
                 }
             }
-            if (!usedBondPiAxisCache
+            if (!usedBondOrbitalAxis
+                && !usedBondPiAxisCache
                 && OrbitalRedistribution.TryGetPiPhase1PrecursorTrigonalPlaneNormalWorldForBondPair(atomA, atomB, out var nPhase1Tpl))
             {
                 phase1TemplateAxisDot = Mathf.Abs(Vector3.Dot(nPhase1Tpl, axisN));
@@ -410,7 +437,8 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     usedPhase1TemplatePlane = true;
                 }
             }
-            if (!usedBondPiAxisCache
+            if (!usedBondOrbitalAxis
+                && !usedBondPiAxisCache
                 && !usedPhase1TemplatePlane
                 && (TryComputeLocalPlaneNormalFromUniqueNeighbors(atomA, atomB, out var nPlane)
                     || TryComputeLocalPlaneNormalFromUniqueNeighbors(atomB, atomA, out nPlane)))
@@ -422,18 +450,15 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     pNormal = neighborPlaneAxisDot > 1e-4f
                         ? Vector3.ProjectOnPlane(nPlane, axisN).normalized
                         : nPlane;
-                    usedNeighborPlane = true;
                 }
-            }
-            if (!usedBondPiAxisCache && !usedPhase1TemplatePlane && !usedNeighborPlane && Orbital != null)
-            {
-                Vector3 opAxis = OrbitalAngleUtility.GetOrbitalDirectionWorld(Orbital.transform);
-                Vector3 projected = Vector3.ProjectOnPlane(opAxis, axisN);
             }
         }
         Vector3 pNormalBeforeLineOffsetSign = pNormal;
         float lineOffset = GetLineOffset(lineIndex, bondCount);
-        if (lineOffset < 0f)
+        // Odd π rows use a negative sprite offset, which historically flipped the perpendicular.
+        // When pNormal already comes from the forming bond orbital (hybrid +X), flipping would
+        // put π lobes on the wrong hemisphere relative to that direction — skip flip in that case.
+        if (lineOffset < 0f && !usedBondOrbitalAxis)
             pNormal = -pNormal;
         if (lineIndex < 2 && usedPhase1TemplatePlane)
             cachedPerspectivePiAxisWorld = pNormalBeforeLineOffsetSign.normalized;
@@ -492,38 +517,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         AtomFunction partnerFromCaller = fromAtom == atomA ? atomB : atomA;
         if (partnerFromCaller == null) return;
         Vector3 geom = partnerFromCaller.transform.position - fromAtom.transform.position;
-        // #region agent log
-        if (ElectronRedistributionOrchestrator.DebugLogApplySigmaTipInternuclearNdjson
-            && geom.sqrMagnitude > 1e-10f)
-        {
-            Vector3 geomN = geom.normalized;
-            float dotHybVsCallerGeom = Vector3.Dot(hybridTipWorld, geomN);
-            AtomFunction authAtom = AuthoritativeAtomForOrbitalRedistributionPose();
-            float dotHybVsLegacyAuthGeom = dotHybVsCallerGeom;
-            if (authAtom != null)
-            {
-                AtomFunction pAuth = authAtom == atomA ? atomB : atomA;
-                if (pAuth != null)
-                {
-                    Vector3 gAuth = pAuth.transform.position - authAtom.transform.position;
-                    if (gAuth.sqrMagnitude > 1e-10f)
-                        dotHybVsLegacyAuthGeom = Vector3.Dot(hybridTipWorld, gAuth.normalized);
-                }
-            }
-            bool willFlipCaller = dotHybVsCallerGeom < 0f;
-            ProjectAgentDebugLog.AppendCursorDebugSessionC2019eNdjson(
-                "H49",
-                "CovalentBond.cs:ApplySigmaOrbitalTip",
-                "hybrid_vs_caller_geom_before_flip",
-                "{\"bondId\":" + GetInstanceID()
-                + ",\"fromAtomId\":" + fromAtom.GetInstanceID()
-                + ",\"fromZ\":" + fromAtom.AtomicNumber
-                + ",\"dotHybridVsCallerInternucGeom\":" + ProjectAgentDebugLog.JsonFloatInvariant(dotHybVsCallerGeom)
-                + ",\"dotHybridVsLegacyAuthInternucGeom\":" + ProjectAgentDebugLog.JsonFloatInvariant(dotHybVsLegacyAuthGeom)
-                + ",\"flipHybridForCallerHemisphere\":" + (willFlipCaller ? "true" : "false") + "}",
-                "sigmaTipInternuc");
-        }
-        // #endregion
         if (geom.sqrMagnitude > 1e-10f)
         {
             geom.Normalize();
@@ -551,26 +544,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
         if (dot > 0.9999f)
         {
-            // #region agent log
-            if (ElectronRedistributionOrchestrator.DebugLogSigmaBondRefreshGeomAlignedEarlyExitNdjson)
-            {
-                Vector3 actualTipW = orbital.transform.rotation * Vector3.right;
-                if (actualTipW.sqrMagnitude > 1e-10f) actualTipW.Normalize();
-                float angActualVsWantDeg = actualTipW.sqrMagnitude > 1e-10f
-                    ? Vector3.Angle(actualTipW, want)
-                    : -1f;
-                ProjectAgentDebugLog.AppendCursorDebugSessionC2019eNdjson(
-                    "H54",
-                    "CovalentBond.cs:ApplySigmaOrbitalTip",
-                    "bond_sigma_refresh_early_exit_tip_already_along_geom_axis",
-                    "{\"bondId\":" + GetInstanceID()
-                    + ",\"fromAtomId\":" + fromAtom.GetInstanceID()
-                    + ",\"dotTip0Want\":" + ProjectAgentDebugLog.JsonFloatInvariant(dot)
-                    + ",\"angActualTipWorldVsWantDeg\":" + ProjectAgentDebugLog.JsonFloatInvariant(angActualVsWantDeg)
-                    + ",\"note\":\"SyncSigmaBondOrbitalTipsFromLocks uses geometric nucleus-to-partner; TryMatch idealLocal is for lock matching only, not the apply target\"}",
-                    "bondRefreshExplain");
-            }
-            // #endregion
             orbitalRedistributionWorldDelta = Quaternion.identity;
             SyncSigmaOrbitalWorldPoseFromRedistribution(forceApplyPoseDuringBondToLineAnim: true);
             return;
@@ -603,20 +576,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbitalRotationFlipped = !orbitalRotationFlipped;
             orbitalRedistributionWorldDelta = Quaternion.identity;
             SyncSigmaOrbitalWorldPoseFromRedistribution(forceApplyPoseDuringBondToLineAnim: true);
-            // #region agent log
-            if (ElectronRedistributionOrchestrator.DebugLog8de5d1NonBondRedistDirections)
-            {
-                ProjectAgentDebugLog.AppendCursorDebugSessionC2019eNdjson(
-                    "H127",
-                    "CovalentBond.cs:ApplySigmaOrbitalTipFromRedistribution",
-                    "sigma_tip_apply_flip_branch_probe_exit",
-                    "{\"bondId\":" + GetInstanceID()
-                    + ",\"branch\":\"dot_lt_neg_threshold_toggle_flip\""
-                    + ",\"orbitalRotationFlippedAfter\":" + (orbitalRotationFlipped ? "true" : "false")
-                    + "}",
-                    "breakFlipProbe");
-            }
-            // #endregion
             if (ElectronOrbitalFunction.DebugLogSigmaFormationHeavyOrbRotationWhy
                 && ElectronOrbitalFunction.ConsumeSigmaFormationHeavyRotDiag())
             {
@@ -875,13 +834,32 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             orbitalVisible = true;
             orbitalToLineAnimProgress = -1f;
             showPerspectivePiWithBondOrbitalOverlap = useCylinderBondVisual && piBondRow;
+            deferPiBondLineVisualDuringPhase2Cylinder = piBondRow && animateOrbitalToBond;
         }
         else
         {
             orbitalVisible = false;
             orbitalToLineAnimProgress = -1f; // Skip animation; show line immediately
             showPerspectivePiWithBondOrbitalOverlap = false;
+            deferPiBondLineVisualDuringPhase2Cylinder = false;
         }
+        ApplyDisplayMode();
+    }
+
+    /// <summary>π animated formation: call from phase-2 cylinder lerp once <paramref name="smoothS"/> exceeds ~0 (or pass 1 after finalize) so π bond line/cylinders can appear in sync with moving OPs.</summary>
+    public void NotifyPiPhase2CylinderLerpProgress(float smoothS)
+    {
+        if (!deferPiBondLineVisualDuringPhase2Cylinder) return;
+        if (smoothS <= 1e-5f) return;
+        deferPiBondLineVisualDuringPhase2Cylinder = false;
+        ApplyDisplayMode();
+    }
+
+    /// <summary>If phase-2 cylinder prep fails, clear defer so π line visibility is not stuck off.</summary>
+    public void CancelPiBondLineVisualDefer()
+    {
+        if (!deferPiBondLineVisualDuringPhase2Cylinder) return;
+        deferPiBondLineVisualDuringPhase2Cylinder = false;
         ApplyDisplayMode();
     }
 
@@ -1189,10 +1167,17 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         {
             var orbWorldPos = usePerspectivePiLobes ? piLobes.positiveCenter : center + perpendicular * offset;
             orbital.transform.position = orbWorldPos;
-            var baseOrbRot = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
-            if (orbitalRotationFlipped) baseOrbRot = baseOrbRot * Quaternion.Euler(0f, 0f, 180f);
-            var orbRot = orbitalRedistributionWorldDelta * baseOrbRot;
-            orbital.transform.rotation = orbRot;
+            // π row: bond-frame * Euler(0,0,90) is σ-style; it overwrites the π OP heading from phase 1 / cylinder prep.
+            // Keep formation-set rotation for all π rows (not only while prebond +Z slots exist — those are cleared
+            // after orbital-drag phase 2, which would otherwise re-enable this overwrite and teleport π lobes).
+            bool piRowKeepFormationHeading = bondIndex > 0;
+            if (!piRowKeepFormationHeading)
+            {
+                var baseOrbRot = transform.rotation * Quaternion.Euler(0f, 0f, 90f);
+                if (orbitalRotationFlipped) baseOrbRot = baseOrbRot * Quaternion.Euler(0f, 0f, 180f);
+                var orbRot = orbitalRedistributionWorldDelta * baseOrbRot;
+                orbital.transform.rotation = orbRot;
+            }
             float orbScale = orbitalToLineAnimProgress < 0 ? 0.6f : 0.6f * (1f - orbitalToLineAnimProgress);
             orbital.transform.localScale = Vector3.one * Mathf.Max(0.01f, orbScale);
         }
@@ -1209,9 +1194,9 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         // σ: hide line while the bond orbital is shown until orbital-to-line (original rule).
         // π row: also show π cylinders/lobes while the shared orbital is visible pre–orbital-to-line so they overlap
         // operation orbitals during π phase-2 cylinder lerp (same frame continuity vs OP meshes).
-        bool showLine = !orbitalVisible || animating
-            || (showPerspectivePiWithBondOrbitalOverlap && orbitalVisible && orbitalToLineAnimProgress < 0f)
-            || suppressSharedOrbitalVisualForPiHandoff;
+        bool allowPiOverlapLine = showPerspectivePiWithBondOrbitalOverlap && orbitalVisible && orbitalToLineAnimProgress < 0f
+            && !deferPiBondLineVisualDuringPhase2Cylinder;
+        bool showLine = !orbitalVisible || animating || allowPiOverlapLine || suppressSharedOrbitalVisualForPiHandoff;
         if (lineRenderer != null) lineRenderer.enabled = showLine;
         if (cylinderRenderer != null) cylinderRenderer.enabled = showLine;
         if (piCylinderRendererSecondary != null) piCylinderRendererSecondary.enabled = showLine;

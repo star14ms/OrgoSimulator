@@ -514,6 +514,7 @@ public static class AminoAcidMoleculeLibrary
                 oa,
                 ob,
                 redistributionGuideTieBreakDraggedOrbital: oa,
+                // Builder path requires immediate completion before post-condition checks.
                 animate: false))
         {
             bool promoted = atomA.GetBondsTo(atomB) >= 2;
