@@ -1643,16 +1643,16 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 cyclicSigmaRingBondBreak
                 && ringPathOrderedC1ToCn != null
                 && ringPathOrderedC1ToCn.Count >= 3
-                && OrbitalRedistribution.DebugCyclicSigmaBondBreakSteppedTemplate
+                && OrbitalRedistribution.Cyclic.DebugCyclicSigmaBondBreakSteppedTemplate
                 && BondFormationDebugController.SteppedModeEnabled;
 
-            OrbitalRedistribution.CyclicSigmaChainAtomAnimation cyclicChainAtomAnim = null;
+            OrbitalRedistribution.Cyclic.CyclicSigmaChainAtomAnimation cyclicChainAtomAnim = null;
             if (cyclicSigmaRingBondBreak
                 && ringPathOrderedC1ToCn != null
                 && ringPathOrderedC1ToCn.Count >= 3
                 && !debugSteppedChainVisualization)
             {
-                OrbitalRedistribution.TryBuildCyclicSigmaBondBreakStaggeredChainAtomAnimation(
+                OrbitalRedistribution.Cyclic.TryBuildCyclicSigmaBondBreakStaggeredChainAtomAnimation(
                     ringPathOrderedC1ToCn,
                     out cyclicChainAtomAnim);
             }
@@ -1674,7 +1674,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     cyclicSigmaBreakPartner = cyclicSigmaBreakRecipient == atomA ? atomB : atomA;
                     cyclicSigmaBreakAntiRecipient = cyclicSigmaBreakRecipient == atomA ? antiGuideA : antiGuideB;
                     cyclicSigmaBreakRedistContext =
-                        OrbitalRedistribution.CreateCyclicSigmaBondBreakRedistributionBlockContext(
+                        OrbitalRedistribution.Cyclic.CreateCyclicSigmaBondBreakRedistributionBlockContext(
                             ringPathOrderedC1ToCn);
                     animA = OrbitalRedistribution.BuildOrbitalRedistribution(
                         cyclicSigmaBreakRecipient,
@@ -1773,20 +1773,20 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         AtomFunction cyclicSigmaBreakRecipient,
         AtomFunction cyclicSigmaBreakPartner,
         ElectronOrbitalFunction cyclicSigmaBreakAntiRecipient,
-        global::OrbitalRedistribution.CyclicRedistributionContext cyclicSigmaBreakRedistContext,
-        global::OrbitalRedistribution.RedistributionAnimation animPrimary,
-        global::OrbitalRedistribution.RedistributionAnimation animSecondary,
+        OrbitalRedistribution.CyclicRedistributionContext cyclicSigmaBreakRedistContext,
+        OrbitalRedistribution.RedistributionAnimation animPrimary,
+        OrbitalRedistribution.RedistributionAnimation animSecondary,
         bool applySecondary,
         Action onComplete)
     {
-        global::OrbitalRedistribution.CyclicSigmaChainAtomAnimation chainAnim = null;
+        OrbitalRedistribution.Cyclic.CyclicSigmaChainAtomAnimation chainAnim = null;
         if (atomA == null || atomB == null)
         {
             onComplete?.Invoke();
             yield break;
         }
 
-        global::OrbitalRedistribution.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
+        OrbitalRedistribution.Cyclic.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
         int n = ringPathOrderedC1ToCn.Count;
         var targetWorld = new Vector3[n];
         for (int i = 0; i < n; i++)
@@ -1795,7 +1795,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         float bondLen = Vector3.Distance(targetWorld[0], targetWorld[1]);
         if (bondLen < 1e-4f)
         {
-            global::OrbitalRedistribution.TryBuildCyclicSigmaBondBreakStaggeredChainAtomAnimation(
+            OrbitalRedistribution.Cyclic.TryBuildCyclicSigmaBondBreakStaggeredChainAtomAnimation(
                 ringPathOrderedC1ToCn,
                 out chainAnim);
         }
@@ -1804,7 +1804,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             bool failed = false;
             for (int i = 2; i < n; i++)
             {
-                if (!global::OrbitalRedistribution.TryComputeCyclicSigmaStaggerChainTargetsOneStep(
+                if (!OrbitalRedistribution.Cyclic.TryComputeCyclicSigmaStaggerChainTargetsOneStep(
                         ringPathOrderedC1ToCn, targetWorld, bondLen, i,
                         out _, out _, out _))
                 {
@@ -1815,21 +1815,21 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
 
             if (failed)
             {
-                global::OrbitalRedistribution.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
-                global::OrbitalRedistribution.TryBuildCyclicSigmaBondBreakStaggeredChainAtomAnimation(
+                OrbitalRedistribution.Cyclic.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
+                OrbitalRedistribution.Cyclic.TryBuildCyclicSigmaBondBreakStaggeredChainAtomAnimation(
                     ringPathOrderedC1ToCn,
                     out chainAnim);
             }
             else
             {
-                chainAnim = global::OrbitalRedistribution.BuildCyclicSigmaChainAtomAnimationFromTargetWorld(
+                chainAnim = OrbitalRedistribution.Cyclic.BuildCyclicSigmaChainAtomAnimationFromTargetWorld(
                     ringPathOrderedC1ToCn, targetWorld);
             }
         }
 
         if (atomA == null || atomB == null)
         {
-            global::OrbitalRedistribution.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
+            OrbitalRedistribution.Cyclic.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
             onComplete?.Invoke();
             yield break;
         }
@@ -1838,7 +1838,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
             && cyclicSigmaBreakPartner != null
             && cyclicSigmaBreakRedistContext != null)
         {
-            global::OrbitalRedistribution.AppendCyclicSigmaBondBreakRedistributionTemplateDebugVisuals(
+            OrbitalRedistribution.Cyclic.AppendCyclicSigmaBondBreakRedistributionTemplateDebugVisuals(
                 cyclicSigmaBreakRecipient,
                 cyclicSigmaBreakPartner,
                 cyclicSigmaBreakAntiRecipient,
@@ -1848,7 +1848,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 "cyclo σ bond break redistribution templates");
         }
 
-        global::OrbitalRedistribution.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
+        OrbitalRedistribution.Cyclic.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
         yield return StartCoroutine(CoLerpBondBreakRedistributionFromAnimations(
             animPrimary, animSecondary, applySecondary, onComplete, chainAnim, piSlotLineToRemoveAfterRedistribution: null));
     }
@@ -1857,11 +1857,11 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
     /// Smoothstep-lerp <see cref="OrbitalRedistribution.BuildOrbitalRedistribution"/> result(s). Started via <see cref="AtomFunction.StartCoroutine"/> on an endpoint so this bond GameObject can be destroyed in <paramref name="onComplete"/>.
     /// </summary>
     IEnumerator CoLerpBondBreakRedistributionFromAnimations(
-        global::OrbitalRedistribution.RedistributionAnimation animPrimary,
-        global::OrbitalRedistribution.RedistributionAnimation animSecondary,
+        OrbitalRedistribution.RedistributionAnimation animPrimary,
+        OrbitalRedistribution.RedistributionAnimation animSecondary,
         bool applySecondary,
         Action onComplete,
-        global::OrbitalRedistribution.CyclicSigmaChainAtomAnimation cyclicChainAtomAnim = null,
+        OrbitalRedistribution.Cyclic.CyclicSigmaChainAtomAnimation cyclicChainAtomAnim = null,
         int? piSlotLineToRemoveAfterRedistribution = null)
     {
         if (atomA == null || atomB == null)

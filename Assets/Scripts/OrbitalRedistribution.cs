@@ -189,7 +189,7 @@ public static class OrbitalRedistribution
         CyclicRedistributionContext ctx)
     {
         if (atom == null) return Vector3.zero;
-        if (ctx != null && TryGetSigmaChainTargetWorldPosition(ctx, atom, out Vector3 tw))
+        if (ctx != null && Cyclic.TryGetSigmaChainTargetWorldPosition(ctx, atom, out Vector3 tw))
             return tw;
         return atom.transform.position;
     }
@@ -242,118 +242,6 @@ public static class OrbitalRedistribution
         var pick = go.AddComponent<BondFormationTemplatePreviewPick>();
         pick.SetDescription("Cyclic σ break redistribute template A=" + atomId + " dir=" + dirIndex);
         pick.SetLinkedOrbital(linkedOrbital, renderer != null ? new[] { renderer } : null);
-    }
-
-    /// <summary>One chain step: writes <c>targetWorld[i]</c> for <c>i ≥ 2</c>; leaves array unchanged on false.</summary>
-    public static bool TryComputeCyclicSigmaStaggerChainTargetsOneStep(
-        IReadOnlyList<AtomFunction> ringPathOrderedFromC1,
-        Vector3[] targetWorld,
-        float bondLen,
-        int i,
-        out List<Vector3> alignedLocal,
-        out int chosenJ,
-        out Vector3 referenceDirectionWorld)
-    {
-        alignedLocal = null;
-        chosenJ = 0;
-        referenceDirectionWorld = Vector3.zero;
-        int n = ringPathOrderedFromC1?.Count ?? 0;
-        if (ringPathOrderedFromC1 == null || targetWorld == null || n < 3 || i < 2 || i >= n)
-            return false;
-
-        AtomFunction pivot = ringPathOrderedFromC1[i - 1];
-        AtomFunction guide = ringPathOrderedFromC1[i - 2];
-        Vector3 pivotNewWorld = targetWorld[i - 1];
-        if (pivot == null || guide == null)
-            return false;
-
-        int nVsepr = CountVseprGroupsForAtom(pivot);
-        if (nVsepr < 2)
-            return false;
-
-        List<Vector3> template = BuildFinalDirectionsTemplate(nVsepr);
-        Vector3 guideDirWorld = targetWorld[i - 2] - pivotNewWorld;
-        Vector3 guideDirLocal = pivot.transform.InverseTransformDirection(guideDirWorld);
-        if (guideDirLocal.sqrMagnitude < 1e-14f)
-            return false;
-
-        Vector3? chainStaggerRef = null;
-        if (TryGetGuideStaggerReferenceFromSigmaChainTargetsInNonGuideLocal(
-                ringPathOrderedFromC1,
-                targetWorld,
-                i,
-                pivot,
-                guide,
-                guideDirLocal.normalized,
-                out Vector3 refFromTargets))
-            chainStaggerRef = refFromTargets;
-
-        alignedLocal = AlignFinalDirectionsTemplateToGuide(
-            template,
-            guideDirLocal.normalized,
-            pivot,
-            guide,
-            nVsepr,
-            staggerRefInPlaneNonGuideLocalFromChainTargets: chainStaggerRef);
-        if (alignedLocal == null || alignedLocal.Count < 2)
-            return false;
-
-        // Reference for outward pick: i ≥ 3 → pos(path[i−2]) − pos(path[i−3]); i = 2 → pos(C3) − pos(C2) (current C3 vs fixed C2).
-        Vector3 refBackbone = i >= 3
-            ? targetWorld[i - 2] - targetWorld[i - 3]
-            : targetWorld[2] - targetWorld[1];
-        Vector3 refHintWorld = refBackbone.sqrMagnitude > 1e-14f
-            ? refBackbone.normalized
-            : default;
-        if (refHintWorld.sqrMagnitude < 1e-12f)
-        {
-            refHintWorld = pivot.transform.TransformDirection(alignedLocal[1]).normalized;
-            if (refHintWorld.sqrMagnitude < 1e-12f)
-                return false;
-        }
-
-        int bestJ = 1;
-        float bestDot = float.NegativeInfinity;
-        for (int j = 1; j < alignedLocal.Count; j++)
-        {
-            Vector3 dirW = pivot.transform.TransformDirection(alignedLocal[j]).normalized;
-            if (dirW.sqrMagnitude < 1e-12f) continue;
-            float dot = Vector3.Dot(dirW, refHintWorld);
-            if (dot > bestDot)
-            {
-                bestDot = dot;
-                bestJ = j;
-            }
-        }
-
-        Vector3 chosenDirWorldFromPivot = pivot.transform.TransformDirection(alignedLocal[bestJ]).normalized;
-        if (chosenDirWorldFromPivot.sqrMagnitude < 1e-12f)
-            return false;
-
-        chosenJ = bestJ;
-        targetWorld[i] = pivotNewWorld + chosenDirWorldFromPivot * bondLen;
-        referenceDirectionWorld = refHintWorld;
-        return true;
-    }
-
-    public static CyclicSigmaChainAtomAnimation BuildCyclicSigmaChainAtomAnimationFromTargetWorld(
-        IReadOnlyList<AtomFunction> ringPathOrderedFromC1,
-        Vector3[] targetWorld)
-    {
-        if (ringPathOrderedFromC1 == null || targetWorld == null)
-            return null;
-        int n = ringPathOrderedFromC1.Count;
-        var entries = new List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)>();
-        for (int i = 2; i < n; i++)
-        {
-            AtomFunction a = ringPathOrderedFromC1[i];
-            if (a == null) continue;
-            entries.Add((a, a.transform.position, targetWorld[i]));
-        }
-
-        if (entries.Count == 0)
-            return null;
-        return new CyclicSigmaChainAtomAnimation(entries);
     }
 
     static void TryCaptureDebugTemplate(
@@ -409,52 +297,6 @@ public static class OrbitalRedistribution
         public ElectronOrbitalFunction PivotSigmaOp;
         /// <summary>σ OP on <see cref="CycleNeighborA"/> (guide) for this closure.</summary>
         public ElectronOrbitalFunction GuideSigmaOp;
-    }
-
-    /// <summary>
-    /// Cyclic σ bond break: every vertex on the shortest σ ring path is a cycle contributor. Populates
-    /// <see cref="CyclicRedistributionContext.ChainRedistributionBlockedAtoms"/> (fragment rigids skip those σ
-    /// neighbors in <see cref="RedistributionAnimation.Apply"/>),
-    /// <see cref="CyclicRedistributionContext.SigmaRingPathOrderedC1ToCn"/> and
-    /// <see cref="CyclicRedistributionContext.SigmaChainTargetWorld"/> when stagger targets compute successfully so
-    /// redistribution can use chain-derived local direction templates for those atoms. When stagger targets compute,
-    /// also pre-seeds <see cref="CyclicRedistributionContext.FinalDirectionTemplateByAtom"/> for C1 and CLast, and
-    /// stores each stagger step’s <c>alignedLocal</c> for interior pivots (C2…C_{n−1}) during chain target computation.
-    /// Does not enable cyclic closure templates (<see cref="FinalWorldByAtom"/>).
-    /// </summary>
-    public static CyclicRedistributionContext CreateCyclicSigmaBondBreakRedistributionBlockContext(
-        IList<AtomFunction> ringPathOrderedC1ToCn)
-    {
-        if (ringPathOrderedC1ToCn == null || ringPathOrderedC1ToCn.Count < 3) return null;
-        var blocked = new HashSet<AtomFunction>();
-        var pathCopy = new List<AtomFunction>(ringPathOrderedC1ToCn.Count);
-        for (int i = 0; i < ringPathOrderedC1ToCn.Count; i++)
-        {
-            AtomFunction a = ringPathOrderedC1ToCn[i];
-            pathCopy.Add(a);
-            if (a != null) blocked.Add(a);
-        }
-
-        var ctx = new CyclicRedistributionContext
-        {
-            ChainRedistributionBlockedAtoms = blocked,
-            SigmaRingPathOrderedC1ToCn = pathCopy,
-            SigmaChainTargetWorld = null
-        };
-        if (!TryComputeCyclicSigmaBondBreakChainTargetWorld(pathCopy, out Vector3[] targetWorld, ctx))
-        {
-            ctx.SigmaChainTargetWorld = null;
-            ctx.FinalDirectionTemplateByAtom = null;
-            return ctx;
-        }
-
-        ctx.SigmaChainTargetWorld = targetWorld;
-        Vector3 centerAccum = Vector3.zero;
-        for (int ci = 0; ci < pathCopy.Count; ci++)
-            centerAccum += targetWorld[ci];
-        ctx.CycleCenterWorld = pathCopy.Count > 0 ? centerAccum / pathCopy.Count : Vector3.zero;
-        PopulateCyclicSigmaBondBreakRingEndcapFinalDirectionTemplates(ctx, pathCopy, targetWorld);
-        return ctx;
     }
 
     /// <summary>
@@ -711,73 +553,6 @@ public static class OrbitalRedistribution
     }
 
     /// <summary>
-    /// Same stagger target positions as <see cref="TryBuildCyclicSigmaBondBreakStaggeredChainAtomAnimation"/> / chain
-    /// <see cref="CyclicSigmaChainAtomAnimation"/> end poses (C1/C2 fixed in <paramref name="targetWorld"/>[0],[1]).
-    /// When <paramref name="pivotTemplateSink"/> is non-null, each successful step stores that pivot’s stagger
-    /// <c>alignedLocal</c> in <see cref="CyclicRedistributionContext.FinalDirectionTemplateByAtom"/>: slot <c>0</c> stays the
-    /// <see cref="AlignFinalDirectionsTemplateToGuide"/> axis toward the previous ring atom; slot <c>1</c> is chosen among
-    /// the remaining template wedges to best match toward the next path atom (C<sub>2</sub>…C<sub>N</sub> pivots).
-    /// </summary>
-    public static bool TryComputeCyclicSigmaBondBreakChainTargetWorld(
-        IReadOnlyList<AtomFunction> ringPathOrderedFromC1,
-        out Vector3[] targetWorld,
-        CyclicRedistributionContext pivotTemplateSink = null)
-    {
-        targetWorld = null;
-        if (ringPathOrderedFromC1 == null || ringPathOrderedFromC1.Count < 3)
-            return false;
-        for (int i = 0; i < ringPathOrderedFromC1.Count; i++)
-        {
-            if (ringPathOrderedFromC1[i] == null)
-                return false;
-        }
-
-        int n = ringPathOrderedFromC1.Count;
-        var tw = new Vector3[n];
-        for (int i = 0; i < n; i++)
-            tw[i] = ringPathOrderedFromC1[i].transform.position;
-
-        float bondLen = Vector3.Distance(tw[0], tw[1]);
-        if (bondLen < 1e-4f)
-            return false;
-
-        for (int i = 2; i < n; i++)
-        {
-            if (!TryComputeCyclicSigmaStaggerChainTargetsOneStep(
-                    ringPathOrderedFromC1, tw, bondLen, i,
-                    out List<Vector3> alignedLocal, out _, out _))
-            {
-                if (pivotTemplateSink != null)
-                    pivotTemplateSink.FinalDirectionTemplateByAtom = null;
-                return false;
-            }
-
-            if (pivotTemplateSink != null && alignedLocal != null && alignedLocal.Count > 0)
-            {
-                AtomFunction pivot = ringPathOrderedFromC1[i - 1];
-                if (pivot != null)
-                {
-                    if (pivotTemplateSink.FinalDirectionTemplateByAtom == null)
-                        pivotTemplateSink.FinalDirectionTemplateByAtom = new Dictionary<AtomFunction, List<Vector3>>();
-                    List<Vector3> stored = ReorderSigmaChainTemplateSlot01ForRing(
-                        pivot,
-                        alignedLocal,
-                        tw[i - 1],
-                        tw[i - 2],
-                        tw[i],
-                        bondRowForPrev: null,
-                        bondRowForNext: null,
-                        preserveStaggerAlongPreviousAtSlot0: true);
-                    pivotTemplateSink.FinalDirectionTemplateByAtom[pivot] = stored ?? new List<Vector3>(alignedLocal);
-                }
-            }
-        }
-
-        targetWorld = tw;
-        return true;
-    }
-
-    /// <summary>
     /// Debug helper: resolves the current guide orbital group for an atom
     /// using the same group-building/selection policy as redistribution.
     /// </summary>
@@ -787,40 +562,18 @@ public static class OrbitalRedistribution
         if (atom == null) return false;
 
         var bondingGroups = new List<GroupEntry>();
-        foreach (var cb in atom.CovalentBonds)
-        {
-            if (cb == null) continue;
-            var orb = cb.Orbital;
-            if (orb == null || !cb.IsSigmaBondLine()) continue;
-            Vector3 dir = orb.transform.position - atom.transform.position;
-            float radius = dir.magnitude;
-            bondingGroups.Add(new GroupEntry
-            {
-                Kind = "bond",
-                Bond = cb,
-                Orbital = orb,
-                MassWeight = ComputeBondGroupMassWeight(atom, cb),
-                CurrentDirWorld = dir.sqrMagnitude > 1e-12f ? dir.normalized : Vector3.right,
-                Radius = radius > 1e-5f ? radius : atom.BondRadius
-            });
-        }
-
         var nonbondingOccupied = new List<GroupEntry>();
         var emptyOrbitals = new List<GroupEntry>();
-        foreach (var orb in atom.BondedOrbitals)
-        {
-            if (orb == null || orb.Bond != null || orb.transform.parent != atom.transform) continue;
-            var row = new GroupEntry
-            {
-                Kind = "nonbond",
-                Orbital = orb,
-                MassWeight = Mathf.Max(1e-3f, ElectronRedistributionGuide.GetStandardAtomicWeight(atom.AtomicNumber)),
-                CurrentDirWorld = (orb.transform.position - atom.transform.position).normalized,
-                Radius = (orb.transform.position - atom.transform.position).magnitude
-            };
-            if (orb.ElectronCount > 0) nonbondingOccupied.Add(row);
-            else emptyOrbitals.Add(row);
-        }
+        BuildVseprGroupLists(
+            atom,
+            bondingGroups,
+            nonbondingOccupied,
+            emptyOrbitals,
+            isBondingEvent: false,
+            trackedOpOrbital: null,
+            treatTrackedOpAsIncipientWhenBonding: false,
+            allowTrackedOpOutsideParentWhenBonding: false,
+            resolveDirWorld: null);
 
         GroupEntry guideGroup = GetGuideGroup(
             guideOrbitalPredetermined: null,
@@ -852,6 +605,90 @@ public static class OrbitalRedistribution
         return d.normalized;
     }
 
+    static void BuildVseprGroupLists(
+        AtomFunction atom,
+        List<GroupEntry> bondingGroups,
+        List<GroupEntry> nonbondingOccupied,
+        List<GroupEntry> emptyOrbitals,
+        bool isBondingEvent,
+        ElectronOrbitalFunction trackedOpOrbital,
+        bool treatTrackedOpAsIncipientWhenBonding,
+        bool allowTrackedOpOutsideParentWhenBonding,
+        Func<AtomFunction, ElectronOrbitalFunction, Vector3> resolveDirWorld)
+    {
+        bondingGroups.Clear();
+        nonbondingOccupied.Clear();
+        emptyOrbitals.Clear();
+        if (atom == null)
+            return;
+
+        foreach (var cb in atom.CovalentBonds)
+        {
+            if (cb == null) continue;
+            var orb = cb.Orbital;
+            if (orb == null || !cb.IsSigmaBondLine()) continue;
+            Vector3 offset = orb.transform.position - atom.transform.position;
+            Vector3 dir = resolveDirWorld != null
+                ? resolveDirWorld(atom, orb)
+                : (offset.sqrMagnitude > 1e-12f ? offset.normalized : Vector3.right);
+            float radius = offset.magnitude;
+            bondingGroups.Add(new GroupEntry
+            {
+                Kind = "bond",
+                Bond = cb,
+                Orbital = orb,
+                MassWeight = ComputeBondGroupMassWeight(atom, cb),
+                CurrentDirWorld = dir.sqrMagnitude > 1e-12f ? dir.normalized : Vector3.right,
+                Radius = radius > 1e-5f ? radius : atom.BondRadius
+            });
+        }
+
+        foreach (var orb in atom.BondedOrbitals)
+        {
+            if (orb == null)
+                continue;
+
+            bool inSigmaBondGroup = false;
+            for (int bi = 0; bi < bondingGroups.Count; bi++)
+            {
+                if (bondingGroups[bi] != null && ReferenceEquals(bondingGroups[bi].Orbital, orb))
+                {
+                    inSigmaBondGroup = true;
+                    break;
+                }
+            }
+            if (inSigmaBondGroup)
+                continue;
+
+            bool incipientTrackedOp = isBondingEvent
+                && treatTrackedOpAsIncipientWhenBonding
+                && ReferenceEquals(orb, trackedOpOrbital)
+                && orb.ElectronCount == 0;
+            if (orb.Bond != null && !incipientTrackedOp)
+                continue;
+            if (orb.transform.parent != atom.transform
+                && !(allowTrackedOpOutsideParentWhenBonding
+                    && isBondingEvent
+                    && ReferenceEquals(orb, trackedOpOrbital)))
+                continue;
+
+            Vector3 offset = orb.transform.position - atom.transform.position;
+            Vector3 dir = resolveDirWorld != null
+                ? resolveDirWorld(atom, orb)
+                : (offset.sqrMagnitude > 1e-12f ? offset.normalized : Vector3.right);
+            var row = new GroupEntry
+            {
+                Kind = "nonbond",
+                Orbital = orb,
+                MassWeight = Mathf.Max(1e-3f, ElectronRedistributionGuide.GetStandardAtomicWeight(atom.AtomicNumber)),
+                CurrentDirWorld = dir.sqrMagnitude > 1e-12f ? dir.normalized : Vector3.right,
+                Radius = offset.magnitude
+            };
+            if (orb.ElectronCount > 0) nonbondingOccupied.Add(row);
+            else emptyOrbitals.Add(row);
+        }
+    }
+
     /// <summary>
     /// Same guide-group selection as π phase-1 <see cref="BuildOrbitalRedistribution"/> on <paramref name="guideAtom"/>
     /// with <paramref name="guideOp"/> as OP and <paramref name="partnerAtom"/> as the bond partner (for π-specific group adjustments).
@@ -868,60 +705,18 @@ public static class OrbitalRedistribution
             return false;
 
         var bondingGroups = new List<GroupEntry>();
-        foreach (var cb in guideAtom.CovalentBonds)
-        {
-            if (cb == null) continue;
-            var orb = cb.Orbital;
-            if (orb == null || !cb.IsSigmaBondLine()) continue;
-            Vector3 offset = orb.transform.position - guideAtom.transform.position;
-            float radius = offset.magnitude;
-            bondingGroups.Add(new GroupEntry
-            {
-                Kind = "bond",
-                Bond = cb,
-                Orbital = orb,
-                MassWeight = ComputeBondGroupMassWeight(guideAtom, cb),
-                CurrentDirWorld = PiPrebondGuideGroupDirWorld(guideAtom, orb),
-                Radius = radius > 1e-5f ? radius : guideAtom.BondRadius
-            });
-        }
-
         var nonbondingOccupied = new List<GroupEntry>();
         var emptyOrbitals = new List<GroupEntry>();
-        foreach (var orb in guideAtom.BondedOrbitals)
-        {
-            if (orb == null)
-                continue;
-            bool inSigmaBondGroup = false;
-            for (int bi = 0; bi < bondingGroups.Count; bi++)
-            {
-                if (bondingGroups[bi] != null && ReferenceEquals(bondingGroups[bi].Orbital, orb))
-                {
-                    inSigmaBondGroup = true;
-                    break;
-                }
-            }
-            if (inSigmaBondGroup)
-                continue;
-
-            bool incipientTrackedSigmaOp = ReferenceEquals(orb, guideOp) && orb.ElectronCount == 0;
-            if (orb.Bond != null && !incipientTrackedSigmaOp)
-                continue;
-            if (orb.transform.parent != guideAtom.transform
-                && !ReferenceEquals(orb, guideOp))
-                continue;
-            Vector3 nbOffset = orb.transform.position - guideAtom.transform.position;
-            var row = new GroupEntry
-            {
-                Kind = "nonbond",
-                Orbital = orb,
-                MassWeight = Mathf.Max(1e-3f, ElectronRedistributionGuide.GetStandardAtomicWeight(guideAtom.AtomicNumber)),
-                CurrentDirWorld = PiPrebondGuideGroupDirWorld(guideAtom, orb),
-                Radius = nbOffset.magnitude
-            };
-            if (orb.ElectronCount > 0) nonbondingOccupied.Add(row);
-            else emptyOrbitals.Add(row);
-        }
+        BuildVseprGroupLists(
+            guideAtom,
+            bondingGroups,
+            nonbondingOccupied,
+            emptyOrbitals,
+            isBondingEvent: true,
+            trackedOpOrbital: guideOp,
+            treatTrackedOpAsIncipientWhenBonding: true,
+            allowTrackedOpOutsideParentWhenBonding: true,
+            resolveDirWorld: PiPrebondGuideGroupDirWorld);
 
         ApplyEventSpecificGroupAdjustments(
             guideAtom,
@@ -953,67 +748,16 @@ public static class OrbitalRedistribution
         List<GroupEntry> nonbondingOccupied,
         List<GroupEntry> emptyOrbitals)
     {
-        bondingGroups.Clear();
-        nonbondingOccupied.Clear();
-        emptyOrbitals.Clear();
-        if (atom == null)
-            return;
-
-        foreach (var cb in atom.CovalentBonds)
-        {
-            if (cb == null) continue;
-            var orb = cb.Orbital;
-            if (orb == null || !cb.IsSigmaBondLine()) continue;
-            Vector3 dir = orb.transform.position - atom.transform.position;
-            float radius = dir.magnitude;
-            bondingGroups.Add(new GroupEntry
-            {
-                Kind = "bond",
-                Bond = cb,
-                Orbital = orb,
-                MassWeight = ComputeBondGroupMassWeight(atom, cb),
-                CurrentDirWorld = dir.sqrMagnitude > 1e-12f ? dir.normalized : Vector3.right,
-                Radius = radius > 1e-5f ? radius : atom.BondRadius
-            });
-        }
-
-        foreach (var orb in atom.BondedOrbitals)
-        {
-            if (orb == null)
-                continue;
-
-            bool inSigmaBondGroup = false;
-            for (int bi = 0; bi < bondingGroups.Count; bi++)
-            {
-                if (bondingGroups[bi] != null && ReferenceEquals(bondingGroups[bi].Orbital, orb))
-                {
-                    inSigmaBondGroup = true;
-                    break;
-                }
-            }
-            if (inSigmaBondGroup)
-                continue;
-
-            bool incipientTrackedSigmaOp = isBondingEvent
-                && ReferenceEquals(orb, atomOrbitalOp)
-                && orb.ElectronCount == 0;
-            if (orb.Bond != null && !incipientTrackedSigmaOp)
-                continue;
-            if (orb.transform.parent != atom.transform
-                && !(isBondingEvent && ReferenceEquals(orb, atomOrbitalOp)))
-                continue;
-
-            var row = new GroupEntry
-            {
-                Kind = "nonbond",
-                Orbital = orb,
-                MassWeight = Mathf.Max(1e-3f, ElectronRedistributionGuide.GetStandardAtomicWeight(atom.AtomicNumber)),
-                CurrentDirWorld = (orb.transform.position - atom.transform.position).normalized,
-                Radius = (orb.transform.position - atom.transform.position).magnitude
-            };
-            if (orb.ElectronCount > 0) nonbondingOccupied.Add(row);
-            else emptyOrbitals.Add(row);
-        }
+        BuildVseprGroupLists(
+            atom,
+            bondingGroups,
+            nonbondingOccupied,
+            emptyOrbitals,
+            isBondingEvent,
+            atomOrbitalOp,
+            treatTrackedOpAsIncipientWhenBonding: true,
+            allowTrackedOpOutsideParentWhenBonding: true,
+            resolveDirWorld: null);
 
         ApplyEventSpecificGroupAdjustments(
             atom,
@@ -1073,7 +817,7 @@ public static class OrbitalRedistribution
         return true;
     }
 
-    sealed class GroupEntry
+    internal sealed class GroupEntry
     {
         public string Kind;
         public ElectronOrbitalFunction Orbital;
@@ -1337,65 +1081,20 @@ public static class OrbitalRedistribution
         if (atom == null) return new RedistributionAnimation(null);
 
         var bondingGroups = new List<GroupEntry>();
-        foreach (var cb in atom.CovalentBonds)
-        {
-            if (cb == null) continue;
-            var orb = cb.Orbital;
-            if (orb == null || !cb.IsSigmaBondLine()) continue;
-            Vector3 dir = orb.transform.position - atom.transform.position;
-            float radius = dir.magnitude;
-            var row = new GroupEntry
-            {
-                Kind = "bond",
-                Bond = cb,
-                Orbital = orb,
-                MassWeight = ComputeBondGroupMassWeight(atom, cb),
-                CurrentDirWorld = dir.sqrMagnitude > 1e-12f ? dir.normalized : Vector3.right,
-                Radius = radius > 1e-5f ? radius : atom.BondRadius
-            };
-            bondingGroups.Add(row);
-        }
-
         var nonbondingOccupied = new List<GroupEntry>();
         var emptyOrbitals = new List<GroupEntry>();
-        foreach (var orb in atom.BondedOrbitals)
-        {
-            if (orb == null)
-                continue;
-            bool inSigmaBondGroup = false;
-            for (int bi = 0; bi < bondingGroups.Count; bi++)
-            {
-                if (bondingGroups[bi] != null && ReferenceEquals(bondingGroups[bi].Orbital, orb))
-                {
-                    inSigmaBondGroup = true;
-                    break;
-                }
-            }
-            if (inSigmaBondGroup)
-                continue;
+        BuildVseprGroupLists(
+            atom,
+            bondingGroups,
+            nonbondingOccupied,
+            emptyOrbitals,
+            isBondingEvent,
+            atomOrbitalOp,
+            treatTrackedOpAsIncipientWhenBonding: true,
+            allowTrackedOpOutsideParentWhenBonding: true,
+            resolveDirWorld: null);
 
-            bool incipientTrackedSigmaOp = isBondingEvent
-                && ReferenceEquals(orb, atomOrbitalOp)
-                && orb.ElectronCount == 0;
-            if (orb.Bond != null && !incipientTrackedSigmaOp)
-                continue;
-            // σ OP can be parented off the nucleus; still counts as a VSEPR domain for matching.
-            if (orb.transform.parent != atom.transform
-                && !(isBondingEvent && ReferenceEquals(orb, atomOrbitalOp)))
-                continue;
-            var row = new GroupEntry
-            {
-                Kind = "nonbond",
-                Orbital = orb,
-                MassWeight = Mathf.Max(1e-3f, ElectronRedistributionGuide.GetStandardAtomicWeight(atom.AtomicNumber)),
-                CurrentDirWorld = (orb.transform.position - atom.transform.position).normalized,
-                Radius = (orb.transform.position - atom.transform.position).magnitude
-            };
-            if (orb.ElectronCount > 0) nonbondingOccupied.Add(row);
-            else emptyOrbitals.Add(row);
-        }
-
-        cyclicContext = EnsureChainRedistributionBlockedAtomsForCyclicEvent(
+        cyclicContext = OrbitalRedistribution.Cyclic.EnsureChainRedistributionBlockedAtomsForCyclicEvent(
             atom,
             bondingGroups,
             cyclicContext);
@@ -1407,7 +1106,7 @@ public static class OrbitalRedistribution
             nonbondingOccupied,
             emptyOrbitals,
             isBondingEvent);
-        EnsureCyclicClosureSigmaOpCountedForMatching(
+        OrbitalRedistribution.Cyclic.EnsureCyclicClosureSigmaOpCountedForMatching(
             atom,
             atomOrbitalOp,
             cyclicContext,
@@ -1422,7 +1121,7 @@ public static class OrbitalRedistribution
         groupsForMatching.AddRange(nonbondingOccupied);
 
         var cyclicAssignmentFix = new Dictionary<int, int>();
-        bool hasCyclicTemplate = TryBuildCyclicFinalDirectionsTemplate(
+        bool hasCyclicTemplate = OrbitalRedistribution.Cyclic.TryBuildCyclicFinalDirectionsTemplate(
             atom,
             nVseprGroup,
             groupsForMatching,
@@ -1431,12 +1130,12 @@ public static class OrbitalRedistribution
             cyclicAssignmentFix);
         if (hasCyclicTemplate && atomOrbitalOp != null)
         {
-            Vector3 opBondDirLocal = TryGetCyclicClosureBondDirLocal(atom, cyclicContext);
+            Vector3 opBondDirLocal = OrbitalRedistribution.Cyclic.TryGetCyclicClosureBondDirLocal(atom, cyclicContext);
             if (opBondDirLocal.sqrMagnitude < 1e-12f)
                 opBondDirLocal = finalDirectionForGuideOrbital;
             if (opBondDirLocal.sqrMagnitude > 1e-12f)
             {
-                TryApplyCyclicOpBondSitePreassign(
+                OrbitalRedistribution.Cyclic.TryApplyCyclicOpBondSitePreassign(
                     atom,
                     groupsForMatching,
                     cyclicTemplate,
@@ -1451,7 +1150,7 @@ public static class OrbitalRedistribution
             && cyclicContext != null
             && cyclicContext.ChainRedistributionBlockedAtoms != null
             && cyclicContext.ChainRedistributionBlockedAtoms.Contains(atom)
-            && TryBuildFinalDirectionTemplateFromSigmaChainTargets(
+            && Cyclic.TryBuildFinalDirectionTemplateFromSigmaChainTargets(
                 atom, groupsForMatching, cyclicContext, out chainBreakContributorDirectionsLocal)
             && chainBreakContributorDirectionsLocal != null
             && chainBreakContributorDirectionsLocal.Count == nVseprGroup)
@@ -1461,7 +1160,7 @@ public static class OrbitalRedistribution
             && chainBreakContributorDirectionsLocal != null
             && chainBreakContributorDirectionsLocal.Count >= 2)
         {
-            TryApplyCyclicSigmaChainContributorSlot01Preassign(
+            OrbitalRedistribution.Cyclic.TryApplyCyclicSigmaChainContributorSlot01Preassign(
                 atom,
                 groupsForMatching,
                 cyclicContext,
@@ -1550,80 +1249,6 @@ public static class OrbitalRedistribution
         return animation;
     }
 
-    static CyclicRedistributionContext EnsureChainRedistributionBlockedAtomsForCyclicEvent(
-        AtomFunction atom,
-        List<GroupEntry> bondingGroups,
-        CyclicRedistributionContext cyclicContext)
-    {
-        if (atom == null || bondingGroups == null || bondingGroups.Count < 2)
-            return cyclicContext;
-
-        HashSet<AtomFunction> blocked = cyclicContext?.ChainRedistributionBlockedAtoms;
-        bool addedBlocked = false;
-
-        var neighbors = new List<AtomFunction>(bondingGroups.Count);
-        var ownerByAtom = new Dictionary<AtomFunction, int>();
-
-        for (int i = 0; i < bondingGroups.Count; i++)
-        {
-            GroupEntry g = bondingGroups[i];
-            AtomFunction neighbor = g?.Bond == null
-                ? null
-                : (g.Bond.AtomA == atom ? g.Bond.AtomB : g.Bond.AtomA);
-            neighbors.Add(neighbor);
-            if (neighbor == null)
-                continue;
-
-            List<AtomFunction> fragment = atom.GetAtomsOnSideOfSigmaBond(neighbor);
-            if (fragment == null || fragment.Count == 0)
-                continue;
-
-            // Fragment overlap means this sigma edge is part of a cycle; block chain redistribution.
-            if (fragment.Contains(atom))
-            {
-                if (blocked == null) blocked = new HashSet<AtomFunction>();
-                addedBlocked |= blocked.Add(neighbor);
-            }
-
-            for (int fi = 0; fi < fragment.Count; fi++)
-            {
-                AtomFunction fa = fragment[fi];
-                if (fa == null) continue;
-                if (!ownerByAtom.TryGetValue(fa, out int priorOwner))
-                {
-                    ownerByAtom[fa] = i;
-                    continue;
-                }
-
-                if (priorOwner == i) continue;
-                AtomFunction priorNeighbor = neighbors[priorOwner];
-                if (priorNeighbor == null) continue;
-                if (blocked == null) blocked = new HashSet<AtomFunction>();
-                addedBlocked |= blocked.Add(priorNeighbor);
-                addedBlocked |= blocked.Add(neighbor);
-            }
-        }
-
-        if (!addedBlocked)
-            return cyclicContext;
-
-        bool createdContext = cyclicContext == null;
-        if (cyclicContext == null)
-            cyclicContext = new CyclicRedistributionContext();
-        cyclicContext.ChainRedistributionBlockedAtoms = blocked;
-        return cyclicContext;
-    }
-
-    static int FirstOtherIndex(List<Vector3> forcedTargets, int releasedIdx)
-    {
-        for (int i = 0; i < forcedTargets.Count; i++)
-        {
-            if (i == releasedIdx) continue;
-            if (forcedTargets[i].sqrMagnitude > 1e-12f) return i;
-        }
-        return 0;
-    }
-
     static RedistributionAnimation BuildRedistributionAnimation(
         List<GroupEntry> groups,
         List<GroupEntry> emptyOrbitals,
@@ -1687,21 +1312,12 @@ public static class OrbitalRedistribution
                     {
                         Vector3 childGuideDirWorld = atom.transform.TransformDirection((-alignedTemplate[ti]).normalized);
                         Vector3 childGuideDirLocal = adjacentAtom.transform.InverseTransformDirection(childGuideDirWorld).normalized;
-                        ElectronOrbitalFunction childAtomOp = ResolveOperationOrbitalHostedOnAtom(
-                            adjacentAtom,
-                            atomOrbitalOp,
-                            guideAtomOrbitalOp,
-                            cyclicContext);
-                        ElectronOrbitalFunction childGuideOp = ResolveOperationOrbitalHostedOnAtom(
-                            atom,
-                            atomOrbitalOp,
-                            guideAtomOrbitalOp,
-                            cyclicContext);
+
                         var childAnim = BuildOrbitalRedistribution(
                             adjacentAtom,
                             atom,
-                            guideAtomOrbitalOp: childGuideOp,
-                            atomOrbitalOp: childAtomOp,
+                            guideAtomOrbitalOp: guideAtomOrbitalOp,
+                            atomOrbitalOp: atomOrbitalOp,
                             guideOrbitalPredetermined: g.Orbital,
                             finalDirectionForGuideOrbital: childGuideDirLocal,
                             isBondingEvent: isBondingEvent,
@@ -1747,39 +1363,6 @@ public static class OrbitalRedistribution
             bondBreakPinEmptyToStartTipLocal: !isBondingEvent ? atomOrbitalOp : null);
 
         return anim;
-    }
-
-    static bool IsOperationPathGroup(AtomFunction atom, GroupEntry group, ElectronOrbitalFunction atomOrbitalOp)
-    {
-        if (group == null || atomOrbitalOp == null) return false;
-        if (ReferenceEquals(group.Orbital, atomOrbitalOp)) return true;
-        if (atom == null || group.Bond == null || atomOrbitalOp.Bond == null) return false;
-
-        AtomFunction groupOther = group.Bond.AtomA == atom ? group.Bond.AtomB : group.Bond.AtomA;
-        AtomFunction opOther = atomOrbitalOp.Bond.AtomA == atom ? atomOrbitalOp.Bond.AtomB : atomOrbitalOp.Bond.AtomA;
-        if (groupOther == null || opOther == null) return false;
-        return groupOther == opOther;
-    }
-
-    static ElectronOrbitalFunction ResolveOperationOrbitalHostedOnAtom(
-        AtomFunction hostAtom,
-        ElectronOrbitalFunction atomOrbitalOp,
-        ElectronOrbitalFunction guideAtomOrbitalOp,
-        CyclicRedistributionContext cyclicContext)
-    {
-        if (hostAtom == null)
-            return null;
-        if (atomOrbitalOp != null
-            && atomOrbitalOp.transform.parent != null
-            && ReferenceEquals(atomOrbitalOp.transform.parent.GetComponent<AtomFunction>(), hostAtom))
-            return atomOrbitalOp;
-        if (guideAtomOrbitalOp != null
-            && guideAtomOrbitalOp.transform.parent != null
-            && ReferenceEquals(guideAtomOrbitalOp.transform.parent.GetComponent<AtomFunction>(), hostAtom))
-            return guideAtomOrbitalOp;
-
-        // Cyclic closure can carry OP references outside the immediate pair; use context as fallback.
-        return ResolveCyclicClosureSigmaOpForAtom(hostAtom, cyclicContext);
     }
 
     static void AppendEmptyOrbitalAssignments(
@@ -2124,551 +1707,6 @@ public static class OrbitalRedistribution
         return best;
     }
 
-    /// <summary>
-    /// Cyclic template skips guide alignment; pin the in-operation (forming σ) row to the
-    /// cycle-edge template slot that matches <paramref name="finalDirectionForGuideOrbital"/>
-    /// so prebond OP does not collapse onto a rest direction. If that slot is already fixed,
-    /// OP takes it when it aligns at least as well with the bond axis as the occupant (plus
-    /// a small bias so the forming orbital wins ties).
-    /// </summary>
-    /// <summary>
-    /// Cyclic σ bond break: when <paramref name="templateLocal"/> already has ring legs in slots 0 and 1, pin the
-    /// σ rows bonded to the previous / next ring path atoms to those slots so <see cref="FindBestCombinationVSEPRGroupToFinalDirection"/> does not re-compare them.
-    /// Path indices wrap on the ring (C1 neighbors are C<sub>N</sub> and C2; C<sub>N</sub> neighbors are C<sub>N−1</sub> and C1).
-    /// If only one contributor row resolves, that row is pinned to its matching template slot so a remaining σ domain still constrains the perm search.
-    /// </summary>
-    static void TryApplyCyclicSigmaChainContributorSlot01Preassign(
-        AtomFunction atom,
-        List<GroupEntry> groupsForMatching,
-        CyclicRedistributionContext ctx,
-        Dictionary<int, int> cyclicAssignmentFix,
-        List<Vector3> templateLocal)
-    {
-        if (atom == null
-            || groupsForMatching == null
-            || ctx == null
-            || cyclicAssignmentFix == null
-            || templateLocal == null
-            || templateLocal.Count < 2)
-            return;
-
-        if (ctx.SigmaRingPathOrderedC1ToCn == null
-            || ctx.SigmaChainTargetWorld == null
-            || ctx.SigmaChainTargetWorld.Length != ctx.SigmaRingPathOrderedC1ToCn.Count)
-            return;
-
-        if (!TryGetSigmaRingPathIndex(ctx, atom, out int p))
-            return;
-
-        int pathCount = ctx.SigmaRingPathOrderedC1ToCn.Count;
-        if (pathCount < 3)
-            return;
-
-        AtomFunction prevAtom;
-        AtomFunction nextAtom;
-        if (p == 0)
-        {
-            prevAtom = ctx.SigmaRingPathOrderedC1ToCn[pathCount - 1];
-            nextAtom = ctx.SigmaRingPathOrderedC1ToCn[1];
-        }
-        else if (p == pathCount - 1)
-        {
-            prevAtom = ctx.SigmaRingPathOrderedC1ToCn[pathCount - 2];
-            nextAtom = ctx.SigmaRingPathOrderedC1ToCn[0];
-        }
-        else
-        {
-            prevAtom = ctx.SigmaRingPathOrderedC1ToCn[p - 1];
-            nextAtom = ctx.SigmaRingPathOrderedC1ToCn[p + 1];
-        }
-
-        if (prevAtom == null || nextAtom == null)
-            return;
-
-        Vector3 dirA = templateLocal[0].normalized;
-        Vector3 dirB = templateLocal[1].normalized;
-        if (dirA.sqrMagnitude < 1e-14f || dirB.sqrMagnitude < 1e-14f)
-            return;
-
-        int bondPrev = FindBondGroupIndexForNeighbor(groupsForMatching, atom, prevAtom);
-        int bondNext = FindBondGroupIndexForNeighbor(groupsForMatching, atom, nextAtom);
-        int idxA = bondPrev;
-        if (idxA < 0)
-            idxA = ResolveCycleContributorGroupIndex(groupsForMatching, atom, prevAtom, dirA, excludeGroupIndex: -1);
-        int idxB = bondNext;
-        if (idxB < 0)
-            idxB = ResolveCycleContributorGroupIndex(groupsForMatching, atom, nextAtom, dirB, excludeGroupIndex: idxA >= 0 ? idxA : -1);
-
-        if (idxA >= 0 && idxB >= 0 && idxA != idxB)
-        {
-            cyclicAssignmentFix[idxA] = 0;
-            cyclicAssignmentFix[idxB] = 1;
-            return;
-        }
-
-        if (idxA >= 0 && idxB < 0)
-        {
-            cyclicAssignmentFix[idxA] = 0;
-            return;
-        }
-
-        if (idxA < 0 && idxB >= 0)
-        {
-            cyclicAssignmentFix[idxB] = 1;
-            return;
-        }
-
-        if (idxA >= 0 && idxB >= 0 && idxA == idxB)
-        {
-            cyclicAssignmentFix[idxA] = 0;
-            return;
-        }
-    }
-
-    static bool TryGetSigmaRingPathIndex(CyclicRedistributionContext ctx, AtomFunction atom, out int index)
-    {
-        index = -1;
-        if (ctx?.SigmaRingPathOrderedC1ToCn == null || atom == null) return false;
-        List<AtomFunction> path = ctx.SigmaRingPathOrderedC1ToCn;
-        for (int i = 0; i < path.Count; i++)
-        {
-            if (ReferenceEquals(path[i], atom))
-            {
-                index = i;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    static void TryApplyCyclicOpBondSitePreassign(
-        AtomFunction atom,
-        List<GroupEntry> groupsForMatching,
-        List<Vector3> cyclicTemplate,
-        Dictionary<int, int> cyclicAssignmentFix,
-        ElectronOrbitalFunction atomOrbitalOp,
-        Vector3 finalDirectionForGuideOrbital)
-    {
-        if (atom == null
-            || groupsForMatching == null
-            || cyclicTemplate == null
-            || cyclicAssignmentFix == null
-            || atomOrbitalOp == null)
-            return;
-        if (finalDirectionForGuideOrbital.sqrMagnitude < 1e-12f || cyclicTemplate.Count < 2)
-            return;
-
-        Vector3 bondDir = finalDirectionForGuideOrbital.normalized;
-        int opRow = -1;
-        for (int i = 0; i < groupsForMatching.Count; i++)
-        {
-            if (ReferenceEquals(groupsForMatching[i]?.Orbital, atomOrbitalOp))
-            {
-                opRow = i;
-                break;
-            }
-        }
-        if (opRow < 0)
-            return;
-
-        int bondSlotCount = Mathf.Min(2, cyclicTemplate.Count);
-        int bestT = 0;
-        float bestAxisDot = float.NegativeInfinity;
-        for (int ti = 0; ti < bondSlotCount; ti++)
-        {
-            Vector3 tv = cyclicTemplate[ti];
-            if (tv.sqrMagnitude < 1e-12f)
-                continue;
-            float d = Vector3.Dot(tv.normalized, bondDir);
-            if (d > bestAxisDot)
-            {
-                bestAxisDot = d;
-                bestT = ti;
-            }
-        }
-
-        float RowBondDot(int row)
-        {
-            if (row < 0 || row >= groupsForMatching.Count)
-                return -1f;
-            GroupEntry g = groupsForMatching[row];
-            if (g == null)
-                return -1f;
-            if (g.CurrentDirWorld.sqrMagnitude < 1e-12f)
-            {
-                if (ReferenceEquals(g.Orbital, atomOrbitalOp))
-                    return Mathf.Max(0f, bestAxisDot);
-                return -1f;
-            }
-            Vector3 loc = atom.transform.InverseTransformDirection(g.CurrentDirWorld).normalized;
-            return Vector3.Dot(loc, bondDir);
-        }
-
-        if (cyclicAssignmentFix.TryGetValue(opRow, out int existingT) && existingT == bestT)
-            return;
-
-        int occupant = -1;
-        foreach (var kv in cyclicAssignmentFix)
-        {
-            if (kv.Value == bestT)
-            {
-                occupant = kv.Key;
-                break;
-            }
-        }
-
-        if (occupant == opRow)
-            return;
-
-        float opScore = RowBondDot(opRow);
-        if (ReferenceEquals(groupsForMatching[opRow]?.Orbital, atomOrbitalOp))
-        {
-            // Lobe pivot→center can be opposite the internuclear closure axis; do not block steal on negative dot.
-            if (opScore < 0f)
-                opScore = Mathf.Max(opScore, bestAxisDot);
-            opScore += 0.02f;
-        }
-
-        if (occupant < 0)
-        {
-            cyclicAssignmentFix[opRow] = bestT;
-            return;
-        }
-
-        float occScore = RowBondDot(occupant);
-        if (opScore >= occScore)
-        {
-            cyclicAssignmentFix.Remove(occupant);
-            cyclicAssignmentFix[opRow] = bestT;
-        }
-    }
-
-    static bool TryBuildCyclicFinalDirectionsTemplate(
-        AtomFunction atom,
-        int nVseprGroup,
-        List<GroupEntry> groupsForMatching,
-        CyclicRedistributionContext cyclicContext,
-        out List<Vector3> template,
-        Dictionary<int, int> fixedAssignments)
-    {
-        template = null;
-        if (fixedAssignments == null) return false;
-        fixedAssignments.Clear();
-        if (atom == null || cyclicContext == null) return false;
-        if (groupsForMatching == null || nVseprGroup < 3 || nVseprGroup > 4) return false;
-
-        if (!TryResolveCycleContributorNeighborsFromContext(
-            atom, cyclicContext, out AtomFunction neighborA, out AtomFunction neighborB))
-            return false;
-        
-
-        Vector3 pivotWorld = GetFinalWorldForAtom(cyclicContext, atom);
-        Vector3 nAWorld = GetFinalWorldForAtom(cyclicContext, neighborA);
-        Vector3 nBWorld = GetFinalWorldForAtom(cyclicContext, neighborB);
-        Vector3 dirAWorld = (nAWorld - pivotWorld).normalized;
-        Vector3 dirBWorld = (nBWorld - pivotWorld).normalized;
-        if (dirAWorld.sqrMagnitude < 1e-12f || dirBWorld.sqrMagnitude < 1e-12f) return false;
-
-        Vector3 dirA = atom.transform.InverseTransformDirection(dirAWorld).normalized;
-        Vector3 dirB = atom.transform.InverseTransformDirection(dirBWorld).normalized;
-        if (dirA.sqrMagnitude < 1e-12f || dirB.sqrMagnitude < 1e-12f) return false;
-
-        int idxA = ResolveCycleContributorGroupIndex(
-            groupsForMatching,
-            atom,
-            neighborA,
-            dirA,
-            excludeGroupIndex: -1);
-        int idxB = ResolveCycleContributorGroupIndex(
-            groupsForMatching,
-            atom,
-            neighborB,
-            dirB,
-            excludeGroupIndex: idxA);
-        if (idxA < 0 || idxB < 0 || idxA == idxB) return false;
-
-        template = new List<Vector3>(nVseprGroup) { dirA, dirB };
-        fixedAssignments[idxA] = 0;
-        fixedAssignments[idxB] = 1;
-
-        Vector3 outwardWorld = -(dirAWorld + dirBWorld).normalized;
-        Vector3 outward = atom.transform.InverseTransformDirection(outwardWorld).normalized;
-        if (outward.sqrMagnitude < 1e-12f) outward = Vector3.up;
-
-        if (nVseprGroup == 3)
-        {
-            Vector3 planeNormal = Vector3.Cross(dirA, dirB).normalized;
-            if (planeNormal.sqrMagnitude < 1e-12f)
-                planeNormal = Vector3.Cross(dirA, Vector3.up).normalized;
-            if (planeNormal.sqrMagnitude < 1e-12f)
-                planeNormal = Vector3.forward;
-
-            Vector3 inPlaneOutward = Vector3.ProjectOnPlane(outward, planeNormal).normalized;
-            if (inPlaneOutward.sqrMagnitude < 1e-12f)
-                inPlaneOutward = Vector3.ProjectOnPlane(-(dirA + dirB), planeNormal).normalized;
-            if (inPlaneOutward.sqrMagnitude < 1e-12f)
-                inPlaneOutward = Vector3.Cross(planeNormal, dirA).normalized;
-            template.Add(inPlaneOutward.sqrMagnitude > 1e-12f ? inPlaneOutward : Vector3.up);
-            return true;
-        }
-
-        // Use the contributor-plane normal first so the two non-cycle directions span
-        // above/below the cycle contributor plane (up/down), not lateral left/right.
-        Vector3 perp = Vector3.Cross(dirA, dirB).normalized;
-        if (perp.sqrMagnitude > 1e-12f)
-            perp = Vector3.ProjectOnPlane(perp, outward).normalized;
-        if (perp.sqrMagnitude < 1e-12f)
-            perp = Vector3.Cross(outward, dirA + dirB).normalized;
-        if (perp.sqrMagnitude < 1e-12f)
-            perp = Vector3.Cross(outward, Mathf.Abs(Vector3.Dot(outward, Vector3.up)) < 0.9f ? Vector3.up : Vector3.right).normalized;
-        if (perp.sqrMagnitude < 1e-12f)
-            perp = Vector3.forward;
-
-        const float halfTetraAngleDeg = 54.73561f;
-        float c = Mathf.Cos(halfTetraAngleDeg * Mathf.Deg2Rad);
-        float s = Mathf.Sin(halfTetraAngleDeg * Mathf.Deg2Rad);
-        Vector3 rest0 = (outward * c + perp * s).normalized;
-        Vector3 rest1 = (outward * c - perp * s).normalized;
-        template.Add(rest0.sqrMagnitude > 1e-12f ? rest0 : outward);
-        template.Add(rest1.sqrMagnitude > 1e-12f ? rest1 : -outward);
-        return true;
-    }
-
-    static bool TryResolveCycleContributorNeighborsFromContext(
-        AtomFunction atom,
-        CyclicRedistributionContext cyclicContext,
-        out AtomFunction neighborA,
-        out AtomFunction neighborB)
-    {
-        neighborA = null;
-        neighborB = null;
-        if (atom == null || cyclicContext == null)
-            return false;
-        if (cyclicContext.FinalWorldByAtom == null)
-            return false;
-        
-        if (!cyclicContext.FinalWorldByAtom.ContainsKey(atom))
-            return false;
-
-        var cycleNeighbors = new List<AtomFunction>(2);
-        foreach (var cb in atom.CovalentBonds)
-        {
-            if (cb == null || !cb.IsSigmaBondLine()) continue;
-            AtomFunction other = cb.AtomA == atom ? cb.AtomB : cb.AtomA;
-            if (other == null) continue;
-            if (!cyclicContext.FinalWorldByAtom.ContainsKey(other)) continue;
-            cycleNeighbors.Add(other);
-        }
-
-        if (cycleNeighbors.Count >= 2)
-        {
-            neighborA = cycleNeighbors[0];
-            neighborB = cycleNeighbors[1];
-            return true;
-        }
-
-        // If only one cycle sigma neighbor exists (common at prebond terminal contributors),
-        // complete the pair by nearest cycle atom from final geometry.
-        if (cycleNeighbors.Count == 1)
-        {
-            AtomFunction bondedNeighbor = cycleNeighbors[0];
-            AtomFunction nearestOther = null;
-            float bestSq = float.PositiveInfinity;
-            Vector3 atomW = GetFinalWorldForAtom(cyclicContext, atom);
-            foreach (var kv in cyclicContext.FinalWorldByAtom)
-            {
-                AtomFunction cand = kv.Key;
-                if (cand == null || cand == atom || cand == bondedNeighbor) continue;
-                float d2 = (kv.Value - atomW).sqrMagnitude;
-                if (d2 < bestSq)
-                {
-                    bestSq = d2;
-                    nearestOther = cand;
-                }
-            }
-            if (nearestOther != null)
-            {
-                neighborA = bondedNeighbor;
-                neighborB = nearestOther;
-                return true;
-            }
-        }
-
-        // Legacy fallback only when it is a valid non-self pair.
-        if (cyclicContext.CycleNeighborA != null
-            && cyclicContext.CycleNeighborB != null
-            && cyclicContext.CycleNeighborA != atom
-            && cyclicContext.CycleNeighborB != atom
-            && cyclicContext.CycleNeighborA != cyclicContext.CycleNeighborB)
-        {
-            neighborA = cyclicContext.CycleNeighborA;
-            neighborB = cyclicContext.CycleNeighborB;
-            return true;
-        }
-
-        return false;
-    }
-
-    static int FindBondGroupIndexForNeighbor(List<GroupEntry> groups, AtomFunction atom, AtomFunction neighbor)
-    {
-        if (groups == null || atom == null || neighbor == null) return -1;
-        for (int i = 0; i < groups.Count; i++)
-        {
-            GroupEntry g = groups[i];
-            if (g == null || g.Kind != "bond" || g.Bond == null) continue;
-            AtomFunction other = g.Bond.AtomA == atom ? g.Bond.AtomB : g.Bond.AtomA;
-            if (other == neighbor) return i;
-        }
-        return -1;
-    }
-
-    static int ResolveCycleContributorGroupIndex(
-        List<GroupEntry> groups,
-        AtomFunction atom,
-        AtomFunction neighbor,
-        Vector3 expectedDirLocal,
-        int excludeGroupIndex)
-    {
-        if (groups == null || atom == null) return -1;
-
-        // Primary: true bonded contributor row for this neighbor.
-        int bondedIdx = FindBondGroupIndexForNeighbor(groups, atom, neighbor);
-        if (bondedIdx >= 0 && bondedIdx != excludeGroupIndex)
-            return bondedIdx;
-
-        // Prebond cyclic phase can represent one contributor as nonbond.
-        // Fallback: pick the row whose current direction best matches the expected
-        // final contributor direction (neighborFinal - atomFinal).
-        int bestIdx = -1;
-        float bestAng = float.PositiveInfinity;
-        for (int i = 0; i < groups.Count; i++)
-        {
-            if (i == excludeGroupIndex) continue;
-            GroupEntry g = groups[i];
-            if (g == null) continue;
-            Vector3 gLocal = atom.transform.InverseTransformDirection(g.CurrentDirWorld).normalized;
-            if (gLocal.sqrMagnitude < 1e-12f) continue;
-            float ang = Vector3.Angle(gLocal, expectedDirLocal);
-            if (ang < bestAng)
-            {
-                bestAng = ang;
-                bestIdx = i;
-            }
-        }
-        return bestIdx;
-    }
-
-    static Vector3 GetFinalWorldForAtom(CyclicRedistributionContext ctx, AtomFunction atom)
-    {
-        if (atom == null) return Vector3.zero;
-        if (ctx != null && ctx.FinalWorldByAtom != null && ctx.FinalWorldByAtom.TryGetValue(atom, out Vector3 w))
-            return w;
-        return atom.transform.position;
-    }
-
-    /// <summary>
-    /// Closure σ axis in <paramref name="atom"/> local space for the pivot↔guide endpoints only.
-    /// Chain recursion passes a different logical guide; this matches the real closing leg from <see cref="FinalWorldByAtom"/>.
-    /// </summary>
-    static Vector3 TryGetCyclicClosureBondDirLocal(AtomFunction atom, CyclicRedistributionContext ctx)
-    {
-        if (atom == null || ctx == null || ctx.FinalWorldByAtom == null)
-            return Vector3.zero;
-        if (ctx.PivotAtom == null || ctx.CycleNeighborA == null)
-            return Vector3.zero;
-        if (ReferenceEquals(atom, ctx.PivotAtom))
-        {
-            Vector3 pivotW = GetFinalWorldForAtom(ctx, ctx.PivotAtom);
-            Vector3 guideW = GetFinalWorldForAtom(ctx, ctx.CycleNeighborA);
-            Vector3 leg = guideW - pivotW;
-            if (leg.sqrMagnitude < 1e-12f)
-                return Vector3.zero;
-            return atom.transform.InverseTransformDirection(leg.normalized).normalized;
-        }
-        if (ReferenceEquals(atom, ctx.CycleNeighborA))
-        {
-            Vector3 pivotW = GetFinalWorldForAtom(ctx, ctx.PivotAtom);
-            Vector3 guideW = GetFinalWorldForAtom(ctx, atom);
-            Vector3 leg = pivotW - guideW;
-            if (leg.sqrMagnitude < 1e-12f)
-                return Vector3.zero;
-            return atom.transform.InverseTransformDirection(leg.normalized).normalized;
-        }
-        return Vector3.zero;
-    }
-
-    static ElectronOrbitalFunction ResolveCyclicClosureSigmaOpForAtom(
-        AtomFunction adjacentAtom,
-        CyclicRedistributionContext ctx)
-    {
-        if (adjacentAtom == null || ctx == null)
-            return null;
-        if (ReferenceEquals(adjacentAtom, ctx.PivotAtom))
-            return ctx.PivotSigmaOp;
-        if (ReferenceEquals(adjacentAtom, ctx.CycleNeighborA))
-            return ctx.GuideSigmaOp;
-        return null;
-    }
-
-    /// <summary>
-    /// Pivot / closure-guide σ OP may not appear in <see cref="AtomFunction.BondedOrbitals"/> with the same
-    /// reference as <see cref="CyclicRedistributionContext.PivotSigmaOp"/> / <c>GuideSigmaOp</c>, or may be
-    /// omitted from bond rows. Add one matching <see cref="GroupEntry"/> so VSEPR count and perm length match
-    /// tetrahedral closure (four group→template pairs).
-    /// </summary>
-    static void EnsureCyclicClosureSigmaOpCountedForMatching(
-        AtomFunction atom,
-        ElectronOrbitalFunction atomOrbitalOp,
-        CyclicRedistributionContext cyclicContext,
-        List<GroupEntry> bondingGroups,
-        List<GroupEntry> nonbondingOccupied)
-    {
-        if (atom == null || atomOrbitalOp == null || cyclicContext == null || nonbondingOccupied == null)
-            return;
-        if (!ReferenceEquals(atom, cyclicContext.PivotAtom)
-            && !ReferenceEquals(atom, cyclicContext.CycleNeighborA))
-            return;
-
-        if (bondingGroups != null)
-        {
-            for (int i = 0; i < bondingGroups.Count; i++)
-            {
-                if (bondingGroups[i] != null && ReferenceEquals(bondingGroups[i].Orbital, atomOrbitalOp))
-                    return;
-            }
-        }
-        for (int i = 0; i < nonbondingOccupied.Count; i++)
-        {
-            if (nonbondingOccupied[i] != null && ReferenceEquals(nonbondingOccupied[i].Orbital, atomOrbitalOp))
-                return;
-        }
-
-        Vector3 bondDirLocal = TryGetCyclicClosureBondDirLocal(atom, cyclicContext);
-        Vector3 opRayWorld = atomOrbitalOp.transform.position - atom.transform.position;
-        // Start pose for Slerp must be the real lobe direction, not the closure axis (same as target → no spin).
-        Vector3 dirWorld = opRayWorld.sqrMagnitude > 1e-12f
-            ? opRayWorld.normalized
-            : (bondDirLocal.sqrMagnitude > 1e-12f
-                ? atom.transform.TransformDirection(bondDirLocal).normalized
-                : Vector3.right);
-        float opRadius = Mathf.Max(0.01f, opRayWorld.magnitude);
-
-        AtomFunction partner = ReferenceEquals(atom, cyclicContext.PivotAtom)
-            ? cyclicContext.CycleNeighborA
-            : cyclicContext.PivotAtom;
-        float massW = partner != null
-            ? ComputeAtomComponentMass(partner)
-            : Mathf.Max(1e-3f, ElectronRedistributionGuide.GetStandardAtomicWeight(atom.AtomicNumber));
-
-        nonbondingOccupied.Add(new GroupEntry
-        {
-            Kind = "nonbond-op-empty-counted-bonding",
-            Orbital = atomOrbitalOp,
-            MassWeight = Mathf.Max(1e-3f, massW),
-            CurrentDirWorld = dirWorld,
-            Radius = opRadius
-        });
-    }
 
     static GroupEntry GetHeaviestGroupOpPrioritized(
         List<GroupEntry> bondingGroups,
@@ -2865,83 +1903,6 @@ public static class OrbitalRedistribution
         return false;
     }
 
-    static int IndexOfAtomOnSigmaRingPath(IReadOnlyList<AtomFunction> path, AtomFunction atom)
-    {
-        if (path == null || atom == null) return -1;
-        for (int k = 0; k < path.Count; k++)
-        {
-            if (ReferenceEquals(path[k], atom))
-                return k;
-        }
-        return -1;
-    }
-
-    /// <summary>
-    /// In-plane stagger reference in pivot (non-guide) local space, built from σ-chain <paramref name="tw"/> target
-    /// centers for substituents on the guide whose partner lies on the ring; otherwise falls back to current orbital
-    /// positions relative to the guide’s target nucleus.
-    /// </summary>
-    static bool TryGetGuideStaggerReferenceFromSigmaChainTargetsInNonGuideLocal(
-        IReadOnlyList<AtomFunction> ringPathOrderedFromC1,
-        Vector3[] tw,
-        int stepIndexI,
-        AtomFunction pivot,
-        AtomFunction guide,
-        Vector3 axisLocalNonGuideTowardGuide,
-        out Vector3 refInPlaneLocal)
-    {
-        refInPlaneLocal = default;
-        if (ringPathOrderedFromC1 == null || tw == null || pivot == null || guide == null) return false;
-        int n = ringPathOrderedFromC1.Count;
-        int gIdx = stepIndexI - 2;
-        int pIdx = stepIndexI - 1;
-        if (stepIndexI < 2 || gIdx < 0 || pIdx < 0 || gIdx >= n || pIdx >= n || tw.Length != n) return false;
-
-        Vector3 axisWorld = pivot.transform.TransformDirection(axisLocalNonGuideTowardGuide).normalized;
-        if (axisWorld.sqrMagnitude < 1e-12f) return false;
-
-        Vector3 towardPivotWorld = (tw[pIdx] - tw[gIdx]).normalized;
-        if (towardPivotWorld.sqrMagnitude < 1e-12f) return false;
-
-        Vector3 guideCenterWorld = tw[gIdx];
-        const float sigmaAxisMaxDeg = 18f;
-
-        foreach (var cb in guide.CovalentBonds)
-        {
-            if (cb == null || cb.Orbital == null || !cb.IsSigmaBondLine()) continue;
-            AtomFunction other = cb.AtomA == guide ? cb.AtomB : cb.AtomA;
-            if (other == null || ReferenceEquals(other, pivot)) continue;
-            int oi = IndexOfAtomOnSigmaRingPath(ringPathOrderedFromC1, other);
-            Vector3 dw;
-            if (oi >= 0)
-                dw = (tw[oi] - guideCenterWorld).normalized;
-            else
-                dw = (cb.Orbital.transform.position - guideCenterWorld).normalized;
-            if (dw.sqrMagnitude < 1e-16f) continue;
-            if (Vector3.Angle(dw, towardPivotWorld) < sigmaAxisMaxDeg)
-                continue;
-            Vector3 pw = Vector3.ProjectOnPlane(dw, axisWorld);
-            if (pw.sqrMagnitude < 1e-8f) continue;
-            refInPlaneLocal = pivot.transform.InverseTransformDirection(pw.normalized).normalized;
-            return true;
-        }
-
-        foreach (var orb in guide.BondedOrbitals)
-        {
-            if (orb == null || orb.Bond != null || orb.transform.parent != guide.transform) continue;
-            if (orb.ElectronCount <= 0) continue;
-            Vector3 dw = (orb.transform.position - guideCenterWorld).normalized;
-            if (dw.sqrMagnitude < 1e-16f) continue;
-            if (Vector3.Angle(dw, towardPivotWorld) < sigmaAxisMaxDeg)
-                continue;
-            Vector3 pw = Vector3.ProjectOnPlane(dw, axisWorld);
-            if (pw.sqrMagnitude < 1e-8f) continue;
-            refInPlaneLocal = pivot.transform.InverseTransformDirection(pw.normalized).normalized;
-            return true;
-        }
-
-        return false;
-    }
 
     const float POrbitalAxisParallelDot = 0.92f;
 
@@ -3340,158 +2301,6 @@ public static class OrbitalRedistribution
         return true;
     }
 
-    static bool TryGetSigmaChainTargetWorldPosition(
-        CyclicRedistributionContext ctx,
-        AtomFunction atom,
-        out Vector3 world)
-    {
-        world = default;
-        if (ctx?.SigmaRingPathOrderedC1ToCn == null || ctx.SigmaChainTargetWorld == null || atom == null)
-            return false;
-        List<AtomFunction> path = ctx.SigmaRingPathOrderedC1ToCn;
-        Vector3[] tw = ctx.SigmaChainTargetWorld;
-        if (tw.Length != path.Count) return false;
-        for (int i = 0; i < path.Count; i++)
-        {
-            if (!ReferenceEquals(path[i], atom)) continue;
-            world = tw[i];
-            return true;
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Cyclic σ bond break: prefer pivot-local templates from atom-move stagger (<see cref="FinalDirectionTemplateByAtom"/>).
-    /// If missing, build one ray per <paramref name="groupsForMatching"/> row, then permute indices so σ-ring contributor
-    /// rays (rows bonded to prev/next path atoms when known) sit at template indices <c>0</c> and <c>1</c> without changing vectors.
-    /// Prev/next wrap on the ring for C1 and C<sub>N</sub> (same convention as <see cref="TryApplyCyclicSigmaChainContributorSlot01Preassign"/>).
-    /// </summary>
-    static bool TryBuildFinalDirectionTemplateFromSigmaChainTargets(
-        AtomFunction atom,
-        List<GroupEntry> groupsForMatching,
-        CyclicRedistributionContext ctx,
-        out List<Vector3> templateLocal)
-    {
-        templateLocal = null;
-        if (atom == null || groupsForMatching == null || ctx == null) return false;
-        if (ctx.SigmaRingPathOrderedC1ToCn == null || ctx.SigmaChainTargetWorld == null) return false;
-
-        if (ctx.FinalDirectionTemplateByAtom != null
-            && ctx.FinalDirectionTemplateByAtom.TryGetValue(atom, out List<Vector3> cached)
-            && cached != null
-            && cached.Count == groupsForMatching.Count)
-        {
-            templateLocal = new List<Vector3>(cached);
-            return true;
-        }
-
-        if (!TryGetSigmaChainTargetWorldPosition(ctx, atom, out Vector3 pivotTargetWorld))
-            return false;
-
-        var outList = new List<Vector3>(groupsForMatching.Count);
-        for (int gi = 0; gi < groupsForMatching.Count; gi++)
-        {
-            GroupEntry g = groupsForMatching[gi];
-            if (g == null || g.Orbital == null)
-                return false;
-
-            Vector3 rayWorld;
-            if (g.Kind == "bond" && g.Bond != null)
-            {
-                AtomFunction other = g.Bond.AtomA == atom ? g.Bond.AtomB : g.Bond.AtomA;
-                if (other == null)
-                    return false;
-                Vector3 otherWorld = TryGetSigmaChainTargetWorldPosition(ctx, other, out Vector3 ow)
-                    ? ow
-                    : other.transform.position;
-                Vector3 off = otherWorld - pivotTargetWorld;
-                rayWorld = off.sqrMagnitude > 1e-16f
-                    ? off.normalized
-                    : (g.CurrentDirWorld.sqrMagnitude > 1e-16f ? g.CurrentDirWorld.normalized : Vector3.right);
-            }
-            else
-            {
-                Vector3 w = g.Orbital.transform.position - atom.transform.position;
-                rayWorld = w.sqrMagnitude > 1e-16f
-                    ? w.normalized
-                    : (g.CurrentDirWorld.sqrMagnitude > 1e-16f ? g.CurrentDirWorld.normalized : Vector3.right);
-            }
-
-            Vector3 local = atom.transform.InverseTransformDirection(rayWorld);
-            if (local.sqrMagnitude < 1e-16f)
-                local = Vector3.right;
-            outList.Add(local.normalized);
-        }
-
-        List<AtomFunction> path = ctx.SigmaRingPathOrderedC1ToCn;
-        Vector3[] tw = ctx.SigmaChainTargetWorld;
-        int pRing = -1;
-        bool onPath = TryGetSigmaRingPathIndex(ctx, atom, out pRing);
-        bool canRingSlotReorder = tw != null && path != null && tw.Length == path.Count && onPath && path.Count >= 3;
-
-        bool ringSlotReorder = false;
-        Vector3 wPivot = default;
-        Vector3 wPrev = default;
-        Vector3 wNext = default;
-        AtomFunction atomPrev = null;
-        AtomFunction atomNext = null;
-        if (canRingSlotReorder)
-        {
-            if (pRing >= 1 && pRing < path.Count - 1
-                && path[pRing - 1] != null && path[pRing + 1] != null)
-            {
-                ringSlotReorder = true;
-                wPivot = tw[pRing];
-                wPrev = tw[pRing - 1];
-                wNext = tw[pRing + 1];
-                atomPrev = path[pRing - 1];
-                atomNext = path[pRing + 1];
-            }
-            else if (pRing == 0 && path[path.Count - 1] != null && path[1] != null)
-            {
-                ringSlotReorder = true;
-                wPivot = tw[0];
-                wPrev = tw[path.Count - 1];
-                wNext = tw[1];
-                atomPrev = path[path.Count - 1];
-                atomNext = path[1];
-            }
-            else if (pRing == path.Count - 1 && path[path.Count - 2] != null && path[0] != null)
-            {
-                ringSlotReorder = true;
-                int last = path.Count - 1;
-                wPivot = tw[last];
-                wPrev = tw[last - 1];
-                wNext = tw[0];
-                atomPrev = path[last - 1];
-                atomNext = path[0];
-            }
-        }
-
-        if (ringSlotReorder)
-        {
-            int rowPrev = FindBondGroupIndexForNeighbor(groupsForMatching, atom, atomPrev);
-            int rowNext = FindBondGroupIndexForNeighbor(groupsForMatching, atom, atomNext);
-            int? hintPrev = rowPrev >= 0 ? rowPrev : (int?)null;
-            int? hintNext = rowNext >= 0 ? rowNext : (int?)null;
-            outList = ReorderSigmaChainTemplateSlot01ForRing(
-                atom,
-                outList,
-                wPivot,
-                wPrev,
-                wNext,
-                hintPrev,
-                hintNext,
-                preserveStaggerAlongPreviousAtSlot0: false);
-        }
-
-        if (ctx.FinalDirectionTemplateByAtom == null)
-            ctx.FinalDirectionTemplateByAtom = new Dictionary<AtomFunction, List<Vector3>>();
-        ctx.FinalDirectionTemplateByAtom[atom] = new List<Vector3>(outList);
-        templateLocal = outList;
-        return true;
-    }
 
     static List<Vector3> BuildFinalDirectionsTemplate(int nVseprGroup)
     {
@@ -3566,60 +2375,1310 @@ public static class OrbitalRedistribution
         return GetHeaviestGroupOpPrioritized(bondingGroups, nonbondingOccupied, emptyOrbitals, atomOrbitalOp);
     }
 
-    /// <summary>
-    /// Cyclic σ bond opening: simultaneously lerp ring atoms C3…CN while C1, C2 world positions stay fixed; targets are
-    /// built from <see cref="AlignFinalDirectionsTemplateToGuide"/> stagger on each pivot with the previous ring atom as guide.
-    /// </summary>
-    public sealed class CyclicSigmaChainAtomAnimation
-    {
-        readonly List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)> items;
-
-        internal CyclicSigmaChainAtomAnimation(List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)> items)
-        {
-            this.items = items;
-        }
-
-        public void Apply(float smoothS)
-        {
-            float s = Mathf.Clamp01(smoothS);
-            for (int i = 0; i < items.Count; i++)
-            {
-                var it = items[i];
-                if (it.atom == null) continue;
-                it.atom.transform.position = Vector3.Lerp(it.startWorld, it.endWorld, s);
-            }
-        }
-
-        public void GatherAtoms(HashSet<AtomFunction> into)
-        {
-            if (into == null) return;
-            for (int i = 0; i < items.Count; i++)
-            {
-                if (items[i].atom != null)
-                    into.Add(items[i].atom);
-            }
-        }
-    }
 
     /// <summary>
-    /// After the C1–CN σ bond is removed, <paramref name="ringPathOrderedFromC1"/> is the σ-only shortest path
-    /// [C1=path[0], C2=path[1], …, CN=path[^1]] along the remaining ring. Fixes C1 and C2, then for each step along
-    /// the chain: build stagger on pivot <c>C_N</c> (guide <c>C_{N-1}</c>), pick a unit direction <c>û</c> in
-    /// <c>C_N</c>’s local frame (via <see cref="AlignFinalDirectionsTemplateToGuide"/>), map to world, and set the
-    /// <b>new</b> position of <c>C_{N+1}</c> as <c>pos(C_N)_{new} + û_{world} * bondLength</c> — i.e. next center is
-    /// the pivot’s updated position plus chosen direction at that pivot times bond length. Each step picks the
-    /// stagger direction closest to <c>targetWorld[i−2] − targetWorld[i−3]</c> when <c>i ≥ 3</c>, else for
-    /// <c>i = 2</c> closest to <c>targetWorld[2] − targetWorld[1]</c> (<c>C_3 − C_2</c> using current <c>C_3</c> and fixed <c>C_2</c>).
+    /// Cyclic/ring-specific redistribution logic grouped inside OrbitalRedistribution.
     /// </summary>
-    public static bool TryBuildCyclicSigmaBondBreakStaggeredChainAtomAnimation(
-        IReadOnlyList<AtomFunction> ringPathOrderedFromC1,
-        out CyclicSigmaChainAtomAnimation animation)
+    public static class Cyclic
     {
-        animation = null;
-        if (!TryComputeCyclicSigmaBondBreakChainTargetWorld(ringPathOrderedFromC1, out Vector3[] targetWorld))
+        public static bool DebugCyclicSigmaBondBreakSteppedTemplate
+        {
+            get => OrbitalRedistribution.DebugCyclicSigmaBondBreakSteppedTemplate;
+            set => OrbitalRedistribution.DebugCyclicSigmaBondBreakSteppedTemplate = value;
+        }
+
+        public static void ClearCyclicSigmaBondBreakTemplateDebugVisuals()
+            => OrbitalRedistribution.ClearCyclicSigmaBondBreakTemplateDebugVisuals();
+
+        public static void AppendCyclicSigmaBondBreakRedistributionTemplateDebugVisuals(
+            AtomFunction recipient,
+            AtomFunction partner,
+            ElectronOrbitalFunction antiRecipient,
+            CyclicRedistributionContext cyclicBreakRedist)
+            => OrbitalRedistribution.AppendCyclicSigmaBondBreakRedistributionTemplateDebugVisuals(
+                recipient,
+                partner,
+                antiRecipient,
+                cyclicBreakRedist);
+
+        static bool TryResolveCycleContributorNeighborsFromContext(
+            AtomFunction atom,
+            CyclicRedistributionContext cyclicContext,
+            out AtomFunction neighborA,
+            out AtomFunction neighborB)
+        {
+            neighborA = null;
+            neighborB = null;
+            if (atom == null || cyclicContext == null)
+                return false;
+            if (cyclicContext.FinalWorldByAtom == null)
+                return false;
+
+            if (!cyclicContext.FinalWorldByAtom.ContainsKey(atom))
+                return false;
+
+            var cycleNeighbors = new List<AtomFunction>(2);
+            foreach (var cb in atom.CovalentBonds)
+            {
+                if (cb == null || !cb.IsSigmaBondLine()) continue;
+                AtomFunction other = cb.AtomA == atom ? cb.AtomB : cb.AtomA;
+                if (other == null) continue;
+                if (!cyclicContext.FinalWorldByAtom.ContainsKey(other)) continue;
+                cycleNeighbors.Add(other);
+            }
+
+            if (cycleNeighbors.Count >= 2)
+            {
+                neighborA = cycleNeighbors[0];
+                neighborB = cycleNeighbors[1];
+                return true;
+            }
+
+            if (cycleNeighbors.Count == 1)
+            {
+                AtomFunction bondedNeighbor = cycleNeighbors[0];
+                AtomFunction nearestOther = null;
+                float bestSq = float.PositiveInfinity;
+                Vector3 atomW = GetFinalWorldForAtom(cyclicContext, atom);
+                foreach (var kv in cyclicContext.FinalWorldByAtom)
+                {
+                    AtomFunction cand = kv.Key;
+                    if (cand == null || cand == atom || cand == bondedNeighbor) continue;
+                    float d2 = (kv.Value - atomW).sqrMagnitude;
+                    if (d2 < bestSq)
+                    {
+                        bestSq = d2;
+                        nearestOther = cand;
+                    }
+                }
+                if (nearestOther != null)
+                {
+                    neighborA = bondedNeighbor;
+                    neighborB = nearestOther;
+                    return true;
+                }
+            }
+
+            if (cyclicContext.CycleNeighborA != null
+                && cyclicContext.CycleNeighborB != null
+                && cyclicContext.CycleNeighborA != atom
+                && cyclicContext.CycleNeighborB != atom
+                && cyclicContext.CycleNeighborA != cyclicContext.CycleNeighborB)
+            {
+                neighborA = cyclicContext.CycleNeighborA;
+                neighborB = cyclicContext.CycleNeighborB;
+                return true;
+            }
+
             return false;
+        }
 
-        animation = BuildCyclicSigmaChainAtomAnimationFromTargetWorld(ringPathOrderedFromC1, targetWorld);
-        return animation != null;
+        static int FindBondGroupIndexForNeighbor(List<GroupEntry> groups, AtomFunction atom, AtomFunction neighbor)
+        {
+            if (groups == null || atom == null || neighbor == null) return -1;
+            for (int i = 0; i < groups.Count; i++)
+            {
+                GroupEntry g = groups[i];
+                if (g == null || g.Kind != "bond" || g.Bond == null) continue;
+                AtomFunction other = g.Bond.AtomA == atom ? g.Bond.AtomB : g.Bond.AtomA;
+                if (other == neighbor) return i;
+            }
+            return -1;
+        }
+
+        static Vector3 GetFinalWorldForAtom(CyclicRedistributionContext ctx, AtomFunction atom)
+        {
+            if (atom == null) return Vector3.zero;
+            if (ctx != null && ctx.FinalWorldByAtom != null && ctx.FinalWorldByAtom.TryGetValue(atom, out Vector3 w))
+                return w;
+            return atom.transform.position;
+        }
+
+        static int IndexOfAtomOnSigmaRingPath(IReadOnlyList<AtomFunction> path, AtomFunction atom)
+        {
+            if (path == null || atom == null) return -1;
+            for (int k = 0; k < path.Count; k++)
+            {
+                if (ReferenceEquals(path[k], atom))
+                    return k;
+            }
+            return -1;
+        }
+
+        static bool TryGetGuideStaggerReferenceFromSigmaChainTargetsInNonGuideLocal(
+            IReadOnlyList<AtomFunction> ringPathOrderedFromC1,
+            Vector3[] tw,
+            int stepIndexI,
+            AtomFunction pivot,
+            AtomFunction guide,
+            Vector3 axisLocalNonGuideTowardGuide,
+            out Vector3 refInPlaneLocal)
+        {
+            refInPlaneLocal = default;
+            if (ringPathOrderedFromC1 == null || tw == null || pivot == null || guide == null) return false;
+            int n = ringPathOrderedFromC1.Count;
+            int gIdx = stepIndexI - 2;
+            int pIdx = stepIndexI - 1;
+            if (stepIndexI < 2 || gIdx < 0 || pIdx < 0 || gIdx >= n || pIdx >= n || tw.Length != n) return false;
+
+            Vector3 axisWorld = pivot.transform.TransformDirection(axisLocalNonGuideTowardGuide).normalized;
+            if (axisWorld.sqrMagnitude < 1e-12f) return false;
+
+            Vector3 towardPivotWorld = (tw[pIdx] - tw[gIdx]).normalized;
+            if (towardPivotWorld.sqrMagnitude < 1e-12f) return false;
+
+            Vector3 guideCenterWorld = tw[gIdx];
+            const float sigmaAxisMaxDeg = 18f;
+
+            foreach (var cb in guide.CovalentBonds)
+            {
+                if (cb == null || cb.Orbital == null || !cb.IsSigmaBondLine()) continue;
+                AtomFunction other = cb.AtomA == guide ? cb.AtomB : cb.AtomA;
+                if (other == null || ReferenceEquals(other, pivot)) continue;
+                int oi = IndexOfAtomOnSigmaRingPath(ringPathOrderedFromC1, other);
+                Vector3 dw;
+                if (oi >= 0)
+                    dw = (tw[oi] - guideCenterWorld).normalized;
+                else
+                    dw = (cb.Orbital.transform.position - guideCenterWorld).normalized;
+                if (dw.sqrMagnitude < 1e-16f) continue;
+                if (Vector3.Angle(dw, towardPivotWorld) < sigmaAxisMaxDeg)
+                    continue;
+                Vector3 pw = Vector3.ProjectOnPlane(dw, axisWorld);
+                if (pw.sqrMagnitude < 1e-8f) continue;
+                refInPlaneLocal = pivot.transform.InverseTransformDirection(pw.normalized).normalized;
+                return true;
+            }
+
+            foreach (var orb in guide.BondedOrbitals)
+            {
+                if (orb == null || orb.Bond != null || orb.transform.parent != guide.transform) continue;
+                if (orb.ElectronCount <= 0) continue;
+                Vector3 dw = (orb.transform.position - guideCenterWorld).normalized;
+                if (dw.sqrMagnitude < 1e-16f) continue;
+                if (Vector3.Angle(dw, towardPivotWorld) < sigmaAxisMaxDeg)
+                    continue;
+                Vector3 pw = Vector3.ProjectOnPlane(dw, axisWorld);
+                if (pw.sqrMagnitude < 1e-8f) continue;
+                refInPlaneLocal = pivot.transform.InverseTransformDirection(pw.normalized).normalized;
+                return true;
+            }
+
+            return false;
+        }
+
+        static bool TryGetSigmaRingPathIndex(CyclicRedistributionContext ctx, AtomFunction atom, out int index)
+        {
+            index = -1;
+            if (ctx?.SigmaRingPathOrderedC1ToCn == null || atom == null) return false;
+            List<AtomFunction> path = ctx.SigmaRingPathOrderedC1ToCn;
+            for (int i = 0; i < path.Count; i++)
+            {
+                if (ReferenceEquals(path[i], atom))
+                {
+                    index = i;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        internal static bool TryGetSigmaChainTargetWorldPosition(
+            CyclicRedistributionContext ctx,
+            AtomFunction atom,
+            out Vector3 world)
+        {
+            world = default;
+            if (ctx?.SigmaRingPathOrderedC1ToCn == null || ctx.SigmaChainTargetWorld == null || atom == null)
+                return false;
+            List<AtomFunction> path = ctx.SigmaRingPathOrderedC1ToCn;
+            Vector3[] tw = ctx.SigmaChainTargetWorld;
+            if (tw.Length != path.Count) return false;
+            for (int i = 0; i < path.Count; i++)
+            {
+                if (!ReferenceEquals(path[i], atom)) continue;
+                world = tw[i];
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Cyclic σ bond break: prefer pivot-local templates from atom-move stagger (<see cref="CyclicRedistributionContext.FinalDirectionTemplateByAtom"/>).
+        /// If missing, build one ray per <paramref name="groupsForMatching"/> row, then permute indices so σ-ring contributor
+        /// rays (rows bonded to prev/next path atoms when known) sit at template indices <c>0</c> and <c>1</c> without changing vectors.
+        /// Prev/next wrap on the ring for C1 and C<sub>N</sub> (same convention as <see cref="TryApplyCyclicSigmaChainContributorSlot01Preassign"/>).
+        /// </summary>
+        internal static bool TryBuildFinalDirectionTemplateFromSigmaChainTargets(
+            AtomFunction atom,
+            List<GroupEntry> groupsForMatching,
+            CyclicRedistributionContext ctx,
+            out List<Vector3> templateLocal)
+        {
+            templateLocal = null;
+            if (atom == null || groupsForMatching == null || ctx == null) return false;
+            if (ctx.SigmaRingPathOrderedC1ToCn == null || ctx.SigmaChainTargetWorld == null) return false;
+
+            if (ctx.FinalDirectionTemplateByAtom != null
+                && ctx.FinalDirectionTemplateByAtom.TryGetValue(atom, out List<Vector3> cached)
+                && cached != null
+                && cached.Count == groupsForMatching.Count)
+            {
+                templateLocal = new List<Vector3>(cached);
+                return true;
+            }
+
+            if (!TryGetSigmaChainTargetWorldPosition(ctx, atom, out Vector3 pivotTargetWorld))
+                return false;
+
+            var outList = new List<Vector3>(groupsForMatching.Count);
+            for (int gi = 0; gi < groupsForMatching.Count; gi++)
+            {
+                GroupEntry g = groupsForMatching[gi];
+                if (g == null || g.Orbital == null)
+                    return false;
+
+                Vector3 rayWorld;
+                if (g.Kind == "bond" && g.Bond != null)
+                {
+                    AtomFunction other = g.Bond.AtomA == atom ? g.Bond.AtomB : g.Bond.AtomA;
+                    if (other == null)
+                        return false;
+                    Vector3 otherWorld = TryGetSigmaChainTargetWorldPosition(ctx, other, out Vector3 ow)
+                        ? ow
+                        : other.transform.position;
+                    Vector3 off = otherWorld - pivotTargetWorld;
+                    rayWorld = off.sqrMagnitude > 1e-16f
+                        ? off.normalized
+                        : (g.CurrentDirWorld.sqrMagnitude > 1e-16f ? g.CurrentDirWorld.normalized : Vector3.right);
+                }
+                else
+                {
+                    Vector3 w = g.Orbital.transform.position - atom.transform.position;
+                    rayWorld = w.sqrMagnitude > 1e-16f
+                        ? w.normalized
+                        : (g.CurrentDirWorld.sqrMagnitude > 1e-16f ? g.CurrentDirWorld.normalized : Vector3.right);
+                }
+
+                Vector3 local = atom.transform.InverseTransformDirection(rayWorld);
+                if (local.sqrMagnitude < 1e-16f)
+                    local = Vector3.right;
+                outList.Add(local.normalized);
+            }
+
+            List<AtomFunction> path = ctx.SigmaRingPathOrderedC1ToCn;
+            Vector3[] tw = ctx.SigmaChainTargetWorld;
+            int pRing = -1;
+            bool onPath = TryGetSigmaRingPathIndex(ctx, atom, out pRing);
+            bool canRingSlotReorder = tw != null && path != null && tw.Length == path.Count && onPath && path.Count >= 3;
+
+            bool ringSlotReorder = false;
+            Vector3 wPivot = default;
+            Vector3 wPrev = default;
+            Vector3 wNext = default;
+            AtomFunction atomPrev = null;
+            AtomFunction atomNext = null;
+            if (canRingSlotReorder)
+            {
+                if (pRing >= 1 && pRing < path.Count - 1
+                    && path[pRing - 1] != null && path[pRing + 1] != null)
+                {
+                    ringSlotReorder = true;
+                    wPivot = tw[pRing];
+                    wPrev = tw[pRing - 1];
+                    wNext = tw[pRing + 1];
+                    atomPrev = path[pRing - 1];
+                    atomNext = path[pRing + 1];
+                }
+                else if (pRing == 0 && path[path.Count - 1] != null && path[1] != null)
+                {
+                    ringSlotReorder = true;
+                    wPivot = tw[0];
+                    wPrev = tw[path.Count - 1];
+                    wNext = tw[1];
+                    atomPrev = path[path.Count - 1];
+                    atomNext = path[1];
+                }
+                else if (pRing == path.Count - 1 && path[path.Count - 2] != null && path[0] != null)
+                {
+                    ringSlotReorder = true;
+                    int last = path.Count - 1;
+                    wPivot = tw[last];
+                    wPrev = tw[last - 1];
+                    wNext = tw[0];
+                    atomPrev = path[last - 1];
+                    atomNext = path[0];
+                }
+            }
+
+            if (ringSlotReorder)
+            {
+                int rowPrev = FindBondGroupIndexForNeighbor(groupsForMatching, atom, atomPrev);
+                int rowNext = FindBondGroupIndexForNeighbor(groupsForMatching, atom, atomNext);
+                int? hintPrev = rowPrev >= 0 ? rowPrev : (int?)null;
+                int? hintNext = rowNext >= 0 ? rowNext : (int?)null;
+                outList = ReorderSigmaChainTemplateSlot01ForRing(
+                    atom,
+                    outList,
+                    wPivot,
+                    wPrev,
+                    wNext,
+                    hintPrev,
+                    hintNext,
+                    preserveStaggerAlongPreviousAtSlot0: false);
+            }
+
+            if (ctx.FinalDirectionTemplateByAtom == null)
+                ctx.FinalDirectionTemplateByAtom = new Dictionary<AtomFunction, List<Vector3>>();
+            ctx.FinalDirectionTemplateByAtom[atom] = new List<Vector3>(outList);
+            templateLocal = outList;
+            return true;
+        }
+
+        public static bool TryComputeCyclicSigmaStaggerChainTargetsOneStep(
+            IReadOnlyList<AtomFunction> ringPathOrderedFromC1,
+            Vector3[] targetWorld,
+            float bondLen,
+            int i,
+            out List<Vector3> alignedLocal,
+            out int chosenJ,
+            out Vector3 referenceDirectionWorld)
+        {
+            alignedLocal = null;
+            chosenJ = 0;
+            referenceDirectionWorld = Vector3.zero;
+            int n = ringPathOrderedFromC1?.Count ?? 0;
+            if (ringPathOrderedFromC1 == null || targetWorld == null || n < 3 || i < 2 || i >= n)
+                return false;
+
+            AtomFunction pivot = ringPathOrderedFromC1[i - 1];
+            AtomFunction guide = ringPathOrderedFromC1[i - 2];
+            Vector3 pivotNewWorld = targetWorld[i - 1];
+            if (pivot == null || guide == null)
+                return false;
+
+            int nVsepr = CountVseprGroupsForAtom(pivot);
+            if (nVsepr < 2)
+                return false;
+
+            List<Vector3> template = BuildFinalDirectionsTemplate(nVsepr);
+            Vector3 guideDirWorld = targetWorld[i - 2] - pivotNewWorld;
+            Vector3 guideDirLocal = pivot.transform.InverseTransformDirection(guideDirWorld);
+            if (guideDirLocal.sqrMagnitude < 1e-14f)
+                return false;
+
+            Vector3? chainStaggerRef = null;
+            if (TryGetGuideStaggerReferenceFromSigmaChainTargetsInNonGuideLocal(
+                    ringPathOrderedFromC1,
+                    targetWorld,
+                    i,
+                    pivot,
+                    guide,
+                    guideDirLocal.normalized,
+                    out Vector3 refFromTargets))
+                chainStaggerRef = refFromTargets;
+
+            alignedLocal = AlignFinalDirectionsTemplateToGuide(
+                template,
+                guideDirLocal.normalized,
+                pivot,
+                guide,
+                nVsepr,
+                chainStaggerRef);
+            if (alignedLocal == null || alignedLocal.Count < 2)
+                return false;
+
+            Vector3 refBackbone = i >= 3
+                ? targetWorld[i - 2] - targetWorld[i - 3]
+                : targetWorld[2] - targetWorld[1];
+            Vector3 refHintWorld = refBackbone.sqrMagnitude > 1e-14f
+                ? refBackbone.normalized
+                : default;
+            if (refHintWorld.sqrMagnitude < 1e-12f)
+            {
+                refHintWorld = pivot.transform.TransformDirection(alignedLocal[1]).normalized;
+                if (refHintWorld.sqrMagnitude < 1e-12f)
+                    return false;
+            }
+
+            int bestJ = 1;
+            float bestDot = float.NegativeInfinity;
+            for (int j = 1; j < alignedLocal.Count; j++)
+            {
+                Vector3 dirW = pivot.transform.TransformDirection(alignedLocal[j]).normalized;
+                if (dirW.sqrMagnitude < 1e-12f) continue;
+                float dot = Vector3.Dot(dirW, refHintWorld);
+                if (dot > bestDot)
+                {
+                    bestDot = dot;
+                    bestJ = j;
+                }
+            }
+
+            Vector3 chosenDirWorldFromPivot = pivot.transform.TransformDirection(alignedLocal[bestJ]).normalized;
+            if (chosenDirWorldFromPivot.sqrMagnitude < 1e-12f)
+                return false;
+
+            chosenJ = bestJ;
+            targetWorld[i] = pivotNewWorld + chosenDirWorldFromPivot * bondLen;
+            referenceDirectionWorld = refHintWorld;
+            return true;
+        }
+
+        public static CyclicSigmaChainAtomAnimation BuildCyclicSigmaChainAtomAnimationFromTargetWorld(
+            IReadOnlyList<AtomFunction> ringPathOrderedFromC1,
+            Vector3[] targetWorld)
+        {
+            if (ringPathOrderedFromC1 == null || targetWorld == null)
+                return null;
+            int n = ringPathOrderedFromC1.Count;
+            var entries = new List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)>();
+            for (int i = 2; i < n; i++)
+            {
+                AtomFunction a = ringPathOrderedFromC1[i];
+                if (a == null) continue;
+                entries.Add((a, a.transform.position, targetWorld[i]));
+            }
+
+            if (entries.Count == 0)
+                return null;
+            return new CyclicSigmaChainAtomAnimation(entries);
+        }
+
+        public static CyclicRedistributionContext CreateCyclicSigmaBondBreakRedistributionBlockContext(
+            IList<AtomFunction> ringPathOrderedC1ToCn)
+        {
+            if (ringPathOrderedC1ToCn == null || ringPathOrderedC1ToCn.Count < 3) return null;
+            var blocked = new HashSet<AtomFunction>();
+            var pathCopy = new List<AtomFunction>(ringPathOrderedC1ToCn.Count);
+            for (int i = 0; i < ringPathOrderedC1ToCn.Count; i++)
+            {
+                AtomFunction a = ringPathOrderedC1ToCn[i];
+                pathCopy.Add(a);
+                if (a != null) blocked.Add(a);
+            }
+
+            var ctx = new CyclicRedistributionContext
+            {
+                ChainRedistributionBlockedAtoms = blocked,
+                SigmaRingPathOrderedC1ToCn = pathCopy,
+                SigmaChainTargetWorld = null
+            };
+            if (!TryComputeCyclicSigmaBondBreakChainTargetWorld(pathCopy, out Vector3[] targetWorld, ctx))
+            {
+                ctx.SigmaChainTargetWorld = null;
+                ctx.FinalDirectionTemplateByAtom = null;
+                return ctx;
+            }
+
+            ctx.SigmaChainTargetWorld = targetWorld;
+            Vector3 centerAccum = Vector3.zero;
+            for (int ci = 0; ci < pathCopy.Count; ci++)
+                centerAccum += targetWorld[ci];
+            ctx.CycleCenterWorld = pathCopy.Count > 0 ? centerAccum / pathCopy.Count : Vector3.zero;
+            PopulateCyclicSigmaBondBreakRingEndcapFinalDirectionTemplates(ctx, pathCopy, targetWorld);
+            return ctx;
+        }
+
+        public static bool TryComputeCyclicSigmaBondBreakChainTargetWorld(
+            IReadOnlyList<AtomFunction> ringPathOrderedFromC1,
+            out Vector3[] targetWorld,
+            CyclicRedistributionContext pivotTemplateSink = null)
+        {
+            targetWorld = null;
+            if (ringPathOrderedFromC1 == null || ringPathOrderedFromC1.Count < 3)
+                return false;
+            for (int i = 0; i < ringPathOrderedFromC1.Count; i++)
+            {
+                if (ringPathOrderedFromC1[i] == null)
+                    return false;
+            }
+
+            int n = ringPathOrderedFromC1.Count;
+            var tw = new Vector3[n];
+            for (int i = 0; i < n; i++)
+                tw[i] = ringPathOrderedFromC1[i].transform.position;
+
+            float bondLen = Vector3.Distance(tw[0], tw[1]);
+            if (bondLen < 1e-4f)
+                return false;
+
+            for (int i = 2; i < n; i++)
+            {
+                if (!TryComputeCyclicSigmaStaggerChainTargetsOneStep(
+                        ringPathOrderedFromC1, tw, bondLen, i,
+                        out List<Vector3> alignedLocal, out _, out _))
+                {
+                    if (pivotTemplateSink != null)
+                        pivotTemplateSink.FinalDirectionTemplateByAtom = null;
+                    return false;
+                }
+
+                if (pivotTemplateSink != null && alignedLocal != null && alignedLocal.Count > 0)
+                {
+                    AtomFunction pivot = ringPathOrderedFromC1[i - 1];
+                    if (pivot != null)
+                    {
+                        if (pivotTemplateSink.FinalDirectionTemplateByAtom == null)
+                            pivotTemplateSink.FinalDirectionTemplateByAtom = new Dictionary<AtomFunction, List<Vector3>>();
+                        List<Vector3> stored = ReorderSigmaChainTemplateSlot01ForRing(
+                            pivot,
+                            alignedLocal,
+                            tw[i - 1],
+                            tw[i - 2],
+                            tw[i],
+                            bondRowForPrev: null,
+                            bondRowForNext: null,
+                            preserveStaggerAlongPreviousAtSlot0: true);
+                        pivotTemplateSink.FinalDirectionTemplateByAtom[pivot] = stored ?? new List<Vector3>(alignedLocal);
+                    }
+                }
+            }
+
+            targetWorld = tw;
+            return true;
+        }
+
+        public static bool TryBuildCyclicSigmaBondBreakStaggeredChainAtomAnimation(
+            IReadOnlyList<AtomFunction> ringPathOrderedFromC1,
+            out CyclicSigmaChainAtomAnimation animation)
+        {
+            animation = null;
+            if (!TryComputeCyclicSigmaBondBreakChainTargetWorld(ringPathOrderedFromC1, out Vector3[] targetWorld))
+                return false;
+
+            animation = BuildCyclicSigmaChainAtomAnimationFromTargetWorld(ringPathOrderedFromC1, targetWorld);
+            return animation != null;
+        }
+
+        static void PopulateCyclicSigmaBondBreakRingEndcapFinalDirectionTemplates(
+            CyclicRedistributionContext ctx,
+            List<AtomFunction> path,
+            Vector3[] tw)
+        {
+            if (ctx == null || path == null || tw == null || path.Count < 3 || tw.Length != path.Count)
+                return;
+
+            if (ctx.FinalDirectionTemplateByAtom == null)
+                ctx.FinalDirectionTemplateByAtom = new Dictionary<AtomFunction, List<Vector3>>();
+
+            AtomFunction c1 = path[0];
+            if (c1 != null)
+            {
+                int nvC1 = CountVseprGroupsForAtom(c1);
+                if (TryBuildC1CyclicSigmaBondBreakFinalDirectionTemplateLocal(
+                        c1, tw[0], tw[1], tw[path.Count - 1], nvC1, out List<Vector3> tC1))
+                    ctx.FinalDirectionTemplateByAtom[c1] = tC1;
+            }
+
+            AtomFunction cLast = path[path.Count - 1];
+            AtomFunction cPrev = path[path.Count - 2];
+            if (cLast != null && cPrev != null)
+            {
+                int nvLast = CountVseprGroupsForAtom(cLast);
+                if (nvLast >= 2)
+                {
+                    Vector3 off = tw[path.Count - 2] - tw[path.Count - 1];
+                    if (off.sqrMagnitude < 1e-16f)
+                        off = cPrev.transform.position - cLast.transform.position;
+                    if (off.sqrMagnitude > 1e-16f)
+                    {
+                        Vector3 guideDirLocal = cLast.transform.InverseTransformDirection(off.normalized);
+                        if (guideDirLocal.sqrMagnitude > 1e-16f)
+                        {
+                            List<Vector3> baseLast = BuildFinalDirectionsTemplate(nvLast);
+                            List<Vector3> alignedLast = AlignFinalDirectionsTemplateToGuide(
+                                baseLast,
+                                guideDirLocal.normalized,
+                                cLast,
+                                cPrev,
+                                nvLast,
+                                null);
+                            if (alignedLast != null && alignedLast.Count == nvLast)
+                            {
+                                List<Vector3> storedLast = ReorderSigmaChainTemplateSlot01ForRing(
+                                    cLast, alignedLast, tw[path.Count - 1], tw[path.Count - 2], tw[0],
+                                    null, null, preserveStaggerAlongPreviousAtSlot0: true);
+                                ctx.FinalDirectionTemplateByAtom[cLast] = storedLast ?? new List<Vector3>(alignedLast);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        static bool TryBuildC1CyclicSigmaBondBreakFinalDirectionTemplateLocal(
+            AtomFunction c1,
+            Vector3 c1World,
+            Vector3 c2World,
+            Vector3 cLastWorld,
+            int nVseprGroup,
+            out List<Vector3> templateLocal)
+        {
+            templateLocal = null;
+            if (c1 == null || nVseprGroup < 1) return false;
+            List<Vector3> baseTpl = BuildFinalDirectionsTemplate(nVseprGroup);
+            if (baseTpl == null || baseTpl.Count != nVseprGroup) return false;
+
+            Vector3 u12w = c2World - c1World;
+            if (u12w.sqrMagnitude < 1e-16f) return false;
+            Vector3 u0 = c1.transform.InverseTransformDirection(u12w.normalized);
+            if (u0.sqrMagnitude < 1e-16f) return false;
+
+            Vector3 t0 = baseTpl[0].sqrMagnitude > 1e-16f ? baseTpl[0].normalized : Vector3.right;
+            Quaternion q0 = Quaternion.FromToRotation(t0, u0);
+
+            var after0 = new List<Vector3>(nVseprGroup);
+            for (int i = 0; i < nVseprGroup; i++)
+                after0.Add((q0 * baseTpl[i]).normalized);
+
+            if (nVseprGroup < 2)
+            {
+                templateLocal = after0;
+                return true;
+            }
+
+            Vector3 axis = after0[0].sqrMagnitude > 1e-16f ? after0[0].normalized : u0.normalized;
+            Vector3 uLastw = cLastWorld - c1World;
+            if (uLastw.sqrMagnitude < 1e-16f)
+            {
+                templateLocal = after0;
+                return true;
+            }
+
+            Vector3 uLastLocal = c1.transform.InverseTransformDirection(uLastw.normalized);
+            if (uLastLocal.sqrMagnitude < 1e-16f)
+            {
+                templateLocal = after0;
+                return true;
+            }
+
+            Vector3 v1p = Vector3.ProjectOnPlane(after0[1], axis);
+            Vector3 uLp = Vector3.ProjectOnPlane(uLastLocal, axis);
+            if (v1p.sqrMagnitude < 1e-14f || uLp.sqrMagnitude < 1e-14f)
+            {
+                templateLocal = after0;
+                return true;
+            }
+
+            v1p.Normalize();
+            uLp.Normalize();
+            float twistDeg = Vector3.SignedAngle(v1p, uLp, axis);
+            Quaternion q1 = Quaternion.AngleAxis(twistDeg, axis);
+            var final = new List<Vector3>(nVseprGroup);
+            for (int i = 0; i < nVseprGroup; i++)
+                final.Add((q1 * after0[i]).normalized);
+            templateLocal = final;
+            return true;
+        }
+
+        static List<Vector3> ReorderSigmaChainTemplateSlot01ForRing(
+            AtomFunction pivot,
+            IReadOnlyList<Vector3> templatePivotLocal,
+            Vector3 pivotWorld,
+            Vector3 prevWorld,
+            Vector3 nextWorld,
+            int? bondRowForPrev,
+            int? bondRowForNext,
+            bool preserveStaggerAlongPreviousAtSlot0)
+        {
+            if (pivot == null || templatePivotLocal == null || templatePivotLocal.Count < 2)
+                return templatePivotLocal == null ? null : new List<Vector3>(templatePivotLocal);
+
+            int n = templatePivotLocal.Count;
+            int idxPrev = -1;
+            int idxNext = -1;
+
+            if (!preserveStaggerAlongPreviousAtSlot0
+                && bondRowForPrev.HasValue
+                && bondRowForNext.HasValue)
+            {
+                int a = bondRowForPrev.Value;
+                int b = bondRowForNext.Value;
+                if (a >= 0 && a < n && b >= 0 && b < n && a != b)
+                {
+                    idxPrev = a;
+                    idxNext = b;
+                }
+            }
+
+            Vector3 offN = nextWorld - pivotWorld;
+            if (offN.sqrMagnitude < 1e-16f)
+                return new List<Vector3>(templatePivotLocal);
+            Vector3 dirNextLocal = pivot.transform.InverseTransformDirection(offN.normalized).normalized;
+            if (dirNextLocal.sqrMagnitude < 1e-16f)
+                return new List<Vector3>(templatePivotLocal);
+
+            if (preserveStaggerAlongPreviousAtSlot0)
+            {
+                idxPrev = 0;
+                if (n == 2)
+                {
+                    idxNext = 1;
+                }
+                else
+                {
+                    float bestNext = -2f;
+                    for (int j = 1; j < n; j++)
+                    {
+                        Vector3 v = templatePivotLocal[j];
+                        if (v.sqrMagnitude < 1e-16f) continue;
+                        float d = Vector3.Dot(v.normalized, dirNextLocal);
+                        if (d > bestNext)
+                        {
+                            bestNext = d;
+                            idxNext = j;
+                        }
+                    }
+                    if (idxNext < 1)
+                        return new List<Vector3>(templatePivotLocal);
+                }
+            }
+            else if (idxPrev < 0 || idxNext < 0)
+            {
+                Vector3 offP = prevWorld - pivotWorld;
+                if (offP.sqrMagnitude < 1e-16f)
+                    return new List<Vector3>(templatePivotLocal);
+                Vector3 dirPrevLocal = pivot.transform.InverseTransformDirection(offP.normalized).normalized;
+                if (dirPrevLocal.sqrMagnitude < 1e-16f)
+                    return new List<Vector3>(templatePivotLocal);
+
+                float bestPrev = -2f;
+                for (int j = 0; j < n; j++)
+                {
+                    Vector3 v = templatePivotLocal[j];
+                    if (v.sqrMagnitude < 1e-16f) continue;
+                    float d = Vector3.Dot(v.normalized, dirPrevLocal);
+                    if (d > bestPrev)
+                    {
+                        bestPrev = d;
+                        idxPrev = j;
+                    }
+                }
+
+                float bestNext = -2f;
+                for (int j = 0; j < n; j++)
+                {
+                    if (j == idxPrev) continue;
+                    Vector3 v = templatePivotLocal[j];
+                    if (v.sqrMagnitude < 1e-16f) continue;
+                    float d = Vector3.Dot(v.normalized, dirNextLocal);
+                    if (d > bestNext)
+                    {
+                        bestNext = d;
+                        idxNext = j;
+                    }
+                }
+
+                if (idxPrev < 0 || idxNext < 0 || idxPrev == idxNext)
+                    return new List<Vector3>(templatePivotLocal);
+            }
+
+            var used = new bool[n];
+            var res = new List<Vector3>(n);
+            res.Add(templatePivotLocal[idxPrev]);
+            res.Add(templatePivotLocal[idxNext]);
+            used[idxPrev] = true;
+            used[idxNext] = true;
+            for (int j = 0; j < n; j++)
+            {
+                if (used[j]) continue;
+                res.Add(templatePivotLocal[j]);
+            }
+            return res;
+        }
+
+        internal static CyclicRedistributionContext EnsureChainRedistributionBlockedAtomsForCyclicEvent(
+            AtomFunction atom,
+            List<GroupEntry> bondingGroups,
+            CyclicRedistributionContext cyclicContext)
+        {
+            if (atom == null || bondingGroups == null || bondingGroups.Count < 2)
+                return cyclicContext;
+
+            HashSet<AtomFunction> blocked = cyclicContext?.ChainRedistributionBlockedAtoms;
+            bool addedBlocked = false;
+
+            var neighbors = new List<AtomFunction>(bondingGroups.Count);
+            var ownerByAtom = new Dictionary<AtomFunction, int>();
+
+            for (int i = 0; i < bondingGroups.Count; i++)
+            {
+                GroupEntry g = bondingGroups[i];
+                AtomFunction neighbor = g?.Bond == null
+                    ? null
+                    : (g.Bond.AtomA == atom ? g.Bond.AtomB : g.Bond.AtomA);
+                neighbors.Add(neighbor);
+                if (neighbor == null)
+                    continue;
+
+                List<AtomFunction> fragment = atom.GetAtomsOnSideOfSigmaBond(neighbor);
+                if (fragment == null || fragment.Count == 0)
+                    continue;
+
+                if (fragment.Contains(atom))
+                {
+                    if (blocked == null) blocked = new HashSet<AtomFunction>();
+                    addedBlocked |= blocked.Add(neighbor);
+                }
+
+                for (int fi = 0; fi < fragment.Count; fi++)
+                {
+                    AtomFunction fa = fragment[fi];
+                    if (fa == null) continue;
+                    if (!ownerByAtom.TryGetValue(fa, out int priorOwner))
+                    {
+                        ownerByAtom[fa] = i;
+                        continue;
+                    }
+
+                    if (priorOwner == i) continue;
+                    AtomFunction priorNeighbor = neighbors[priorOwner];
+                    if (priorNeighbor == null) continue;
+                    if (blocked == null) blocked = new HashSet<AtomFunction>();
+                    addedBlocked |= blocked.Add(priorNeighbor);
+                    addedBlocked |= blocked.Add(neighbor);
+                }
+            }
+
+            if (!addedBlocked)
+                return cyclicContext;
+
+            if (cyclicContext == null)
+                cyclicContext = new CyclicRedistributionContext();
+            cyclicContext.ChainRedistributionBlockedAtoms = blocked;
+            return cyclicContext;
+        }
+
+        /// <summary>
+        /// Cyclic template skips guide alignment; pin the in-operation (forming σ) row to the
+        /// cycle-edge template slot that matches <paramref name="finalDirectionForGuideOrbital"/>
+        /// so prebond OP does not collapse onto a rest direction. If that slot is already fixed,
+        /// OP takes it when it aligns at least as well with the bond axis as the occupant (plus
+        /// a small bias so the forming orbital wins ties).
+        /// </summary>
+        /// <summary>
+        /// Cyclic σ bond break: when <paramref name="templateLocal"/> already has ring legs in slots 0 and 1, pin the
+        /// σ rows bonded to the previous / next ring path atoms to those slots so <see cref="FindBestCombinationVSEPRGroupToFinalDirection"/> does not re-compare them.
+        /// Path indices wrap on the ring (C1 neighbors are C<sub>N</sub> and C2; C<sub>N</sub> neighbors are C<sub>N−1</sub> and C1).
+        /// If only one contributor row resolves, that row is pinned to its matching template slot so a remaining σ domain still constrains the perm search.
+        /// </summary>
+        internal static void TryApplyCyclicSigmaChainContributorSlot01Preassign(
+            AtomFunction atom,
+            List<GroupEntry> groupsForMatching,
+            CyclicRedistributionContext ctx,
+            Dictionary<int, int> cyclicAssignmentFix,
+            List<Vector3> templateLocal)
+        {
+            if (atom == null
+                || groupsForMatching == null
+                || ctx == null
+                || cyclicAssignmentFix == null
+                || templateLocal == null
+                || templateLocal.Count < 2)
+                return;
+
+            if (ctx.SigmaRingPathOrderedC1ToCn == null
+                || ctx.SigmaChainTargetWorld == null
+                || ctx.SigmaChainTargetWorld.Length != ctx.SigmaRingPathOrderedC1ToCn.Count)
+                return;
+
+            if (!TryGetSigmaRingPathIndex(ctx, atom, out int p))
+                return;
+
+            int pathCount = ctx.SigmaRingPathOrderedC1ToCn.Count;
+            if (pathCount < 3)
+                return;
+
+            AtomFunction prevAtom;
+            AtomFunction nextAtom;
+            if (p == 0)
+            {
+                prevAtom = ctx.SigmaRingPathOrderedC1ToCn[pathCount - 1];
+                nextAtom = ctx.SigmaRingPathOrderedC1ToCn[1];
+            }
+            else if (p == pathCount - 1)
+            {
+                prevAtom = ctx.SigmaRingPathOrderedC1ToCn[pathCount - 2];
+                nextAtom = ctx.SigmaRingPathOrderedC1ToCn[0];
+            }
+            else
+            {
+                prevAtom = ctx.SigmaRingPathOrderedC1ToCn[p - 1];
+                nextAtom = ctx.SigmaRingPathOrderedC1ToCn[p + 1];
+            }
+
+            if (prevAtom == null || nextAtom == null)
+                return;
+
+            Vector3 dirA = templateLocal[0].normalized;
+            Vector3 dirB = templateLocal[1].normalized;
+            if (dirA.sqrMagnitude < 1e-14f || dirB.sqrMagnitude < 1e-14f)
+                return;
+
+            int bondPrev = FindBondGroupIndexForNeighbor(groupsForMatching, atom, prevAtom);
+            int bondNext = FindBondGroupIndexForNeighbor(groupsForMatching, atom, nextAtom);
+            int idxA = bondPrev;
+            if (idxA < 0)
+                idxA = ResolveCycleContributorGroupIndex(groupsForMatching, atom, prevAtom, dirA, excludeGroupIndex: -1);
+            int idxB = bondNext;
+            if (idxB < 0)
+                idxB = ResolveCycleContributorGroupIndex(groupsForMatching, atom, nextAtom, dirB, excludeGroupIndex: idxA >= 0 ? idxA : -1);
+
+            if (idxA >= 0 && idxB >= 0 && idxA != idxB)
+            {
+                cyclicAssignmentFix[idxA] = 0;
+                cyclicAssignmentFix[idxB] = 1;
+                return;
+            }
+
+            if (idxA >= 0 && idxB < 0)
+            {
+                cyclicAssignmentFix[idxA] = 0;
+                return;
+            }
+
+            if (idxA < 0 && idxB >= 0)
+            {
+                cyclicAssignmentFix[idxB] = 1;
+                return;
+            }
+
+            if (idxA >= 0 && idxB >= 0 && idxA == idxB)
+                cyclicAssignmentFix[idxA] = 0;
+        }
+
+        internal static void TryApplyCyclicOpBondSitePreassign(
+            AtomFunction atom,
+            List<GroupEntry> groupsForMatching,
+            List<Vector3> cyclicTemplate,
+            Dictionary<int, int> cyclicAssignmentFix,
+            ElectronOrbitalFunction atomOrbitalOp,
+            Vector3 finalDirectionForGuideOrbital)
+        {
+            if (atom == null
+                || groupsForMatching == null
+                || cyclicTemplate == null
+                || cyclicAssignmentFix == null
+                || atomOrbitalOp == null)
+                return;
+            if (finalDirectionForGuideOrbital.sqrMagnitude < 1e-12f || cyclicTemplate.Count < 2)
+                return;
+
+            Vector3 bondDir = finalDirectionForGuideOrbital.normalized;
+            int opRow = -1;
+            for (int i = 0; i < groupsForMatching.Count; i++)
+            {
+                if (ReferenceEquals(groupsForMatching[i]?.Orbital, atomOrbitalOp))
+                {
+                    opRow = i;
+                    break;
+                }
+            }
+            if (opRow < 0)
+                return;
+
+            int bondSlotCount = Mathf.Min(2, cyclicTemplate.Count);
+            int bestT = 0;
+            float bestAxisDot = float.NegativeInfinity;
+            for (int ti = 0; ti < bondSlotCount; ti++)
+            {
+                Vector3 tv = cyclicTemplate[ti];
+                if (tv.sqrMagnitude < 1e-12f)
+                    continue;
+                float d = Vector3.Dot(tv.normalized, bondDir);
+                if (d > bestAxisDot)
+                {
+                    bestAxisDot = d;
+                    bestT = ti;
+                }
+            }
+
+            float RowBondDot(int row)
+            {
+                if (row < 0 || row >= groupsForMatching.Count)
+                    return -1f;
+                GroupEntry g = groupsForMatching[row];
+                if (g == null)
+                    return -1f;
+                if (g.CurrentDirWorld.sqrMagnitude < 1e-12f)
+                {
+                    if (ReferenceEquals(g.Orbital, atomOrbitalOp))
+                        return Mathf.Max(0f, bestAxisDot);
+                    return -1f;
+                }
+                Vector3 loc = atom.transform.InverseTransformDirection(g.CurrentDirWorld).normalized;
+                return Vector3.Dot(loc, bondDir);
+            }
+
+            if (cyclicAssignmentFix.TryGetValue(opRow, out int existingT) && existingT == bestT)
+                return;
+
+            int occupant = -1;
+            foreach (var kv in cyclicAssignmentFix)
+            {
+                if (kv.Value == bestT)
+                {
+                    occupant = kv.Key;
+                    break;
+                }
+            }
+
+            if (occupant == opRow)
+                return;
+
+            float opScore = RowBondDot(opRow);
+            if (ReferenceEquals(groupsForMatching[opRow]?.Orbital, atomOrbitalOp))
+            {
+                if (opScore < 0f)
+                    opScore = Mathf.Max(opScore, bestAxisDot);
+                opScore += 0.02f;
+            }
+
+            if (occupant < 0)
+            {
+                cyclicAssignmentFix[opRow] = bestT;
+                return;
+            }
+
+            float occScore = RowBondDot(occupant);
+            if (opScore >= occScore)
+            {
+                cyclicAssignmentFix.Remove(occupant);
+                cyclicAssignmentFix[opRow] = bestT;
+            }
+        }
+
+        internal static bool TryBuildCyclicFinalDirectionsTemplate(
+            AtomFunction atom,
+            int nVseprGroup,
+            List<GroupEntry> groupsForMatching,
+            CyclicRedistributionContext cyclicContext,
+            out List<Vector3> template,
+            Dictionary<int, int> fixedAssignments)
+        {
+            template = null;
+            if (fixedAssignments == null) return false;
+            fixedAssignments.Clear();
+            if (atom == null || cyclicContext == null) return false;
+            if (groupsForMatching == null || nVseprGroup < 3 || nVseprGroup > 4) return false;
+
+            if (!TryResolveCycleContributorNeighborsFromContext(
+                atom, cyclicContext, out AtomFunction neighborA, out AtomFunction neighborB))
+                return false;
+
+            Vector3 pivotWorld = GetFinalWorldForAtom(cyclicContext, atom);
+            Vector3 nAWorld = GetFinalWorldForAtom(cyclicContext, neighborA);
+            Vector3 nBWorld = GetFinalWorldForAtom(cyclicContext, neighborB);
+            Vector3 dirAWorld = (nAWorld - pivotWorld).normalized;
+            Vector3 dirBWorld = (nBWorld - pivotWorld).normalized;
+            if (dirAWorld.sqrMagnitude < 1e-12f || dirBWorld.sqrMagnitude < 1e-12f) return false;
+
+            Vector3 dirA = atom.transform.InverseTransformDirection(dirAWorld).normalized;
+            Vector3 dirB = atom.transform.InverseTransformDirection(dirBWorld).normalized;
+            if (dirA.sqrMagnitude < 1e-12f || dirB.sqrMagnitude < 1e-12f) return false;
+
+            int idxA = ResolveCycleContributorGroupIndex(groupsForMatching, atom, neighborA, dirA, -1);
+            int idxB = ResolveCycleContributorGroupIndex(groupsForMatching, atom, neighborB, dirB, idxA);
+            if (idxA < 0 || idxB < 0 || idxA == idxB) return false;
+
+            template = new List<Vector3>(nVseprGroup) { dirA, dirB };
+            fixedAssignments[idxA] = 0;
+            fixedAssignments[idxB] = 1;
+
+            Vector3 outwardWorld = -(dirAWorld + dirBWorld).normalized;
+            Vector3 outward = atom.transform.InverseTransformDirection(outwardWorld).normalized;
+            if (outward.sqrMagnitude < 1e-12f) outward = Vector3.up;
+
+            if (nVseprGroup == 3)
+            {
+                Vector3 planeNormal = Vector3.Cross(dirA, dirB).normalized;
+                if (planeNormal.sqrMagnitude < 1e-12f)
+                    planeNormal = Vector3.Cross(dirA, Vector3.up).normalized;
+                if (planeNormal.sqrMagnitude < 1e-12f)
+                    planeNormal = Vector3.forward;
+
+                Vector3 inPlaneOutward = Vector3.ProjectOnPlane(outward, planeNormal).normalized;
+                if (inPlaneOutward.sqrMagnitude < 1e-12f)
+                    inPlaneOutward = Vector3.ProjectOnPlane(-(dirA + dirB), planeNormal).normalized;
+                if (inPlaneOutward.sqrMagnitude < 1e-12f)
+                    inPlaneOutward = Vector3.Cross(planeNormal, dirA).normalized;
+                template.Add(inPlaneOutward.sqrMagnitude > 1e-12f ? inPlaneOutward : Vector3.up);
+                return true;
+            }
+
+            Vector3 perp = Vector3.Cross(dirA, dirB).normalized;
+            if (perp.sqrMagnitude > 1e-12f)
+                perp = Vector3.ProjectOnPlane(perp, outward).normalized;
+            if (perp.sqrMagnitude < 1e-12f)
+                perp = Vector3.Cross(outward, dirA + dirB).normalized;
+            if (perp.sqrMagnitude < 1e-12f)
+                perp = Vector3.Cross(outward, Mathf.Abs(Vector3.Dot(outward, Vector3.up)) < 0.9f ? Vector3.up : Vector3.right).normalized;
+            if (perp.sqrMagnitude < 1e-12f)
+                perp = Vector3.forward;
+
+            const float halfTetraAngleDeg = 54.73561f;
+            float c = Mathf.Cos(halfTetraAngleDeg * Mathf.Deg2Rad);
+            float s = Mathf.Sin(halfTetraAngleDeg * Mathf.Deg2Rad);
+            Vector3 rest0 = (outward * c + perp * s).normalized;
+            Vector3 rest1 = (outward * c - perp * s).normalized;
+            template.Add(rest0.sqrMagnitude > 1e-12f ? rest0 : outward);
+            template.Add(rest1.sqrMagnitude > 1e-12f ? rest1 : -outward);
+            return true;
+        }
+
+        static int ResolveCycleContributorGroupIndex(
+            List<GroupEntry> groups,
+            AtomFunction atom,
+            AtomFunction neighbor,
+            Vector3 expectedDirLocal,
+            int excludeGroupIndex)
+        {
+            if (groups == null || atom == null) return -1;
+
+            int bondedIdx = FindBondGroupIndexForNeighbor(groups, atom, neighbor);
+            if (bondedIdx >= 0 && bondedIdx != excludeGroupIndex)
+                return bondedIdx;
+
+            int bestIdx = -1;
+            float bestAng = float.PositiveInfinity;
+            for (int i = 0; i < groups.Count; i++)
+            {
+                if (i == excludeGroupIndex) continue;
+                GroupEntry g = groups[i];
+                if (g == null) continue;
+                Vector3 gLocal = atom.transform.InverseTransformDirection(g.CurrentDirWorld).normalized;
+                if (gLocal.sqrMagnitude < 1e-12f) continue;
+                float ang = Vector3.Angle(gLocal, expectedDirLocal);
+                if (ang < bestAng)
+                {
+                    bestAng = ang;
+                    bestIdx = i;
+                }
+            }
+            return bestIdx;
+        }
+
+        /// <summary>
+        /// Closure σ axis in <paramref name="atom"/> local space for the pivot↔guide endpoints only.
+        /// Chain recursion passes a different logical guide; this matches the real closing leg from <see cref="FinalWorldByAtom"/>.
+        /// </summary>
+        public static Vector3 TryGetCyclicClosureBondDirLocal(AtomFunction atom, CyclicRedistributionContext ctx)
+        {
+            if (atom == null || ctx == null || ctx.FinalWorldByAtom == null)
+                return Vector3.zero;
+            if (ctx.PivotAtom == null || ctx.CycleNeighborA == null)
+                return Vector3.zero;
+            if (ReferenceEquals(atom, ctx.PivotAtom))
+            {
+                Vector3 pivotW = GetFinalWorldForAtom(ctx, ctx.PivotAtom);
+                Vector3 guideW = GetFinalWorldForAtom(ctx, ctx.CycleNeighborA);
+                Vector3 leg = guideW - pivotW;
+                if (leg.sqrMagnitude < 1e-12f)
+                    return Vector3.zero;
+                return atom.transform.InverseTransformDirection(leg.normalized).normalized;
+            }
+            if (ReferenceEquals(atom, ctx.CycleNeighborA))
+            {
+                Vector3 pivotW = GetFinalWorldForAtom(ctx, ctx.PivotAtom);
+                Vector3 guideW = GetFinalWorldForAtom(ctx, atom);
+                Vector3 leg = pivotW - guideW;
+                if (leg.sqrMagnitude < 1e-12f)
+                    return Vector3.zero;
+                return atom.transform.InverseTransformDirection(leg.normalized).normalized;
+            }
+            return Vector3.zero;
+        }
+
+        /// <summary>
+        /// Pivot / closure-guide σ OP may not appear in <see cref="AtomFunction.BondedOrbitals"/> with the same
+        /// reference as <see cref="CyclicRedistributionContext.PivotSigmaOp"/> / <c>GuideSigmaOp</c>, or may be
+        /// omitted from bond rows. Add one matching <see cref="GroupEntry"/> so VSEPR count and perm length match
+        /// tetrahedral closure (four group→template pairs).
+        /// </summary>
+        internal static void EnsureCyclicClosureSigmaOpCountedForMatching(
+            AtomFunction atom,
+            ElectronOrbitalFunction atomOrbitalOp,
+            CyclicRedistributionContext cyclicContext,
+            List<GroupEntry> bondingGroups,
+            List<GroupEntry> nonbondingOccupied)
+        {
+            if (atom == null || atomOrbitalOp == null || cyclicContext == null || nonbondingOccupied == null)
+                return;
+            if (!ReferenceEquals(atom, cyclicContext.PivotAtom)
+                && !ReferenceEquals(atom, cyclicContext.CycleNeighborA))
+                return;
+
+            if (bondingGroups != null)
+            {
+                for (int i = 0; i < bondingGroups.Count; i++)
+                {
+                    if (bondingGroups[i] != null && ReferenceEquals(bondingGroups[i].Orbital, atomOrbitalOp))
+                        return;
+                }
+            }
+            for (int i = 0; i < nonbondingOccupied.Count; i++)
+            {
+                if (nonbondingOccupied[i] != null && ReferenceEquals(nonbondingOccupied[i].Orbital, atomOrbitalOp))
+                    return;
+            }
+
+            Vector3 bondDirLocal = TryGetCyclicClosureBondDirLocal(atom, cyclicContext);
+            Vector3 opRayWorld = atomOrbitalOp.transform.position - atom.transform.position;
+            Vector3 dirWorld = opRayWorld.sqrMagnitude > 1e-12f
+                ? opRayWorld.normalized
+                : (bondDirLocal.sqrMagnitude > 1e-12f
+                    ? atom.transform.TransformDirection(bondDirLocal).normalized
+                    : Vector3.right);
+            float opRadius = Mathf.Max(0.01f, opRayWorld.magnitude);
+
+            AtomFunction partner = ReferenceEquals(atom, cyclicContext.PivotAtom)
+                ? cyclicContext.CycleNeighborA
+                : cyclicContext.PivotAtom;
+            float massW = partner != null
+                ? ComputeAtomComponentMass(partner)
+                : Mathf.Max(1e-3f, ElectronRedistributionGuide.GetStandardAtomicWeight(atom.AtomicNumber));
+
+            nonbondingOccupied.Add(new GroupEntry
+            {
+                Kind = "nonbond-op-empty-counted-bonding",
+                Orbital = atomOrbitalOp,
+                MassWeight = Mathf.Max(1e-3f, massW),
+                CurrentDirWorld = dirWorld,
+                Radius = opRadius
+            });
+        }
+
+        public sealed class CyclicSigmaChainAtomAnimation
+        {
+            readonly List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)> items;
+
+            internal CyclicSigmaChainAtomAnimation(List<(AtomFunction atom, Vector3 startWorld, Vector3 endWorld)> items)
+            {
+                this.items = items;
+            }
+
+            public void Apply(float smoothS)
+            {
+                float s = Mathf.Clamp01(smoothS);
+                for (int i = 0; i < items.Count; i++)
+                {
+                    var it = items[i];
+                    if (it.atom == null) continue;
+                    it.atom.transform.position = Vector3.Lerp(it.startWorld, it.endWorld, s);
+                }
+            }
+
+            public void GatherAtoms(HashSet<AtomFunction> into)
+            {
+                if (into == null) return;
+                for (int i = 0; i < items.Count; i++)
+                {
+                    if (items[i].atom != null)
+                        into.Add(items[i].atom);
+                }
+            }
+        }
     }
 }
