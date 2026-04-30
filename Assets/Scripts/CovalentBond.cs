@@ -1672,10 +1672,15 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                     cyclicSigmaBreakRecipient = ResolveCyclicSigmaBreakRedistributionRecipientAtom(
                         returnOrbitalTo, otherAtom, orbital, newOrbital);
                     cyclicSigmaBreakPartner = cyclicSigmaBreakRecipient == atomA ? atomB : atomA;
-                    cyclicSigmaBreakAntiRecipient = cyclicSigmaBreakRecipient == atomA ? antiGuideA : antiGuideB;
+                    // antiGuideA/B only tag the 0e new lobe on one side; the 2e recipient’s σ row is `orbital` on returnOrbitalTo.
+                    cyclicSigmaBreakAntiRecipient = ReferenceEquals(cyclicSigmaBreakRecipient, returnOrbitalTo)
+                        ? orbital
+                        : newOrbital;
                     cyclicSigmaBreakRedistContext =
                         OrbitalRedistribution.Cyclic.CreateCyclicSigmaBondBreakRedistributionBlockContext(
                             ringPathOrderedC1ToCn);
+                    ElectronOrbitalFunction cyclicSigmaBreakAntiPartner =
+                        ReferenceEquals(cyclicSigmaBreakPartner, returnOrbitalTo) ? orbital : newOrbital;
                     animA = OrbitalRedistribution.BuildOrbitalRedistribution(
                         cyclicSigmaBreakRecipient,
                         cyclicSigmaBreakPartner,
@@ -1685,8 +1690,16 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                         finalDirectionForGuideOrbital: default,
                         isBondingEvent: false,
                         cyclicContext: cyclicSigmaBreakRedistContext);
-                    animB = null;
-                    applySecondaryFragmentRedistribution = false;
+                    animB = OrbitalRedistribution.BuildOrbitalRedistribution(
+                        cyclicSigmaBreakPartner,
+                        cyclicSigmaBreakRecipient,
+                        guideAtomOrbitalOp: null,
+                        atomOrbitalOp: cyclicSigmaBreakAntiPartner,
+                        guideOrbitalPredetermined: null,
+                        finalDirectionForGuideOrbital: default,
+                        isBondingEvent: false,
+                        cyclicContext: cyclicSigmaBreakRedistContext);
+                    applySecondaryFragmentRedistribution = true;
                 }
                 else
                 {

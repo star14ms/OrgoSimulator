@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using UnityEngine;
 
 /// <summary>
@@ -487,7 +488,7 @@ sealed class PiFormationRunState
             guideOp,
             nonGuideOp,
             guideOrbitalPredetermined: null,
-            finalDirectionForGuideOrbital,
+            finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
             isBondingEvent: true,
             cyclicContext: redistCycleContext);
         return new Phase1ParallelTrack
@@ -498,144 +499,82 @@ sealed class PiFormationRunState
     }
 
     /// <summary>
-    /// π phase 1 primary track: acyclic π redistributes the <b>non-guide</b> atom first; cyclic π keeps the prior
-    /// <see cref="OrbitalRedistribution.CyclicRedistributionContext"/> on the <b>non-guide</b> pivot. Optional mutual-σ track
-    /// complements on the <b>guide</b> pivot when acyclic (<see cref="BuildPhase1OrbitalRedistributeForPiFormationGuideAtomPhase1"/>).
+    /// π phase-1 orbital redistribution on one nucleus of the guide/non-guide pair. Set
+    /// <paramref name="redistributeOnGuide"/> false for the non-guide center (cyclic: uses
+    /// <paramref name="finalDirectionNonGuidePivotLocal"/>), true for the guide center (cyclic: σ toward partner
+    /// from <see cref="OrbitalRedistribution.CyclicRedistributionContext.FinalWorldByAtom"/> in guide-local space).
     /// </summary>
-    static Phase1ParallelTrack BuildPhase1OrbitalRedistributeForPiFormationPhase1(
+    static Phase1ParallelTrack BuildPhase1OrbitalRedistributeForPiFormation(
         AtomFunction guideAtom,
         AtomFunction nonGuideAtom,
         ElectronOrbitalFunction guideOp,
         ElectronOrbitalFunction nonGuideOp,
         OrbitalRedistribution.CyclicRedistributionContext cyclicContext,
-        Vector3 finalDirectionForGuideOrbital,
+        Vector3 finalDirectionNonGuidePivotLocal,
+        bool redistributeOnGuide,
         out OrbitalRedistribution.RedistributionAnimation piOpAnimForPostCylinder,
         Vector3? sharedPiNormalPlusZWorld = null)
     {
         piOpAnimForPostCylinder = null;
         OrbitalRedistribution.RedistributionAnimation piOpAnim = null;
-        OrbitalRedistribution.RedistributionAnimation animation;
+
+        AtomFunction centerAtom = redistributeOnGuide ? guideAtom : nonGuideAtom;
+        AtomFunction partnerAtom = redistributeOnGuide ? nonGuideAtom : guideAtom;
+        ElectronOrbitalFunction centerOp = redistributeOnGuide ? guideOp : nonGuideOp;
+        ElectronOrbitalFunction partnerOp = redistributeOnGuide ? nonGuideOp : guideOp;
+
+        if (sharedPiNormalPlusZWorld.HasValue
+            && centerOp != null
+            && sharedPiNormalPlusZWorld.Value.sqrMagnitude > 1e-16f)
+        {
+            TryBuildPiPrebondOpPhase1TrigonalInPlaneRedistributionAnimation(
+                centerAtom,
+                centerOp,
+                sharedPiNormalPlusZWorld.Value,
+                out piOpAnim);
+        }
+
+        Vector3 finalDir = Vector3.zero;
         if (cyclicContext != null)
         {
-            if (sharedPiNormalPlusZWorld.HasValue
-                && nonGuideOp != null
-                && sharedPiNormalPlusZWorld.Value.sqrMagnitude > 1e-16f)
+            if (redistributeOnGuide)
             {
-                TryBuildPiPrebondOpPhase1TrigonalInPlaneRedistributionAnimation(
-                    nonGuideAtom,
-                    nonGuideOp,
-                    sharedPiNormalPlusZWorld.Value,
-                    out piOpAnim);
+                if (cyclicContext.FinalWorldByAtom != null
+                    && cyclicContext.FinalWorldByAtom.TryGetValue(guideAtom, out Vector3 gWGuide)
+                    && cyclicContext.FinalWorldByAtom.TryGetValue(nonGuideAtom, out Vector3 nWGuide))
+                {
+                    Vector3 legWorld = nWGuide - gWGuide;
+                    if (legWorld.sqrMagnitude > 1e-12f)
+                    {
+                        finalDir = guideAtom.transform.InverseTransformDirection(legWorld.normalized).normalized;
+                    }
+                }
             }
-
-            animation = OrbitalRedistribution.BuildOrbitalRedistribution(
-                nonGuideAtom,
-                guideAtom,
-                guideOp,
-                nonGuideOp,
-                guideOrbitalPredetermined: null,
-                finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
-                isBondingEvent: true,
-                cyclicContext: cyclicContext);
-        }
-        else
-        {
-            if (sharedPiNormalPlusZWorld.HasValue
-                && nonGuideOp != null
-                && sharedPiNormalPlusZWorld.Value.sqrMagnitude > 1e-16f)
+            else if (finalDirectionNonGuidePivotLocal.sqrMagnitude > 1e-12f)
             {
-                TryBuildPiPrebondOpPhase1TrigonalInPlaneRedistributionAnimation(
-                    nonGuideAtom,
-                    nonGuideOp,
-                    sharedPiNormalPlusZWorld.Value,
-                    out piOpAnim);
+                finalDir = finalDirectionNonGuidePivotLocal;
             }
-
-            animation = OrbitalRedistribution.BuildOrbitalRedistribution(
-                nonGuideAtom,
-                guideAtom,
-                guideOp,
-                nonGuideOp,
-                guideOrbitalPredetermined: null,
-                finalDirectionForGuideOrbital: Vector3.zero,
-                isBondingEvent: true,
-                cyclicContext: null);
+            else if (cyclicContext.FinalWorldByAtom != null
+                && cyclicContext.FinalWorldByAtom.TryGetValue(guideAtom, out Vector3 gW)
+                && cyclicContext.FinalWorldByAtom.TryGetValue(nonGuideAtom, out Vector3 nW))
+            {
+                Vector3 legWorld = gW - nW;
+                if (legWorld.sqrMagnitude > 1e-12f)
+                {
+                    finalDir = nonGuideAtom.transform.InverseTransformDirection(legWorld.normalized).normalized;
+                }
+            }
         }
 
-        piOpAnimForPostCylinder = piOpAnim;
-        return new Phase1ParallelTrack
-        {
-            ApplySmoothStep = s =>
-            {
-                animation?.Apply(s);
-                piOpAnim?.Apply(s);
-            },
-            FinalizeAfterTimeline = () => { }
-        };
-    }
-
-    /// <summary>
-    /// π phase 1 guide-track redistribution.
-    /// </summary>
-    static Phase1ParallelTrack BuildPhase1OrbitalRedistributeForPiFormationGuideAtomPhase1(
-        AtomFunction guideAtom,
-        AtomFunction nonGuideAtom,
-        ElectronOrbitalFunction guideOp,
-        ElectronOrbitalFunction nonGuideOp,
-        OrbitalRedistribution.CyclicRedistributionContext piPhase1CyclicContext,
-        Vector3 finalDirectionForGuideOrbital,
-        out OrbitalRedistribution.RedistributionAnimation piOpAnimForPostCylinder,
-        Vector3? sharedPiNormalPlusZWorld = null)
-    {
-        piOpAnimForPostCylinder = null;
-        OrbitalRedistribution.RedistributionAnimation piOpAnim = null;
-        OrbitalRedistribution.RedistributionAnimation animation;
-        if (piPhase1CyclicContext != null)
-        {
-            if (sharedPiNormalPlusZWorld.HasValue
-                && guideOp != null
-                && sharedPiNormalPlusZWorld.Value.sqrMagnitude > 1e-16f)
-            {
-                TryBuildPiPrebondOpPhase1TrigonalInPlaneRedistributionAnimation(
-                    guideAtom,
-                    guideOp,
-                    sharedPiNormalPlusZWorld.Value,
-                    out piOpAnim);
-            }
-
-            animation = OrbitalRedistribution.BuildOrbitalRedistribution(
-                guideAtom,
-                nonGuideAtom,
-                nonGuideOp,
-                guideOp,
-                guideOrbitalPredetermined: null,
-                finalDirectionForGuideOrbital: Vector3.zero,
-                isBondingEvent: true,
-                cyclicContext: null);
-        }
-        else
-        {
-            if (sharedPiNormalPlusZWorld.HasValue
-                && guideOp != null
-                && sharedPiNormalPlusZWorld.Value.sqrMagnitude > 1e-16f)
-            {
-                TryBuildPiPrebondOpPhase1TrigonalInPlaneRedistributionAnimation(
-                    guideAtom,
-                    guideOp,
-                    sharedPiNormalPlusZWorld.Value,
-                    out piOpAnim);
-            }
-
-            animation = OrbitalRedistribution.BuildOrbitalRedistribution(
-                guideAtom,
-                nonGuideAtom,
-                nonGuideOp,
-                guideOp,
-                guideOrbitalPredetermined: null,
-                finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
-                isBondingEvent: true,
-                cyclicContext: null);
-        }
+        var animation = OrbitalRedistribution.BuildOrbitalRedistribution(
+            centerAtom,
+            partnerAtom,
+            partnerOp,
+            centerOp,
+            guideOrbitalPredetermined: null,
+            finalDirectionForGuideOrbital: finalDir,
+            isBondingEvent: true,
+            cyclicContext: cyclicContext);
 
         piOpAnimForPostCylinder = piOpAnim;
         return new Phase1ParallelTrack
@@ -1797,8 +1736,6 @@ sealed class PiFormationRunState
         OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
         guide.RemovePiPOrbitalDirectionsForPartnerLine(nonGuide, AtomFunction.PiPOrbitalPrebondLineIndex);
         nonGuide.RemovePiPOrbitalDirectionsForPartnerLine(guide, AtomFunction.PiPOrbitalPrebondLineIndex);
-        Vector3 sourceStart = sourceAtom != null ? sourceAtom.transform.position : Vector3.zero;
-        Vector3 targetStart = targetAtom != null ? targetAtom.transform.position : Vector3.zero;
 
         var sigmaBetween = TryFindSigmaBondBetween(sourceAtom, targetAtom);
         TryBuildPiPhase1CyclicRedistributionContext(
@@ -1809,12 +1746,10 @@ sealed class PiFormationRunState
             sigmaBetween,
             out var piPhase1CyclicContext,
             out _,
-            out var piTargetC2,
-            out var piTargetC3,
+            out _,
+            out _,
             out var piGuideDirLocal);
-        Vector3 perpendicularGuideDirLocalCandidate = ComputePiPerpendicularGuideDirectionLocal(nonGuide, guide, nonGuideOp);
-        bool hasPerpendicularPiGuideDirCandidate = perpendicularGuideDirLocalCandidate.sqrMagnitude > 1e-12f;
-        
+
         if (buildPhase1TemplatePreviews
             && debugShowCyclicPiPhase1RedistributeTemplates
             && sigmaBetween != null
@@ -1862,25 +1797,27 @@ sealed class PiFormationRunState
         Phase1ParallelTrack piPhase1NonGuideTrack = null;
         if (runBothAtomsInPhase1)
         {
-            piPhase1NonGuideTrack = BuildPhase1OrbitalRedistributeForPiFormationPhase1(
+            piPhase1NonGuideTrack = BuildPhase1OrbitalRedistributeForPiFormation(
                 guide,
                 nonGuide,
                 guideOp,
                 nonGuideOp,
                 piPhase1CyclicContext,
                 piGuideDirLocal,
+                redistributeOnGuide: false,
                 out piOpNonGuidePostCylinder,
                 hasSharedPiPPlusZ ? sharedPiNormalPlusZWorld : (Vector3?)null);
             if (piPhase1NonGuideTrack != null)
                 tracks.Add(piPhase1NonGuideTrack);
         }
-        Phase1ParallelTrack piPhase1GuideTrack = BuildPhase1OrbitalRedistributeForPiFormationGuideAtomPhase1(
+        Phase1ParallelTrack piPhase1GuideTrack = BuildPhase1OrbitalRedistributeForPiFormation(
             guide,
             nonGuide,
             guideOp,
             nonGuideOp,
             piPhase1CyclicContext,
             piGuideDirLocal,
+            redistributeOnGuide: true,
             out piOpGuidePostCylinder,
             hasSharedPiPPlusZ ? sharedPiNormalPlusZWorld : (Vector3?)null);
         if (piPhase1GuideTrack != null)
@@ -1916,21 +1853,6 @@ sealed class PiFormationRunState
             });
         }
 
-        Vector3 guideOpStartWorld = guideOp != null ? guideOp.transform.position : Vector3.zero;
-        Vector3 guideAtomStartWorld = guide != null ? guide.transform.position : Vector3.zero;
-        Vector3 nonGuideOpStartWorld = nonGuideOp != null ? nonGuideOp.transform.position : Vector3.zero;
-        Vector3 nonGuideAtomStartWorld = nonGuide != null ? nonGuide.transform.position : Vector3.zero;
-        var phase1MolAtomStartWorld = new Dictionary<int, Vector3>();
-        if (molForBondLines != null)
-        {
-            foreach (var a in molForBondLines)
-            {
-                if (a == null) continue;
-                int id = a.GetInstanceID();
-                if (!phase1MolAtomStartWorld.ContainsKey(id))
-                    phase1MolAtomStartWorld[id] = a.transform.position;
-            }
-        }
         SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(guide, true);
         try
         {
@@ -1941,132 +1863,6 @@ sealed class PiFormationRunState
         {
             SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(guide, false);
         }
-    }
-
-    /// <summary>π phase-1 redistribution (guide atom only).</summary>
-    public static bool RunOrbitalDragPiPhase1RedistributionSynchronously(
-        AtomFunction guide,
-        AtomFunction nonGuide,
-        ElectronOrbitalFunction guideOp,
-        ElectronOrbitalFunction nonGuideOp,
-        AtomFunction sourceAtom,
-        AtomFunction targetAtom,
-        ElectronOrbitalFunction sourceOrbital,
-        ElectronOrbitalFunction targetOrbital,
-        ICollection<AtomFunction> molForBondLines)
-    {
-        if (guide == null || nonGuide == null)
-            return false;
-        OrbitalRedistribution.ClearPiPhase1PrecursorTrigonalTemplatePlane();
-        guide.RemovePiPOrbitalDirectionsForPartnerLine(nonGuide, AtomFunction.PiPOrbitalPrebondLineIndex);
-        nonGuide.RemovePiPOrbitalDirectionsForPartnerLine(guide, AtomFunction.PiPOrbitalPrebondLineIndex);
-        Vector3 sourceStart = sourceAtom != null ? sourceAtom.transform.position : Vector3.zero;
-        Vector3 targetStart = targetAtom != null ? targetAtom.transform.position : Vector3.zero;
-
-        var sigmaBetween = TryFindSigmaBondBetween(sourceAtom, targetAtom);
-        TryBuildPiPhase1CyclicRedistributionContext(
-            sourceAtom,
-            targetAtom,
-            guide,
-            nonGuide,
-            sigmaBetween,
-            out var piPhase1CyclicContext,
-            out _,
-            out var piTargetC2,
-            out var piTargetC3,
-            out var piGuideDirLocal);
-        Vector3 perpendicularGuideDirLocalCandidate = ComputePiPerpendicularGuideDirectionLocal(nonGuide, guide, nonGuideOp);
-        bool hasPerpendicularPiGuideDirCandidate = perpendicularGuideDirLocalCandidate.sqrMagnitude > 1e-12f;
-        
-        ClearPiPhase1RedistributeTemplatePreviewVisuals();
-
-        Vector3 sharedPiNormalPlusZWorld = Vector3.zero;
-        bool hasSharedPiPPlusZ = TryComputeSharedPiPrebondPOrbitalPlusZWorld(
-            guide,
-            nonGuide,
-            guideOp,
-            nonGuideOp,
-            out sharedPiNormalPlusZWorld);
-        if (hasSharedPiPPlusZ)
-        {
-            Vector3 minusZ = -sharedPiNormalPlusZWorld;
-            guide.SetPiPrebondPOrbitalDirectionsWorld(nonGuide, sharedPiNormalPlusZWorld, minusZ);
-            nonGuide.SetPiPrebondPOrbitalDirectionsWorld(guide, sharedPiNormalPlusZWorld, minusZ);
-        }
-
-        bool runBothAtomsInPhase1 = OrbitalRedistribution.BothPiPairGuideGroupsAreMutualInterAtomSigma(
-            guide,
-            nonGuide,
-            guideOp,
-            nonGuideOp,
-            isBondingEvent: true);
-
-        var tracks = new List<Phase1ParallelTrack>(runBothAtomsInPhase1 ? 4 : 3);
-        OrbitalRedistribution.RedistributionAnimation piOpNonGuidePostCylinder = null;
-        OrbitalRedistribution.RedistributionAnimation piOpGuidePostCylinder = null;
-        if (runBothAtomsInPhase1)
-        {
-            Phase1ParallelTrack piPhase1NonGuideTrack = BuildPhase1OrbitalRedistributeForPiFormationPhase1(
-                guide,
-                nonGuide,
-                guideOp,
-                nonGuideOp,
-                piPhase1CyclicContext,
-                piGuideDirLocal,
-                out piOpNonGuidePostCylinder,
-                hasSharedPiPPlusZ ? sharedPiNormalPlusZWorld : (Vector3?)null);
-            if (piPhase1NonGuideTrack != null)
-                tracks.Add(piPhase1NonGuideTrack);
-        }
-        Phase1ParallelTrack piPhase1GuideTrack = BuildPhase1OrbitalRedistributeForPiFormationGuideAtomPhase1(
-            guide,
-            nonGuide,
-            guideOp,
-            nonGuideOp,
-            piPhase1CyclicContext,
-            piGuideDirLocal,
-            out piOpGuidePostCylinder,
-            hasSharedPiPPlusZ ? sharedPiNormalPlusZWorld : (Vector3?)null);
-        if (piPhase1GuideTrack != null)
-            tracks.Add(piPhase1GuideTrack);
-
-        Phase1ParallelTrack piCylinderTrack = BuildPhase1PiCylinderTrackFromOpFinalPose(
-            sourceAtom,
-            targetAtom,
-            sourceOrbital,
-            targetOrbital,
-            sigmaBetween,
-            molForBondLines);
-        if (piCylinderTrack != null)
-            tracks.Add(piCylinderTrack);
-        if (piCylinderTrack != null
-            && (piOpNonGuidePostCylinder != null || piOpGuidePostCylinder != null))
-        {
-            tracks.Add(new Phase1ParallelTrack
-            {
-                ApplySmoothStep = s =>
-                {
-                    piOpNonGuidePostCylinder?.Apply(s);
-                    piOpGuidePostCylinder?.Apply(s);
-                },
-                FinalizeAfterTimeline = () =>
-                {
-                    piOpNonGuidePostCylinder?.Apply(1f);
-                    piOpGuidePostCylinder?.Apply(1f);
-                }
-            });
-        }
-
-        SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(guide, true);
-        try
-        {
-            ExecutePhase1ParallelAnimationsImmediate(tracks, molForBondLines, 0f);
-        }
-        finally
-        {
-            SetSuppressSigmaPrebondBondFrameOrbitalPoseOnAtomBonds(guide, false);
-        }
-        return true;
     }
 
     static bool TryComputePlaneNormalForPiProbe(AtomFunction centerAtom, AtomFunction bondedPartnerToExclude, out Vector3 normalWorld)
