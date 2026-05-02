@@ -122,7 +122,10 @@ public class BondFormationTemplatePreviewInput : MonoBehaviour
             }
         }
 
-        if (bestPick == null && clickedAtom != null && OrbitalRedistribution.TryGetGuideOrbitalForDebug(clickedAtom, out var debugGuideOrbital))
+        if (!SigmaBondFormation.CyclicPhase1TemplatePreviewContext.IsActive
+            && bestPick == null
+            && clickedAtom != null
+            && OrbitalRedistribution.TryGetGuideOrbitalForDebug(clickedAtom, out var debugGuideOrbital))
         {
             if (BondFormationTemplatePreviewPick.TryGetByLinkedOrbital(debugGuideOrbital, out var guidePick) && guidePick != null)
             {
@@ -239,12 +242,10 @@ public class BondFormationTemplatePreviewInput : MonoBehaviour
     }
 }
 
-/// <summary>Red highlight on picked template stem/tip, mapped orbital, and σ bond cylinder/line when bonded.</summary>
+/// <summary>Picked template stem/tip mesh tint only (no orbital or σ-bond body tint).</summary>
 static class BondFormationTemplatePickHighlight
 {
     static Renderer[] lastPreviewRenderers;
-    static ElectronOrbitalFunction lastOrbital;
-    static CovalentBond lastBond;
 
     public static void ApplyFromPick(BondFormationTemplatePreviewPick pick)
     {
@@ -258,30 +259,11 @@ static class BondFormationTemplatePickHighlight
                     ElectronOrbitalFunction.SetRedistributeTemplatePreviewRendererPickHighlight(r, true);
             lastPreviewRenderers = renderers;
         }
-        var orb = pick.LinkedOrbital;
-        if (orb != null)
-        {
-            orb.SetBondFormationTemplatePickHighlight(true);
-            lastOrbital = orb;
-            if (orb.Bond != null)
-            {
-                orb.Bond.SetBondFormationTemplatePickHighlight(true);
-                lastBond = orb.Bond;
-            }
-        }
     }
 
     public static void ApplyFromOrbital(ElectronOrbitalFunction orb)
     {
         Clear();
-        if (orb == null) return;
-        orb.SetBondFormationTemplatePickHighlight(true);
-        lastOrbital = orb;
-        if (orb.Bond != null)
-        {
-            orb.Bond.SetBondFormationTemplatePickHighlight(true);
-            lastBond = orb.Bond;
-        }
     }
 
     public static void Clear()
@@ -292,16 +274,6 @@ static class BondFormationTemplatePickHighlight
                 if (r != null)
                     ElectronOrbitalFunction.SetRedistributeTemplatePreviewRendererPickHighlight(r, false);
             lastPreviewRenderers = null;
-        }
-        if (lastOrbital != null)
-        {
-            lastOrbital.SetBondFormationTemplatePickHighlight(false);
-            lastOrbital = null;
-        }
-        if (lastBond != null)
-        {
-            lastBond.SetBondFormationTemplatePickHighlight(false);
-            lastBond = null;
         }
         ElectronOrbitalFunction.ReapplyBondSteppedGuideClusterHighlightAfterPickClear();
     }

@@ -15,8 +15,64 @@ using UnityEngine;
 [DefaultExecutionOrder(100)]
 public class SigmaBondFormation : MonoBehaviour
 {
+    // #region agent log
+    static void AgentDbgNdjson(string runId, string hypothesisId, string location, string message, string dataJsonObject)
+    {
+        ProjectAgentDebugLog.AppendDebugModeNdjson(
+            fileName: "debug-8fe36c.log",
+            sessionId: "8fe36c",
+            hypothesisId: hypothesisId,
+            location: location,
+            message: message,
+            dataJsonObject: string.IsNullOrEmpty(dataJsonObject) ? "{}" : dataJsonObject,
+            runId: string.IsNullOrEmpty(runId) ? "pre-fix" : runId);
+    }
+    // #endregion
+
     static GameObject phase1DebugTemplatePreviewRoot;
     static GameObject piPhase1DebugTemplatePreviewRoot;
+    static readonly List<ElectronOrbitalFunction> phase1CyclicDirLegPreviewOrbitals = new List<ElectronOrbitalFunction>(16);
+    static readonly List<CovalentBond> phase1CyclicDirLegPreviewBonds = new List<CovalentBond>(16);
+    static List<OrbitalRedistribution.DebugTemplateSnapshot> s_phase1DirLegSnapshotCache;
+    static int s_phase1DirLegLastSelectedAtomInstanceId = int.MinValue;
+
+    /// <summary>
+    /// While stepped cyclic σ phase-1 template preview is visible, UI and picking use this ring path (C1…CN, size N).
+    /// </summary>
+    public static class CyclicPhase1TemplatePreviewContext
+    {
+        public static bool IsActive;
+        public static IReadOnlyList<AtomFunction> RingPathAtoms;
+
+        public static void Begin(IReadOnlyList<AtomFunction> pathAtoms)
+        {
+            RingPathAtoms = pathAtoms != null && pathAtoms.Count > 0 ? pathAtoms : null;
+            IsActive = RingPathAtoms != null;
+        }
+
+        public static void Clear()
+        {
+            IsActive = false;
+            RingPathAtoms = null;
+        }
+
+        public static bool TryGetRingVertexIndex1Based(AtomFunction atom, out int index1Based, out int ringSize)
+        {
+            index1Based = 0;
+            ringSize = RingPathAtoms != null ? RingPathAtoms.Count : 0;
+            if (atom == null || RingPathAtoms == null)
+                return false;
+            for (int i = 0; i < RingPathAtoms.Count; i++)
+            {
+                if (RingPathAtoms[i] == atom)
+                {
+                    index1Based = i + 1;
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
 
     [SerializeField] EditModeManager editModeManager;
     [SerializeField] bool debugDisableCyclicSigmaPhase1Redistribution = false;
@@ -490,7 +546,8 @@ sealed class PiFormationRunState
             guideOrbitalPredetermined: null,
             finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
             isBondingEvent: true,
-            cyclicContext: redistCycleContext);
+            cyclicContext: redistCycleContext,
+            callerTag: "sigma-phase1-runtime");
         return new Phase1ParallelTrack
         {
             ApplySmoothStep = s => animation?.Apply(s),
@@ -574,7 +631,8 @@ sealed class PiFormationRunState
             guideOrbitalPredetermined: null,
             finalDirectionForGuideOrbital: finalDir,
             isBondingEvent: true,
-            cyclicContext: cyclicContext);
+            cyclicContext: cyclicContext,
+            callerTag: "pi-phase1-runtime");
 
         piOpAnimForPostCylinder = piOpAnim;
         return new Phase1ParallelTrack
@@ -1232,66 +1290,196 @@ sealed class PiFormationRunState
         if (disablePhase1Redistribution)
             return;
 
-        OrbitalRedistribution.BeginDebugTemplateCapture();
-        try
+        Vector3 finalDirectionForGuideOrbitalRoot = Vector3.zero;
+        OrbitalRedistribution.CyclicRedistributionContext redistCycleContext = null;
+        if (cyclicContext != null && guideAtom != null && nonGuideAtom != null)
         {
-            Vector3 finalDirectionForGuideOrbital = Vector3.zero;
-            OrbitalRedistribution.CyclicRedistributionContext redistCycleContext = null;
-            if (cyclicContext != null && guideAtom != null && nonGuideAtom != null)
+            var finalWorldByAtom = new Dictionary<AtomFunction, Vector3>();
+            for (int i = 0; i < cyclicContext.PathAtoms.Count; i++)
             {
-                var finalWorldByAtom = new Dictionary<AtomFunction, Vector3>();
-                for (int i = 0; i < cyclicContext.PathAtoms.Count; i++)
-                {
-                    AtomFunction a = cyclicContext.PathAtoms[i];
-                    if (a == null) continue;
-                    if (cyclicContext.TargetWorldByAtom.TryGetValue(a, out Vector3 target))
-                        finalWorldByAtom[a] = target;
-                    else
-                        finalWorldByAtom[a] = a.transform.position;
-                }
-
-                redistCycleContext = new OrbitalRedistribution.CyclicRedistributionContext
-                {
-                    PivotAtom = nonGuideAtom,
-                    CycleNeighborA = guideAtom,
-                    CycleNeighborB = cyclicContext.NonGuideCycleNeighbor,
-                    FinalWorldByAtom = finalWorldByAtom,
-                    CycleCenterWorld = cyclicContext.CycleCenterWorld,
-                    ChainRedistributionBlockedAtoms = cyclicContext.ChainRedistributionBlockAtoms
-                };
-
-                Vector3 pivotFinal = finalWorldByAtom.TryGetValue(nonGuideAtom, out Vector3 p) ? p : nonGuideAtom.transform.position;
-                Vector3 guideFinal = finalWorldByAtom.TryGetValue(guideAtom, out Vector3 g) ? g : guideAtom.transform.position;
-                Vector3 guideFinalDirWorld = (guideFinal - pivotFinal).normalized;
-                if (guideFinalDirWorld.sqrMagnitude > 1e-12f)
-                    finalDirectionForGuideOrbital = nonGuideAtom.transform.InverseTransformDirection(guideFinalDirWorld).normalized;
+                AtomFunction a = cyclicContext.PathAtoms[i];
+                if (a == null) continue;
+                if (cyclicContext.TargetWorldByAtom.TryGetValue(a, out Vector3 target))
+                    finalWorldByAtom[a] = target;
+                else
+                    finalWorldByAtom[a] = a.transform.position;
             }
 
-            var _ = OrbitalRedistribution.BuildOrbitalRedistribution(
-                nonGuideAtom,
-                guideAtom,
-                guideOrbitalPredetermined: null,
-                finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
-                cyclicContext: redistCycleContext,
-                isBondingEvent: true);
-        }
-        finally
-        {
-            // capture closed below
+            redistCycleContext = new OrbitalRedistribution.CyclicRedistributionContext
+            {
+                PivotAtom = nonGuideAtom,
+                CycleNeighborA = guideAtom,
+                CycleNeighborB = cyclicContext.NonGuideCycleNeighbor,
+                FinalWorldByAtom = finalWorldByAtom,
+                CycleCenterWorld = cyclicContext.CycleCenterWorld,
+                ChainRedistributionBlockedAtoms = cyclicContext.ChainRedistributionBlockAtoms,
+                SigmaRingPathOrderedC1ToCn = new List<AtomFunction>(cyclicContext.PathAtoms)
+            };
+
+            Vector3 pivotFinal = finalWorldByAtom.TryGetValue(nonGuideAtom, out Vector3 p) ? p : nonGuideAtom.transform.position;
+            Vector3 guideFinal = finalWorldByAtom.TryGetValue(guideAtom, out Vector3 g) ? g : guideAtom.transform.position;
+            Vector3 guideFinalDirWorld = (guideFinal - pivotFinal).normalized;
+            if (guideFinalDirWorld.sqrMagnitude > 1e-12f)
+                finalDirectionForGuideOrbitalRoot = nonGuideAtom.transform.InverseTransformDirection(guideFinalDirWorld).normalized;
         }
 
-        var snapshots = OrbitalRedistribution.EndDebugTemplateCapture();
+        var mergedSnapshots = new List<OrbitalRedistribution.DebugTemplateSnapshot>();
+
+        void AppendCaptureForAtom(
+            AtomFunction atom,
+            AtomFunction guideForTemplate,
+            Vector3 finalDirectionForGuideOrbital,
+            ElectronOrbitalFunction atomOrbitalOp,
+            ElectronOrbitalFunction guideAtomOrbitalOp,
+            OrbitalRedistribution.CyclicRedistributionContext ctx)
+        {
+            if (atom == null || guideForTemplate == null)
+                return;
+            OrbitalRedistribution.BeginDebugTemplateCapture();
+            try
+            {
+                _ = OrbitalRedistribution.BuildOrbitalRedistribution(
+                    atom,
+                    guideForTemplate,
+                    guideAtomOrbitalOp: guideAtomOrbitalOp,
+                    atomOrbitalOp: atomOrbitalOp,
+                    guideOrbitalPredetermined: null,
+                    finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
+                    cyclicContext: ctx,
+                    isBondingEvent: true,
+                    callerTag: "sigma-phase1-preview-capture");
+            }
+            finally
+            {
+            }
+
+            var chunk = OrbitalRedistribution.EndDebugTemplateCapture();
+            if (chunk != null && chunk.Count > 0)
+                mergedSnapshots.AddRange(chunk);
+        }
+
+        if (redistCycleContext != null
+            && cyclicContext?.PathAtoms != null
+            && cyclicContext.PathAtoms.Count >= 3)
+        {
+            var pathIds = new HashSet<int>();
+            for (int pi = 0; pi < cyclicContext.PathAtoms.Count; pi++)
+            {
+                AtomFunction pa = cyclicContext.PathAtoms[pi];
+                if (pa != null)
+                    pathIds.Add(pa.GetInstanceID());
+            }
+
+            int nRing = cyclicContext.PathAtoms.Count;
+            for (int i = 0; i < nRing; i++)
+            {
+                AtomFunction pathAtom = cyclicContext.PathAtoms[i];
+                AtomFunction guideOnRing = cyclicContext.PathAtoms[(i + 1) % nRing];
+                if (pathAtom == null || guideOnRing == null)
+                    continue;
+
+                Vector3 wAtom = ResolvePhase1FinalCenterWorld(pathAtom, initialWorld, deltaTotal, cyclicContext);
+                Vector3 wGuide = ResolvePhase1FinalCenterWorld(guideOnRing, initialWorld, deltaTotal, cyclicContext);
+                Vector3 legWorld = (wGuide - wAtom).normalized;
+                Vector3 fDir = legWorld.sqrMagnitude > 1e-18f
+                    ? pathAtom.transform.InverseTransformDirection(legWorld).normalized
+                    : finalDirectionForGuideOrbitalRoot;
+
+                ElectronOrbitalFunction opOnAtom = TryGetSigmaLineOrbitalBetween(pathAtom, guideOnRing, null);
+                ElectronOrbitalFunction opOnGuide = TryGetSigmaLineOrbitalBetween(guideOnRing, pathAtom, null);
+
+                AppendCaptureForAtom(pathAtom, guideOnRing, fDir, opOnAtom, opOnGuide, redistCycleContext);
+            }
+
+            OrbitalRedistribution.BeginDebugTemplateCapture();
+            try
+            {
+                _ = OrbitalRedistribution.BuildOrbitalRedistribution(
+                    nonGuideAtom,
+                    guideAtom,
+                    guideOrbitalPredetermined: null,
+                    finalDirectionForGuideOrbital: finalDirectionForGuideOrbitalRoot,
+                    cyclicContext: redistCycleContext,
+                    isBondingEvent: true,
+                    callerTag: "sigma-phase1-preview-root-capture");
+            }
+            finally
+            {
+            }
+
+            var offPathChunk = OrbitalRedistribution.EndDebugTemplateCapture();
+            if (offPathChunk != null)
+            {
+                for (int oi = 0; oi < offPathChunk.Count; oi++)
+                {
+                    var s = offPathChunk[oi];
+                    if (s?.Atom == null) continue;
+                    if (pathIds.Contains(s.Atom.GetInstanceID()))
+                        continue;
+                    mergedSnapshots.Add(s);
+                }
+            }
+        }
+        else
+        {
+            AppendCaptureForAtom(
+                nonGuideAtom,
+                guideAtom,
+                finalDirectionForGuideOrbitalRoot,
+                atomOrbitalOp: null,
+                guideAtomOrbitalOp: null,
+                redistCycleContext);
+        }
+
+        var snapshots = mergedSnapshots;
         if (snapshots == null || snapshots.Count == 0)
             return;
+
+        if (cyclicContext != null && cyclicContext.PathAtoms != null)
+            CyclicPhase1TemplatePreviewContext.Begin(cyclicContext.PathAtoms);
+        else
+            CyclicPhase1TemplatePreviewContext.Clear();
+
+        var snapshotsByAtom = new Dictionary<int, OrbitalRedistribution.DebugTemplateSnapshot>();
+        for (int si = 0; si < snapshots.Count; si++)
+        {
+            var s = snapshots[si];
+            if (s?.Atom == null) continue;
+            snapshotsByAtom[s.Atom.GetInstanceID()] = s;
+        }
+        var uniqueSnapshots = new List<OrbitalRedistribution.DebugTemplateSnapshot>(snapshotsByAtom.Count);
+        foreach (var kv in snapshotsByAtom)
+            uniqueSnapshots.Add(kv.Value);
+
+        s_phase1DirLegSnapshotCache = uniqueSnapshots;
+        s_phase1DirLegLastSelectedAtomInstanceId = int.MinValue;
 
         phase1DebugTemplatePreviewRoot = new GameObject("Phase1RedistributeTemplatePreview");
         if (phase1DebugTemplatePreviewRoot.GetComponent<BondFormationTemplatePreviewInput>() == null)
             phase1DebugTemplatePreviewRoot.AddComponent<BondFormationTemplatePreviewInput>();
-        for (int i = 0; i < snapshots.Count; i++)
+        if (cyclicContext?.PathAtoms != null
+            && cyclicContext.PathAtoms.Count >= 3
+            && phase1DebugTemplatePreviewRoot.GetComponent<Phase1CyclicDirLegSelectionHighlighter>() == null)
+            phase1DebugTemplatePreviewRoot.AddComponent<Phase1CyclicDirLegSelectionHighlighter>();
+        int ringSize = cyclicContext?.PathAtoms != null ? cyclicContext.PathAtoms.Count : 0;
+        for (int i = 0; i < uniqueSnapshots.Count; i++)
         {
-            var snap = snapshots[i];
+            var snap = uniqueSnapshots[i];
             if (snap == null) continue;
             if (snap.Atom == null || snap.TemplateLocal == null || snap.TemplateLocal.Count == 0) continue;
+            int ringVertex1Based = 0;
+            if (cyclicContext?.PathAtoms != null)
+            {
+                for (int pi = 0; pi < cyclicContext.PathAtoms.Count; pi++)
+                {
+                    if (cyclicContext.PathAtoms[pi] == snap.Atom)
+                    {
+                        ringVertex1Based = pi + 1;
+                        break;
+                    }
+                }
+            }
+
             Vector3 center = ResolvePhase1FinalCenterWorld(snap.Atom, initialWorld, deltaTotal, cyclicContext);
             float len = Mathf.Max(0.125f, snap.Atom.BondRadius * 0.55f);
             for (int di = 0; di < snap.TemplateLocal.Count; di++)
@@ -1299,15 +1487,202 @@ sealed class PiFormationRunState
                 Vector3 dirWorld = snap.Atom.transform.TransformDirection(snap.TemplateLocal[di]).normalized;
                 if (dirWorld.sqrMagnitude < 1e-12f) continue;
                 Vector3 end = center + dirWorld * len;
-                ElectronOrbitalFunction linkedOrbital = FindAssignedOrbitalForTemplateIndex(snap, di);
-                CreateDebugTemplateCylinder(
+                FindTemplateSlotDebugMetadata(snap, di, out ElectronOrbitalFunction linkedOrbital, out int groupRow, out bool pinned, out string kind);
+                CreatePhase1CyclicDebugTemplateCylinder(
                     phase1DebugTemplatePreviewRoot.transform,
                     center,
                     end,
                     snap.Atom.GetInstanceID(),
                     di,
-                    linkedOrbital);
+                    linkedOrbital,
+                    ringVertex1Based,
+                    ringSize,
+                    groupRow,
+                    pinned,
+                    kind);
             }
+        }
+    }
+
+    static Color Phase1TemplateMatchColorForSlot(int templateSlotIndex)
+    {
+        // Distinct slot colors (works well for VSEPR 3/4; extends to 6 before HSV fallback).
+        Color[] palette =
+        {
+            new Color(1.00f, 0.42f, 0.08f, 1f), // orange
+            new Color(0.52f, 0.32f, 0.98f, 1f), // violet
+            new Color(0.12f, 0.82f, 0.72f, 1f), // teal
+            new Color(0.98f, 0.24f, 0.62f, 1f), // magenta
+            new Color(0.64f, 0.86f, 0.20f, 1f), // lime
+            new Color(0.24f, 0.66f, 0.98f, 1f), // sky
+        };
+        if (templateSlotIndex >= 0 && templateSlotIndex < palette.Length)
+            return palette[templateSlotIndex];
+        float h = Mathf.Repeat(0.19f * templateSlotIndex, 1f);
+        return Color.HSVToRGB(h, 0.72f, 0.98f);
+    }
+
+    static void SetPhase1TemplateCylinderMatchColor(Renderer renderer, Color color)
+    {
+        if (renderer == null) return;
+        Material mat = renderer.material;
+        if (mat == null) return;
+        Color c = new Color(color.r, color.g, color.b, 0.92f);
+        if (mat.HasProperty("_BaseColor"))
+            mat.SetColor("_BaseColor", c);
+        if (mat.HasProperty("_Color"))
+            mat.SetColor("_Color", c);
+    }
+
+    static void ClearPhase1CyclicDirLegOrbitalAndBondHighlights()
+    {
+        for (int i = 0; i < phase1CyclicDirLegPreviewOrbitals.Count; i++)
+        {
+            var o = phase1CyclicDirLegPreviewOrbitals[i];
+            if (o != null)
+                o.SetCyclicSigmaFormationTemplateMatchPreview(false, default);
+        }
+        phase1CyclicDirLegPreviewOrbitals.Clear();
+
+        for (int bi = 0; bi < phase1CyclicDirLegPreviewBonds.Count; bi++)
+        {
+            var b = phase1CyclicDirLegPreviewBonds[bi];
+            if (b != null)
+                b.SetCyclicSigmaFormationTemplateMatchPreview(false, default);
+        }
+        phase1CyclicDirLegPreviewBonds.Clear();
+
+        if (phase1DebugTemplatePreviewRoot != null)
+        {
+            var slots = phase1DebugTemplatePreviewRoot.GetComponentsInChildren<Phase1TemplateSlotVisual>(true);
+            for (int si = 0; si < slots.Length; si++)
+                slots[si]?.ApplyColor(false, default);
+        }
+    }
+
+    static void ApplyPhase1CyclicTemplateMatchHighlightsForSelectedAtom(
+        List<OrbitalRedistribution.DebugTemplateSnapshot> uniqueSnapshots,
+        AtomFunction selectedAtom)
+    {
+        ClearPhase1CyclicDirLegOrbitalAndBondHighlights();
+        if (selectedAtom == null || uniqueSnapshots == null)
+            return;
+
+        int selectedId = selectedAtom.GetInstanceID();
+
+        if (phase1DebugTemplatePreviewRoot != null)
+        {
+            var slots = phase1DebugTemplatePreviewRoot.GetComponentsInChildren<Phase1TemplateSlotVisual>(true);
+            for (int si = 0; si < slots.Length; si++)
+            {
+                Phase1TemplateSlotVisual sv = slots[si];
+                if (sv == null || sv.AtomInstanceId != selectedId) continue;
+                Color c = Phase1TemplateMatchColorForSlot(sv.TemplateSlotIndex);
+                sv.ApplyColor(true, c);
+                // #region agent log
+                AgentDbgNdjson(
+                    "pre-fix",
+                    "H16-visual-slot-color-map",
+                    "SigmaBondFormation.ApplyPhase1CyclicTemplateMatchHighlightsForSelectedAtom",
+                    "selected atom template cylinder colored",
+                    "{\"selectedAtomId\":" + selectedId
+                    + ",\"slot\":" + sv.TemplateSlotIndex
+                    + ",\"r\":" + c.r.ToString("F3", CultureInfo.InvariantCulture)
+                    + ",\"g\":" + c.g.ToString("F3", CultureInfo.InvariantCulture)
+                    + ",\"b\":" + c.b.ToString("F3", CultureInfo.InvariantCulture) + "}");
+                // #endregion
+            }
+        }
+
+        var seenOrbitalIds = new HashSet<int>();
+        var seenBondIds = new HashSet<int>();
+        for (int si = 0; si < uniqueSnapshots.Count; si++)
+        {
+            var snap = uniqueSnapshots[si];
+            if (snap?.Atom != selectedAtom || snap.GroupAssignments == null)
+                continue;
+
+            for (int gi = 0; gi < snap.GroupAssignments.Count; gi++)
+            {
+                OrbitalRedistribution.DebugTemplateGroupAssignment row = snap.GroupAssignments[gi];
+                if (row.Orbital == null || row.TemplateIndex < 0)
+                    continue;
+                Color c = Phase1TemplateMatchColorForSlot(row.TemplateIndex);
+
+                int oid = row.Orbital.GetInstanceID();
+                if (seenOrbitalIds.Add(oid))
+                {
+                    row.Orbital.SetCyclicSigmaFormationTemplateMatchPreview(true, c);
+                    phase1CyclicDirLegPreviewOrbitals.Add(row.Orbital);
+                    // #region agent log
+                    AgentDbgNdjson(
+                        "pre-fix",
+                        "H16-visual-slot-color-map",
+                        "SigmaBondFormation.ApplyPhase1CyclicTemplateMatchHighlightsForSelectedAtom",
+                        "selected atom orbital colored by slot",
+                        "{\"selectedAtomId\":" + selectedId
+                        + ",\"slot\":" + row.TemplateIndex
+                        + ",\"orbitalId\":" + oid
+                        + ",\"kind\":\"" + (row.Kind ?? "") + "\""
+                        + ",\"groupRow\":" + row.GroupRowIndex
+                        + ",\"pinned\":" + (row.CyclicContributorPinned ? "true" : "false") + "}");
+                    // #endregion
+                }
+
+                if (row.Kind == "bond" && row.Orbital.Bond != null)
+                {
+                    int bid = row.Orbital.Bond.GetInstanceID();
+                    if (seenBondIds.Add(bid))
+                    {
+                        row.Orbital.Bond.SetCyclicSigmaFormationTemplateMatchPreview(true, c);
+                        phase1CyclicDirLegPreviewBonds.Add(row.Orbital.Bond);
+                    }
+                }
+            }
+        }
+    }
+
+    static void RefreshPhase1CyclicDirLegHighlightsForSelectedAtom(AtomFunction selectedAtom)
+    {
+        int id = selectedAtom != null ? selectedAtom.GetInstanceID() : int.MinValue;
+        if (id == s_phase1DirLegLastSelectedAtomInstanceId)
+            return;
+        s_phase1DirLegLastSelectedAtomInstanceId = id;
+        ApplyPhase1CyclicTemplateMatchHighlightsForSelectedAtom(
+            s_phase1DirLegSnapshotCache,
+            selectedAtom);
+    }
+
+    sealed class Phase1CyclicDirLegSelectionHighlighter : MonoBehaviour
+    {
+        void LateUpdate()
+        {
+            if (!BondFormationDebugController.IsWaitingForPhase)
+                return;
+            var edit = FindFirstObjectByType<EditModeManager>();
+            RefreshPhase1CyclicDirLegHighlightsForSelectedAtom(edit != null ? edit.SelectedAtom : null);
+        }
+
+        void OnDestroy()
+        {
+            ClearPhase1CyclicDirLegOrbitalAndBondHighlights();
+            s_phase1DirLegSnapshotCache = null;
+            s_phase1DirLegLastSelectedAtomInstanceId = int.MinValue;
+        }
+    }
+
+    sealed class Phase1TemplateSlotVisual : MonoBehaviour
+    {
+        public int AtomInstanceId;
+        public int TemplateSlotIndex;
+        public Renderer Renderer;
+        public Color BaseColor = new Color(0.20f, 0.90f, 1f, 0.92f);
+
+        public void ApplyColor(bool selected, Color selectedColor)
+        {
+            if (Renderer == null)
+                return;
+            SetPhase1TemplateCylinderMatchColor(Renderer, selected ? selectedColor : BaseColor);
         }
     }
 
@@ -1327,6 +1702,31 @@ sealed class PiFormationRunState
         return atom.transform.position;
     }
 
+    static void FindTemplateSlotDebugMetadata(
+        OrbitalRedistribution.DebugTemplateSnapshot snapshot,
+        int templateDirIndex,
+        out ElectronOrbitalFunction orbital,
+        out int groupRowIndex,
+        out bool cyclicPinned,
+        out string kind)
+    {
+        orbital = null;
+        groupRowIndex = -1;
+        cyclicPinned = false;
+        kind = "";
+        if (snapshot?.GroupAssignments == null) return;
+        for (int i = 0; i < snapshot.GroupAssignments.Count; i++)
+        {
+            var row = snapshot.GroupAssignments[i];
+            if (row.TemplateIndex != templateDirIndex) continue;
+            orbital = row.Orbital;
+            groupRowIndex = row.GroupRowIndex;
+            cyclicPinned = row.CyclicContributorPinned;
+            kind = row.Kind ?? "";
+            return;
+        }
+    }
+
     static void CreateDebugTemplateCylinder(
         Transform parent,
         Vector3 startWorld,
@@ -1335,11 +1735,40 @@ sealed class PiFormationRunState
         int dirIndex,
         ElectronOrbitalFunction linkedOrbital)
     {
+        CreatePhase1CyclicDebugTemplateCylinder(
+            parent,
+            startWorld,
+            endWorld,
+            atomId,
+            dirIndex,
+            linkedOrbital,
+            ringVertex1Based: 0,
+            ringSize: 0,
+            groupRowIndex: -1,
+            cyclicContributorPinned: false,
+            kind: "");
+    }
+
+    /// <summary>Cylinder stem for stepped template preview; cyclic σ formation records <paramref name="ringVertex1Based"/> in the pick blurb.</summary>
+    static void CreatePhase1CyclicDebugTemplateCylinder(
+        Transform parent,
+        Vector3 startWorld,
+        Vector3 endWorld,
+        int atomInstanceId,
+        int templateSlotIndex,
+        ElectronOrbitalFunction linkedOrbital,
+        int ringVertex1Based,
+        int ringSize,
+        int groupRowIndex,
+        bool cyclicContributorPinned,
+        string kind)
+    {
         Vector3 v = endWorld - startWorld;
         float len = v.magnitude;
         if (len < 1e-6f) return;
         var go = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-        go.name = "Phase1Tpl_A" + atomId + "_D" + dirIndex;
+        go.name = "CyclicSigmaTpl_A" + atomInstanceId + "_slot" + templateSlotIndex
+            + (groupRowIndex >= 0 ? "_g" + groupRowIndex : "");
         go.transform.SetParent(parent, worldPositionStays: true);
         go.transform.position = (startWorld + endWorld) * 0.5f;
         go.transform.rotation = Quaternion.FromToRotation(Vector3.up, v.normalized);
@@ -1348,6 +1777,7 @@ sealed class PiFormationRunState
         var col = go.GetComponent<Collider>();
         if (col != null) col.isTrigger = true;
         var renderer = go.GetComponent<Renderer>();
+        Color baseCol = new Color(0.20f, 0.90f, 1f, 0.92f);
         if (renderer != null)
         {
             var shader = Shader.Find("Universal Render Pipeline/Lit");
@@ -1355,31 +1785,56 @@ sealed class PiFormationRunState
             if (shader != null)
             {
                 var mat = new Material(shader);
-                mat.color = new Color(0.20f, 0.90f, 1f, 0.92f);
+                mat.color = baseCol;
                 renderer.sharedMaterial = mat;
             }
         }
+
+        string ringPart = ringVertex1Based > 0 && ringSize > 0
+            ? "cyclicRingVertex=" + ringVertex1Based + "/" + ringSize
+            : "cyclicRingVertex=—";
+        string grp = groupRowIndex >= 0 ? groupRowIndex.ToString(CultureInfo.InvariantCulture) : "—";
+        string orbPart = linkedOrbital != null
+            ? linkedOrbital.GetInstanceID().ToString(CultureInfo.InvariantCulture)
+            : "none";
+        string pin = cyclicContributorPinned ? "Y" : "N";
+        string dirTag = templateSlotIndex == 0 ? "dir1" : templateSlotIndex == 1 ? "dir2" : "slot";
+        string desc =
+            "Cyclic σ template slot=" + templateSlotIndex + "(" + dirTag + ")"
+            + " | " + ringPart
+            + " | atomInst=" + atomInstanceId
+            + " | orbitalGroupRow=" + grp
+            + " | contributorPinned=" + pin
+            + (string.IsNullOrEmpty(kind) ? "" : " | kind=" + kind)
+            + " | orbInst=" + orbPart;
+
         var pick = go.AddComponent<BondFormationTemplatePreviewPick>();
-        pick.SetDescription("Final template A=" + atomId + " dir=" + dirIndex);
+        pick.SetDescription(desc);
         pick.SetLinkedOrbital(linkedOrbital, renderer != null ? new[] { renderer } : null);
+
+        var slotVisual = go.AddComponent<Phase1TemplateSlotVisual>();
+        slotVisual.AtomInstanceId = atomInstanceId;
+        slotVisual.TemplateSlotIndex = templateSlotIndex;
+        slotVisual.Renderer = renderer;
+
+        var stem = go.AddComponent<BondFormationTemplateStemRayPick>();
+        stem.SetSegment(startWorld, endWorld, Mathf.Max(0.024f, r * 2.6f), pick);
     }
 
     static ElectronOrbitalFunction FindAssignedOrbitalForTemplateIndex(
         OrbitalRedistribution.DebugTemplateSnapshot snapshot,
         int templateIndex)
     {
-        if (snapshot == null || snapshot.GroupAssignments == null) return null;
-        for (int i = 0; i < snapshot.GroupAssignments.Count; i++)
-        {
-            var row = snapshot.GroupAssignments[i];
-            if (row.templateIndex == templateIndex)
-                return row.orbital;
-        }
-        return null;
+        FindTemplateSlotDebugMetadata(snapshot, templateIndex, out ElectronOrbitalFunction o, out _, out _, out _);
+        return o;
     }
 
     static void ClearPhase1RedistributeTemplatePreviewVisuals()
     {
+        ClearPhase1CyclicDirLegOrbitalAndBondHighlights();
+        s_phase1DirLegSnapshotCache = null;
+        s_phase1DirLegLastSelectedAtomInstanceId = int.MinValue;
+        CyclicPhase1TemplatePreviewContext.Clear();
         if (phase1DebugTemplatePreviewRoot != null)
         {
             UnityEngine.Object.Destroy(phase1DebugTemplatePreviewRoot);
@@ -1528,7 +1983,8 @@ sealed class PiFormationRunState
                     guide,
                     nonGuide,
                     atomOrbitalOp: phase3GuideOp,
-                    isBondingEvent: true);
+                    isBondingEvent: true,
+                    callerTag: "sigma-phase3-runtime");
                 if (phase3GuideRedistribution != null)
                 {
                     if (animate)
@@ -1644,7 +2100,8 @@ sealed class PiFormationRunState
                     guide,
                     nonGuide,
                     atomOrbitalOp: phase3GuideOp,
-                    isBondingEvent: true);
+                    isBondingEvent: true,
+                    callerTag: "sigma-phase3-immediate");
                 if (phase3GuideRedistribution != null)
                 {
                     phase3GuideRedistribution.Apply(1f);
@@ -1939,7 +2396,8 @@ sealed class PiFormationRunState
                 guideOrbitalPredetermined: null,
                 finalDirectionForGuideOrbital: finalDirectionForGuideOrbital,
                 isBondingEvent: true,
-                cyclicContext: cyclicContext);
+                cyclicContext: cyclicContext,
+                callerTag: "pi-phase1-preview-capture");
         }
         finally
         {

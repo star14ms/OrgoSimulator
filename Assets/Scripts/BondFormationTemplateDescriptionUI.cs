@@ -111,8 +111,30 @@ public static class BondFormationTemplateDescriptionUI
 
         var edit = Object.FindFirstObjectByType<EditModeManager>();
         var selectedAtom = edit != null ? edit.SelectedAtom : null;
+        var selectedOrbital = edit != null ? edit.SelectedOrbital : null;
+        BondFormationDebugController.FocusOrbitalInstanceId =
+            selectedOrbital != null ? selectedOrbital.GetInstanceID() : 0;
         string selectedId = selectedAtom != null ? selectedAtom.GetInstanceID().ToString() : "none";
-        return baseText + "\nSelected Atom InstanceID: " + selectedId;
+        string selectedOrbitalId = selectedOrbital != null ? selectedOrbital.GetInstanceID().ToString() : "none";
+        string ringLine = "";
+        if (SigmaBondFormation.CyclicPhase1TemplatePreviewContext.IsActive
+            && SigmaBondFormation.CyclicPhase1TemplatePreviewContext.TryGetRingVertexIndex1Based(
+                selectedAtom,
+                out int ringVertex1Based,
+                out int ringSize))
+        {
+            ringLine = "\nSelected atom cyclic ring vertex: " + ringVertex1Based + "/" + ringSize
+                + " (1 = path start toward partner … N = approaching atom)";
+        }
+        else if (SigmaBondFormation.CyclicPhase1TemplatePreviewContext.IsActive)
+        {
+            ringLine = "\nSelected atom cyclic ring vertex: — (atom not on current σ ring path)";
+        }
+
+        return baseText
+            + "\nSelected Atom InstanceID: " + selectedId
+            + "\nSelected Orbital InstanceID: " + selectedOrbitalId
+            + ringLine;
     }
 
     static void EnsureDebugDriver()
