@@ -722,13 +722,10 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
     }
 
-    /// <summary>
-    /// Cyclic σ phase-1 stepped preview: apply explicit match color for the selected template slot on this bond visual.
-    /// When <paramref name="enabled"/> is false, clears preview tint.
-    /// </summary>
-    public void SetCyclicSigmaFormationTemplateMatchPreview(bool enabled, Color color)
+    /// <summary>Template preview pick: tint bond line/cylinder red (MPB on 3D mesh; sprite line color).</summary>
+    public void SetBondFormationTemplatePickHighlight(bool highlighted)
     {
-        if (!enabled)
+        if (!highlighted)
         {
             if (bondFormationTemplatePickMpb != null)
                 bondFormationTemplatePickMpb.Clear();
@@ -740,8 +737,7 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
                 lineRenderer.color = BondVisualColor;
             return;
         }
-
-        var c = new Color(color.r, color.g, color.b, 0.92f);
+        var c = new Color(0.95f, 0.2f, 0.2f, 0.92f);
         if (cylinderRenderer != null)
         {
             if (bondFormationTemplatePickMpb == null)
@@ -755,22 +751,6 @@ public class CovalentBond : MonoBehaviour, IPointerDownHandler, IDragHandler, IP
         }
         if (lineRenderer != null)
             lineRenderer.color = c;
-    }
-
-    /// <summary>Legacy template pick hook: σ bond mesh is no longer tinted for preview pick (no red).</summary>
-    public void SetBondFormationTemplatePickHighlight(bool highlighted)
-    {
-        if (!highlighted)
-        {
-            if (bondFormationTemplatePickMpb != null)
-                bondFormationTemplatePickMpb.Clear();
-            if (cylinderRenderer != null)
-                cylinderRenderer.SetPropertyBlock(null);
-            if (piCylinderRendererSecondary != null)
-                piCylinderRendererSecondary.SetPropertyBlock(null);
-            if (lineRenderer != null)
-                lineRenderer.color = BondVisualColor;
-        }
     }
 
     Vector3 PerpendicularToBondDirection(Vector3 deltaNormalized)

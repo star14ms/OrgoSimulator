@@ -258,35 +258,14 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         ApplyOrbitalEditSelectionVisual(on);
     }
 
-    /// <summary>
-    /// Legacy bond-step template pick hook: orbital body is no longer tinted (pick feedback is template stem only).
-    /// When <paramref name="on"/> is false, restores normal body tint if this path had been used.
-    /// </summary>
+    /// <summary>Redistribute template preview click: tint main orbital body red (bond line uses <see cref="CovalentBond.SetBondFormationTemplatePickHighlight"/>).</summary>
     public void SetBondFormationTemplatePickHighlight(bool on)
     {
-        if (on)
-            return;
         var sr = GetComponent<SpriteRenderer>();
         var mr = GetPrimaryBodyMeshRendererForVisual();
         if (sr == null && mr == null) return;
         EnsureOriginalColorFromRenderer();
-        if (editSelectionHighlightActive)
-            ApplyOrbitalEditSelectionVisual(true);
-        else
-            ApplyOrbitalVisualOpacity(sr, mr);
-    }
-
-    /// <summary>
-    /// Cyclic σ phase-1 stepped preview: apply explicit match color for a template slot on this orbital body.
-    /// When <paramref name="enabled"/> is false, restores normal body tint.
-    /// </summary>
-    public void SetCyclicSigmaFormationTemplateMatchPreview(bool enabled, Color color)
-    {
-        var sr = GetComponent<SpriteRenderer>();
-        var mr = GetPrimaryBodyMeshRendererForVisual();
-        if (sr == null && mr == null) return;
-        EnsureOriginalColorFromRenderer();
-        if (!enabled)
+        if (!on)
         {
             if (editSelectionHighlightActive)
                 ApplyOrbitalEditSelectionVisual(true);
@@ -294,11 +273,10 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
                 ApplyOrbitalVisualOpacity(sr, mr);
             return;
         }
-
         float a = Mathf.Clamp01(originalColor.a);
-        Color c = new Color(color.r, color.g, color.b, Mathf.Max(0.38f, a));
-        if (sr != null) sr.color = c;
-        else if (mr != null) SetMaterialTint(mr.material, c);
+        Color red = new Color(0.95f, 0.2f, 0.2f, Mathf.Max(0.35f, a));
+        if (sr != null) sr.color = red;
+        else if (mr != null) SetMaterialTint(mr.material, red);
     }
 
     void DestroyLegacyOrbitalOutlineDecorations()
@@ -421,14 +399,14 @@ public class ElectronOrbitalFunction : MonoBehaviour, IPointerDownHandler, IDrag
         else if (mat.HasProperty(ShaderPropColor)) mat.SetColor(ShaderPropColor, c);
     }
 
-    /// <summary>Template preview stem/tip mesh tint: muted cyan default vs amber when picked (no red).</summary>
-    public static void SetRedistributeTemplatePreviewRendererPickHighlight(Renderer r, bool pickedStem)
+    /// <summary>Template preview stem/tip mesh tint: green default vs red when picked.</summary>
+    public static void SetRedistributeTemplatePreviewRendererPickHighlight(Renderer r, bool highlightRed)
     {
         if (r == null) return;
         var m = r.material;
-        var c = pickedStem
-            ? new Color(0.98f, 0.78f, 0.12f, 0.52f)
-            : new Color(0.18f, 0.82f, 0.95f, 0.42f);
+        var c = highlightRed
+            ? new Color(0.95f, 0.18f, 0.18f, 0.45f)
+            : new Color(0.22f, 0.9f, 0.32f, 0.45f);
         SetMaterialTint(m, c);
     }
 
