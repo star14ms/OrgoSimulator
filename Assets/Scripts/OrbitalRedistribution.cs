@@ -1387,7 +1387,9 @@ public static class OrbitalRedistribution
                     AtomFunction atomHostingOp = opForCurrentAtom != null && opForCurrentAtom.transform.parent != null
                         ? opForCurrentAtom.transform.parent.GetComponent<AtomFunction>()
                         : null;
-                    if (!isGuideGroup)
+                    // Cyclic σ: still recurse when this row is the guide group but the pivot nucleus hosts the OP (d01e902 had dropped this disjunct).
+                    if (!isGuideGroup
+                        || (cyclicContext != null && atomOrbitalOp != null && ReferenceEquals(atom, atomHostingOp)))
                     {
                         Vector3 childGuideDirWorld = atom.transform.TransformDirection((-alignedTemplate[ti]).normalized);
                         Vector3 childGuideDirLocal = adjacentAtom.transform.InverseTransformDirection(childGuideDirWorld).normalized;
