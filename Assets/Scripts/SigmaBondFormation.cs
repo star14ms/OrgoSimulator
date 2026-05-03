@@ -1750,12 +1750,18 @@ sealed class PiFormationRunState
             out _,
             out var piGuideDirLocal);
 
+        bool piPhase1RingPathAtLeast4 = false;
+        if (sigmaBetween != null
+            && TryBuildShortestSigmaPath(sourceAtom, targetAtom, out var piPhase1SigmaDetourPath, sigmaBetween)
+            && piPhase1SigmaDetourPath != null)
+        {
+            piPhase1RingPathAtLeast4 = piPhase1SigmaDetourPath.Count >= 4;
+        }
+
         if (buildPhase1TemplatePreviews
             && debugShowCyclicPiPhase1RedistributeTemplates
             && sigmaBetween != null
-            && TryBuildShortestSigmaPath(sourceAtom, targetAtom, out var ringPath, sigmaBetween)
-            && ringPath != null
-            && ringPath.Count >= 4)
+            && piPhase1RingPathAtLeast4)
         {
             BuildPiPhase1RedistributeTemplatePreviewVisuals(
                 guide,
@@ -1795,8 +1801,30 @@ sealed class PiFormationRunState
         OrbitalRedistribution.RedistributionAnimation piOpNonGuidePostCylinder = null;
         OrbitalRedistribution.RedistributionAnimation piOpGuidePostCylinder = null;
         Phase1ParallelTrack piPhase1NonGuideTrack = null;
+        bool needCyclicNonGuideChainPass = piPhase1CyclicContext != null
+            && sigmaBetween != null
+            && piPhase1RingPathAtLeast4;
+        bool nonGuideChainAlreadyFromTemplatePreview = buildPhase1TemplatePreviews
+            && debugShowCyclicPiPhase1RedistributeTemplates
+            && needCyclicNonGuideChainPass;
         if (runBothAtomsInPhase1)
         {
+            piPhase1NonGuideTrack = BuildPhase1OrbitalRedistributeForPiFormation(
+                guide,
+                nonGuide,
+                guideOp,
+                nonGuideOp,
+                piPhase1CyclicContext,
+                piGuideDirLocal,
+                redistributeOnGuide: false,
+                out piOpNonGuidePostCylinder,
+                hasSharedPiPPlusZ ? sharedPiNormalPlusZWorld : (Vector3?)null);
+            if (piPhase1NonGuideTrack != null)
+                tracks.Add(piPhase1NonGuideTrack);
+        }
+        else if (needCyclicNonGuideChainPass && !nonGuideChainAlreadyFromTemplatePreview)
+        {
+            // Matches animated π when runBothAtomsInPhase1 is false: non-guide-centered phase-1 redistribution for cyclic σ chain.
             piPhase1NonGuideTrack = BuildPhase1OrbitalRedistributeForPiFormation(
                 guide,
                 nonGuide,
@@ -2409,18 +2437,20 @@ sealed class PiFormationRunState
         try
         {
             EnsureEditModeManagerReference();
-            if (animate)
+            // Same pre–phase-1 pose as animated π: tie-break / source lobe reads cached originals (immediate has no frame wait).
             {
                 var draggedLobeToRestore = redistributionGuideTieBreakDraggedOrbital != null
                     ? redistributionGuideTieBreakDraggedOrbital
                     : sourceOrbital;
                 if (draggedLobeToRestore != null)
                     draggedLobeToRestore.SnapToOriginal();
-                yield return null;
+                if (animate)
+                    yield return null;
             }
 
             var guideOrb = redistributionGuideTieBreakDraggedOrbital != null ? redistributionGuideTieBreakDraggedOrbital : sourceOrbital;
             ElectronRedistributionGuide.ResolveGuideAtomForPair(sourceAtom, targetAtom, guideOrb, out var guide, out var nonGuide);
+            const bool buildPhase1TemplatePreviewsSameAsDrag = true;
 
             ElectronOrbitalFunction guideOpPhase1 = guide == sourceAtom ? sourceOrbital : targetOrbital;
             ElectronOrbitalFunction nonGuideOpPhase1 = nonGuide == sourceAtom ? sourceOrbital : targetOrbital;
@@ -2436,7 +2466,7 @@ sealed class PiFormationRunState
                 targetOrbital,
                 animate ? phase1Sec : 0f,
                 molForBondLines,
-                buildPhase1TemplatePreviews: animate);
+                buildPhase1TemplatePreviews: buildPhase1TemplatePreviewsSameAsDrag);
             int mergedElectrons = sourceOrbital.ElectronCount + targetOrbital.ElectronCount;
 
             sourceAtom.UnbondOrbital(sourceOrbital);

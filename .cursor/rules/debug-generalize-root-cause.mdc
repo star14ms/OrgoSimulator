@@ -24,3 +24,7 @@ This aligns with **no narrow paper-over branches** in `debug-phase-vs-fix-phase.
 ## When unsure
 
 Stay in **debug phase**: use logs to prove **why** the general path double-counts or mis-classifies, then change that path (or its inputs) so the correct case needs **no** extra local `if`.
+
+## No “fallback” fixes unless requested
+
+When fixing a bug, **do not** add **fallback** logic (extra branches whose job is to guess an axis, direction, or substitute state when the primary path returns empty or fails) **unless the user explicitly asked** for that behavior. Prefer reordering inputs, unifying call order with the reference path (e.g. same sequence as the animated gesture without frame waits), or fixing the primary producer so the downstream consumer does not need a substitute.

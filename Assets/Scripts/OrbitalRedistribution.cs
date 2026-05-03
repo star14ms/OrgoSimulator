@@ -2177,7 +2177,8 @@ public static class OrbitalRedistribution
         }
 
         axisWorld = bucket[bestIdx];
-        return axisWorld.sqrMagnitude > 1e-18f;
+        bool okBucket = axisWorld.sqrMagnitude > 1e-18f;
+        return okBucket;
     }
 
     /// <summary>
@@ -2236,9 +2237,11 @@ public static class OrbitalRedistribution
         {
             bool appliedStoredPRefTrigonalTwist = false;
             Vector3 pAxisWorld = default;
-            bool tryGetAxis = nVseprGroup == 3
-                && finalDirectionsTemplate.Count >= 3
-                && TryGetPOrbitalAxisWorldForTrigonalAlign(nonGuideAtom, guideAtom, out pAxisWorld);
+            bool nvOk = nVseprGroup == 3;
+            bool fdtOk = finalDirectionsTemplate.Count >= 3;
+            bool pAxisOk = TryGetPOrbitalAxisWorldForTrigonalAlign(nonGuideAtom, guideAtom, out pAxisWorld);
+            bool tryGetAxis = nvOk && fdtOk && pAxisOk;
+
             if (tryGetAxis)
             {
                 Vector3 refLocal = nonGuideAtom.transform.InverseTransformDirection(pAxisWorld).normalized;

@@ -71,6 +71,7 @@ public static class AminoAcidMoleculeLibrary
                 amineN.TryStaggerNewmanRelativeToPartner(alphaCarbon);
 
             BuildSideChainByEditMode(abbreviation, alphaCarbon, beta, amineN, carboxylC, editModeManager, spawnAtom);
+            // H fill: no full redistribute; on π centers use lobe axes for H spawn (not VSEPR-only) and skip σ–H neighbor snap after each H.
             ForceFinalHydrogenFill(alphaCarbon, editModeManager);
             AtomFunction.SetupGlobalIgnoreCollisions();
             return true;
@@ -464,8 +465,8 @@ public static class AminoAcidMoleculeLibrary
                 if (c4 == null) break;
                 if (!TryBondDirect(c2, c4, editModeManager))
                     break;
-                // TryPromoteToDoubleBond(n1, c3, editModeManager);
-                // TryPromoteToDoubleBond(c2, c4, editModeManager);
+                TryPromoteToDoubleBond(n1, c3, editModeManager);
+                TryPromoteToDoubleBond(c2, c4, editModeManager);
                 break;
             }
             case "Phe":
@@ -517,10 +518,7 @@ public static class AminoAcidMoleculeLibrary
                 // Builder path requires immediate completion before post-condition checks.
                 animate: false))
         {
-            bool promoted = atomA.GetBondsTo(atomB) >= 2;
-            if (promoted)
-                EnforceTrigonalPlanarAtDoubleBond(atomA, atomB);
-            return promoted;
+            return atomA.GetBondsTo(atomB) >= 2;
         }
         editModeManager.FormSigmaBondInstant(
             atomA,
@@ -529,10 +527,7 @@ public static class AminoAcidMoleculeLibrary
             ob,
             redistributeAtomA: false,
             redistributeAtomB: false);
-        bool promotedFallback = atomA.GetBondsTo(atomB) >= 2;
-        if (promotedFallback)
-            EnforceTrigonalPlanarAtDoubleBond(atomA, atomB);
-        return promotedFallback;
+        return atomA.GetBondsTo(atomB) >= 2;
     }
 
     static AtomFunction AttachAtomAtPredeterminedPosition(
@@ -711,33 +706,17 @@ public static class AminoAcidMoleculeLibrary
         return cPos + d * L;
     }
 
-    static void EnforceTrigonalPlanarAtDoubleBond(AtomFunction center, AtomFunction partner)
-    {
-        if (center == null || partner == null) return;
-        // Instant π promotion (FormSigmaBondInstant with redistribute off) never ran phase-1 orbital redistribution;
-        // apply full template alignment now that the π edge exists so trigonal coplanarity matches the partner center.
-        if (center.GetBondsTo(partner) >= 2)
-        {
-            var animPartner = OrbitalRedistribution.BuildOrbitalRedistribution(partner, center, isBondingEvent: false);
-            animPartner?.Apply(1f);
-            var animCenter = OrbitalRedistribution.BuildOrbitalRedistribution(center, partner, isBondingEvent: false);
-            animCenter?.Apply(1f);
-        }
-
-        center.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(partner);
-        partner.RefreshSigmaBondOrbitalHybridAlignmentAfterFormationRedistribute(center);
-    }
-
     /// <summary>
-    /// sp² acyl carbon (amide / carboxylate): snap σ neighbors to 120° (same path as functional-group π centers),
-    /// then hybrid refresh on C=O pair.
+    /// sp² acyl carbon after side-chain π (amide / carboxylate): previously called
+    /// <see cref="MoleculeBuilder.ForceTrigonalPlanarNeighborPositionsForPiCenter"/> to snap σ neighbors to 120°.
+    /// That pass runs <b>after</b> π phase-1 prebond alignment and reassigns O / second σ substituents in a parent-anchored
+    /// ideal trigonal frame, which breaks amide <b>guide</b> ⊥ +z (Asn/Gln). Library geometry is already set by deterministic
+    /// O placement + π redistribution; we do not hard-force neighbors here.
     /// </summary>
     static void EnforceSideChainAcylTrigonalGeometry(AtomFunction acylC, AtomFunction chainRefNeighbor, AtomFunction carbonylPartner)
     {
         if (acylC == null || chainRefNeighbor == null || carbonylPartner == null) return;
         if (acylC.GetPiBondCount() <= 0) return;
-        MoleculeBuilder.ForceTrigonalPlanarNeighborPositionsForPiCenter(acylC, chainRefNeighbor);
-        EnforceTrigonalPlanarAtDoubleBond(acylC, carbonylPartner);
     }
 
     /// <summary>
@@ -785,6 +764,10 @@ public static class AminoAcidMoleculeLibrary
         return hLike.sqrMagnitude > 1e-10f ? hLike : Vector3.up;
     }
 
+    /// <summary>
+    /// Fills implicit H on each heavy atom in the α-connected molecule. Uses <see cref="EditModeManager.SaturateWithHydrogen"/> with
+    /// <c>preferOrbitalSpawnDirectionOnPiCenters</c> so Arg guanidine / imine N–H follow π phase-1 lobe directions instead of VSEPR-only spawn.
+    /// </summary>
     static void ForceFinalHydrogenFill(AtomFunction alphaCarbon, EditModeManager editModeManager)
     {
         if (alphaCarbon == null || editModeManager == null) return;
@@ -793,7 +776,7 @@ public static class AminoAcidMoleculeLibrary
         foreach (var a in mol)
         {
             if (a == null || a.AtomicNumber <= 1) continue;
-            editModeManager.SaturateWithHydrogen(a);
+            editModeManager.SaturateWithHydrogen(a, preferOrbitalSpawnDirectionOnPiCenters: true);
         }
     }
 }

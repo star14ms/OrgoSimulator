@@ -985,7 +985,8 @@ public class EditModeManager : MonoBehaviour
         bool redistributeAtomB = true,
         HashSet<AtomFunction> pinSigmaRelaxForAtomA = null,
         HashSet<AtomFunction> pinSigmaRelaxForAtomB = null,
-        AtomFunction freezeSigmaNeighborSubtreeRoot = null)
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null,
+        bool skipHydrogenSigmaNeighborSnapAfterTail = false)
     {
         FormSigmaBondInstantBody(
             atomA,
@@ -1000,7 +1001,7 @@ public class EditModeManager : MonoBehaviour
             orbitalDragPostbondGuideHybridLerp: false,
             redistributionGuideTieBreakDraggedOrbital: null,
             phase3GuideLerpSecondsOverride: null,
-            skipHydrogenSigmaNeighborSnapAfterTail: false);
+            skipHydrogenSigmaNeighborSnapAfterTail: skipHydrogenSigmaNeighborSnapAfterTail);
     }
 
     /// <summary>Shared σ bond creation body — also used by <see cref="SigmaBondFormation"/> for degenerate guide/non-guide.</summary>
@@ -1331,7 +1332,13 @@ public class EditModeManager : MonoBehaviour
 
     /// <param name="freezeSigmaNeighborSubtreeRoot">With FG attach, pass substrate attachment atom so σ-relax skips parent subtree without O(N) pins.</param>
     /// <param name="incrementalCollisionInvolvingAtoms">When non-null (e.g. functional-group attach), refresh ignores for this set only after each H add instead of the whole scene.</param>
-    public void SaturateWithHydrogen(AtomFunction atom, HashSet<AtomFunction> pinSigmaRelaxNeighbors = null, IReadOnlyList<AtomFunction> incrementalCollisionInvolvingAtoms = null, AtomFunction freezeSigmaNeighborSubtreeRoot = null)
+    /// <param name="preferOrbitalSpawnDirectionOnPiCenters">When true (e.g. amino-acid post-build H fill), use each 1e lone lobe’s world axis for H placement on π centers too, so H matches phase-1 π lobe layout instead of VSEPR-only <see cref="ComputeNextHydrogenDirectionWorldForSaturate"/>.</param>
+    public void SaturateWithHydrogen(
+        AtomFunction atom,
+        HashSet<AtomFunction> pinSigmaRelaxNeighbors = null,
+        IReadOnlyList<AtomFunction> incrementalCollisionInvolvingAtoms = null,
+        AtomFunction freezeSigmaNeighborSubtreeRoot = null,
+        bool preferOrbitalSpawnDirectionOnPiCenters = false)
     {
         if (atom == null || atomPrefab == null || Camera.main == null) return;
 
@@ -1350,9 +1357,9 @@ public class EditModeManager : MonoBehaviour
 
             if (orb == null) break;
 
-            // For pi-bearing centers (e.g., benzene carbons), keep VSEPR-derived direction so H follows
-            // the local trigonal framework instead of inheriting out-of-plane lobe tilt.
-            bool useOrbitalDirectionForSpawn = atom.GetPiBondCount() <= 0;
+            // Default: π centers use VSEPR-derived dir (e.g. benzene in-plane H). Library post-π fill can request lobe axes instead.
+            bool atomHasPi = atom.GetPiBondCount() > 0;
+            bool useOrbitalDirectionForSpawn = !atomHasPi || preferOrbitalSpawnDirectionOnPiCenters;
             if (useOrbitalDirectionForSpawn)
                 dirN = OrbitalAngleUtility.GetOrbitalDirectionWorld(orb.transform);
             Vector3 hPos = atom.transform.position + dirN * bondLength;
@@ -1373,7 +1380,18 @@ public class EditModeManager : MonoBehaviour
                 break;
             }
 
-            FormSigmaBondInstant(atom, hAtom, orb, hOrb, redistributeAtomA: false, redistributeAtomB: false, pinSigmaRelaxForAtomA: pinSigmaRelaxNeighbors, pinSigmaRelaxForAtomB: pinSigmaRelaxNeighbors, freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot);
+            bool skipHydrogenSnapAfterHToHeavy = atomHasPi;
+            FormSigmaBondInstant(
+                atom,
+                hAtom,
+                orb,
+                hOrb,
+                redistributeAtomA: false,
+                redistributeAtomB: false,
+                pinSigmaRelaxForAtomA: pinSigmaRelaxNeighbors,
+                pinSigmaRelaxForAtomB: pinSigmaRelaxNeighbors,
+                freezeSigmaNeighborSubtreeRoot: freezeSigmaNeighborSubtreeRoot,
+                skipHydrogenSigmaNeighborSnapAfterTail: skipHydrogenSnapAfterHToHeavy);
             if (incrementalCollisionInvolvingAtoms != null && incrementalCollisionInvolvingAtoms.Count > 0)
                 AtomFunction.SetupIgnoreCollisionsInvolvingAtoms(incrementalCollisionInvolvingAtoms);
             else
